@@ -1,8 +1,8 @@
 # n8n OpenAI CLI Gateway
 
-[![Build and Push](https://github.com/your-org/n8n-openai-cli-gateway/actions/workflows/build.yml/badge.svg)](https://github.com/your-org/n8n-openai-cli-gateway/actions/workflows/build.yml)
-[![Docker Image Version (latest semver)](https://img.shields.io/docker/v/ghcr.io/your-org/n8n-openai-cli-gateway?sort=semver)](https://ghcr.io/your-org/n8n-openai-cli-gateway)
-[![Multi-Architecture](https://img.shields.io/badge/multi--arch-linux%2Famd64%20%7C%20linux%2Farm64-blue)](https://github.com/your-org/n8n-openai-cli-gateway/pkgs/container/n8n-openai-cli-gateway)
+[![Build and Push](https://github.com/philly1084/n8n-openai-cli-gateway/actions/workflows/build.yml/badge.svg)](https://github.com/philly1084/n8n-openai-cli-gateway/actions/workflows/build.yml)
+[![Docker Image Version (latest semver)](https://img.shields.io/docker/v/ghcr.io/philly1084/n8n-openai-cli-gateway?sort=semver)](https://ghcr.io/philly1084/n8n-openai-cli-gateway)
+[![Multi-Architecture](https://img.shields.io/badge/multi--arch-linux%2Famd64%20%7C%20linux%2Farm64-blue)](https://github.com/philly1084/n8n-openai-cli-gateway/pkgs/container/n8n-openai-cli-gateway)
 
 OpenAI-compatible gateway for n8n with multi-architecture support (amd64/arm64).
 
@@ -161,6 +161,7 @@ Use:
 
 - `kubernetes/deployment.yaml`
 - `kubernetes/configmap-example.yaml`
+- `kubernetes/rancher-install.yaml` (single-file Rancher import)
 
 Important for OAuth/token persistence:
 
@@ -197,3 +198,24 @@ docker buildx build \
 ```
 
 Use only CLI packages that publish Linux arm64 binaries.
+
+## Rancher Install
+
+Use `kubernetes/rancher-install.yaml` as a single import in Rancher:
+
+1. In Rancher, go to your target cluster and choose `Import YAML`.
+2. Paste `kubernetes/rancher-install.yaml`.
+3. Change:
+   - `ghcr.io/your-org/n8n-openai-cli-gateway:latest`
+   - secret values `n8nApiKey` and `adminApiKey`
+   - ingress host `gateway.example.com`
+   - `providers.yaml` contents for your real CLI commands/models
+4. Deploy.
+
+After deploy:
+
+- In-cluster base URL for n8n: `http://n8n-openai-cli-gateway.n8n-openai-gateway.svc.cluster.local/v1`
+- External ingress URL (if enabled): `https://gateway.example.com/v1`
+- Auth header:
+  - `Authorization: Bearer <n8nApiKey>`
+  - or `x-api-key: <n8nApiKey>`

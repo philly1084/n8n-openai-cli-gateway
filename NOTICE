@@ -1,0 +1,32 @@
+n8n OpenAI CLI Gateway
+Copyright (c) 2024
+
+This project includes code from the following third-party software:
+
+1. fastify (MIT License)
+   Copyright (c) 2016-2023 Matteo Collina and Fastify contributors
+   https://github.com/fastify/fastify
+
+2. yaml (ISC License)
+   Copyright (c) 2018 Eemeli Aro <eemeli@gmail.com>
+   https://github.com/eemeli/yaml/
+
+3. zod (MIT License)
+   Copyright (c) 2020 Colin McDonnell
+   https://github.com/colinhacks/zod
+
+4. @types/node (MIT License)
+   Copyright (c) Microsoft Corporation
+   https://github.com/DefinitelyTyped/DefinitelyTyped
+
+5. tsx (MIT License)
+   Copyright (c) 2021-2023 Sebastian McKenzie and other contributors
+   https://github.com/privatenumber/tsx
+
+6. typescript (Apache-2.0 License)
+   Copyright (c) Microsoft Corporation
+   https://github.com/microsoft/TypeScript
+
+---
+
+This project is licensed under the MIT License - see the LICENSE file for details.
