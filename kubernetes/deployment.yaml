@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: n8n-openai-cli-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: n8n-openai-cli-gateway
+  template:
+    metadata:
+      labels:
+        app: n8n-openai-cli-gateway
+    spec:
+      nodeSelector:
+        kubernetes.io/arch: arm64
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: gateway
+          image: ghcr.io/your-org/n8n-openai-cli-gateway:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: HOST
+              value: "0.0.0.0"
+            - name: LOG_LEVEL
+              value: "info"
+            - name: PROVIDERS_CONFIG_PATH
+              value: /app/config/providers.yaml
+            - name: HOME
+              value: /var/lib/gateway-home
+            - name: N8N_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: n8n-openai-cli-gateway-secrets
+                  key: n8nApiKey
+            - name: ADMIN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: n8n-openai-cli-gateway-secrets
+                  key: adminApiKey
+          volumeMounts:
+            - name: providers-config
+              mountPath: /app/config/providers.yaml
+              subPath: providers.yaml
+            - name: provider-home
+              mountPath: /var/lib/gateway-home
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: providers-config
+          configMap:
+            name: n8n-openai-cli-gateway-config
+        - name: provider-home
+          persistentVolumeClaim:
+            claimName: n8n-openai-cli-gateway-home
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: n8n-openai-cli-gateway
+spec:
+  selector:
+    app: n8n-openai-cli-gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: n8n-openai-cli-gateway-home
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi

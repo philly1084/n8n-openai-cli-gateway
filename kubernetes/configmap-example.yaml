@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: n8n-openai-cli-gateway-config
+data:
+  providers.yaml: |
+    providers:
+      - id: gemini-cli
+        type: cli
+        description: Gemini CLI adapter
+        models:
+          - id: gemini-2.5-pro
+            providerModel: gemini-2.5-pro
+        responseCommand:
+          executable: gemini
+          args:
+            - chat
+            - --model
+            - "{{provider_model}}"
+            - --json
+            - --prompt-file
+            - "{{prompt_file}}"
+          input: prompt_stdin
+          output: json_contract
+          timeoutMs: 240000
+        auth:
+          loginCommand:
+            executable: gemini
+            args:
+              - auth
+              - login
+              - --no-browser
+            timeoutMs: 900000
+          statusCommand:
+            executable: gemini
+            args:
+              - auth
+              - status
+              - --json
+            timeoutMs: 30000
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: n8n-openai-cli-gateway-secrets
+type: Opaque
+stringData:
+  n8nApiKey: replace-with-long-random-key
+  adminApiKey: replace-with-long-random-admin-key
