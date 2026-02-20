@@ -10,7 +10,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  EXTRA_NPM_GLOBAL_PACKAGES: "@google/gemini-cli @openai/codex"
+  EXTRA_NPM_GLOBAL_PACKAGES: "@google/gemini-cli @openai/codex opencode-ai"
 
 jobs:
   build:

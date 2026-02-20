@@ -56,6 +56,8 @@ spec:
               subPath: providers.yaml
             - name: provider-home
               mountPath: /var/lib/gateway-home
+            - name: opencode-config
+              mountPath: /var/lib/gateway-home/.config/opencode
           livenessProbe:
             httpGet:
               path: /healthz
@@ -82,6 +84,9 @@ spec:
         - name: provider-home
           persistentVolumeClaim:
             claimName: n8n-openai-cli-gateway-home
+        - name: opencode-config
+          configMap:
+            name: n8n-openai-cli-gateway-opencode-config
 ---
 apiVersion: v1
 kind: Service

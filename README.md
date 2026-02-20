@@ -16,7 +16,7 @@ OpenAI-compatible gateway for n8n that exposes:
 
 Also exposed under `/openai/v1/*` for in-cluster compatibility URLs.
 
-Model execution is delegated to configurable CLI providers (Gemini CLI, Antigravity CLI, Codex CLI, or any other command-line model runner). The gateway keeps n8n on one API key while provider logins are handled on the backend.
+Model execution is delegated to configurable CLI providers (Gemini via OpenCode OAuth plugin, Antigravity CLI, Codex CLI, or any other command-line model runner). The gateway keeps n8n on one API key while provider logins are handled on the backend.
 
 ## Why this fits your setup
 
@@ -35,7 +35,7 @@ Model execution is delegated to configurable CLI providers (Gemini CLI, Antigrav
 ## Requirements
 
 - Node.js 20+
-- Provider CLIs available in runtime image/host (`gemini`, `antigravity`, `codex`, etc.)
+- Provider CLIs available in runtime image/host (`opencode`, `gemini`, `antigravity`, `codex`, etc.)
 - A real providers config file at `config/providers.yaml`
 
 ## 1) Configure providers
@@ -192,12 +192,29 @@ To bake CLI packages into the image:
 ```bash
 docker buildx build \
   --platform linux/arm64 \
-  --build-arg EXTRA_NPM_GLOBAL_PACKAGES="@openai/codex @google/gemini-cli" \
+  --build-arg EXTRA_NPM_GLOBAL_PACKAGES="@openai/codex @google/gemini-cli opencode-ai" \
   -t ghcr.io/your-org/n8n-openai-cli-gateway:latest \
   --push .
 ```
 
 Use only CLI packages that publish Linux arm64 binaries.
+
+### OpenCode OAuth for Gemini
+
+If you use the `opencode-gemini-auth` plugin, mount this config at `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-gemini-auth@latest"]
+}
+```
+
+Then run login interactively in the pod:
+
+```bash
+kubectl -n n8n-openai-gateway exec -it deploy/n8n-openai-cli-gateway -- opencode auth login
+```
 
 ## Rancher Install
 

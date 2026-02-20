@@ -1,38 +1,36 @@
 providers:
   - id: gemini-cli
     type: cli
-    description: Gemini CLI adapter
+    description: Gemini via OpenCode + Google OAuth plugin
     models:
       - id: gemini-2.5-pro
-        providerModel: gemini-2.5-pro
+        providerModel: google/gemini-2.5-pro
       - id: gemini-2.5-flash
-        providerModel: gemini-2.5-flash
+        providerModel: google/gemini-2.5-flash
     responseCommand:
-      executable: gemini
+      executable: opencode
       args:
-        - chat
+        - run
         - --model
         - "{{provider_model}}"
-        - --json
-        - --prompt-file
-        - "{{prompt_file}}"
+        - --format
+        - default
+        - "{{prompt}}"
       input: prompt_stdin
-      output: json_contract
+      output: text
       timeoutMs: 240000
     auth:
       loginCommand:
-        executable: gemini
+        executable: opencode
         args:
           - auth
           - login
-          - --no-browser
         timeoutMs: 900000
       statusCommand:
-        executable: gemini
+        executable: sh
         args:
-          - auth
-          - status
-          - --json
+          - -c
+          - opencode auth list | grep -qi google
         timeoutMs: 30000
 
   - id: antigravity-cli
