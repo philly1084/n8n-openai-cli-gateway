@@ -84,7 +84,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
       return sendOpenAiError(reply, 400, "input or instructions must be provided.");
     }
 
-    const tools = normalizeTools(body.tools);
+    const tools = normalizeTools(body.tools ?? body.functions);
 
     try {
       const result = await options.registry.runModel(model, {
@@ -166,7 +166,7 @@ async function handleChatCompletionsRequest(
     return sendOpenAiError(reply, 400, "messages must include at least one item.");
   }
 
-  const tools = normalizeTools(body.tools);
+  const tools = normalizeTools(body.tools ?? body.functions);
 
   try {
     const result = await registry.runModel(model, {
@@ -223,6 +223,22 @@ function normalizeTools(raw: unknown): UnifiedToolDefinition[] {
     }
 
     const record = item as Record<string, unknown>;
+
+    // Legacy OpenAI-style functions array:
+    // [{ name, description, parameters }]
+    if (typeof record.name === "string" && record.name) {
+      tools.push({
+        type: "function",
+        function: {
+          name: record.name,
+          description:
+            typeof record.description === "string" ? record.description : undefined,
+          parameters: record.parameters,
+        },
+      });
+      continue;
+    }
+
     if (record.type !== "function") {
       continue;
     }

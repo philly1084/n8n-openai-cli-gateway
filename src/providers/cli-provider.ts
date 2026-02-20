@@ -9,6 +9,7 @@ import type {
   ProviderResult,
   ProviderToolCall,
   UnifiedRequest,
+  UnifiedToolDefinition,
 } from "../types";
 import { runCommand, resolveCommand } from "../utils/command";
 import { buildPrompt } from "../utils/prompt";
@@ -41,7 +42,8 @@ export class CliProvider implements Provider {
       throw new Error(`Provider ${this.id} does not expose model ${request.model}.`);
     }
 
-    const prompt = buildPrompt(request.messages);
+    const basePrompt = buildPrompt(request.messages);
+    const prompt = buildPromptWithTools(basePrompt, request.tools);
     const tmpDir = await mkdtemp(path.join(os.tmpdir(), "n8n-openai-gateway-"));
     const promptFile = path.join(tmpDir, "prompt.txt");
     const requestFile = path.join(tmpDir, "request.json");
@@ -131,6 +133,19 @@ export class CliProvider implements Provider {
   private parseOutput(stdout: string): ProviderResult {
     const mode = this.config.responseCommand.output;
     if (mode === "text") {
+      // Allow text-mode providers to opt into tool calling by emitting the JSON contract.
+      const contract = tryParseJsonContractSoft(stdout);
+      if (contract && (contract.output_text || contract.text || contract.content || contract.tool_calls?.length)) {
+        const toolCalls = normalizeToolCalls(contract.tool_calls);
+        return {
+          outputText: (contract.output_text ?? contract.text ?? contract.content ?? "").trim(),
+          toolCalls,
+          finishReason:
+            contract.finish_reason ?? (toolCalls.length > 0 ? "tool_calls" : "stop"),
+          raw: contract,
+        };
+      }
+
       return {
         outputText: stdout.trim(),
         toolCalls: [],
@@ -153,6 +168,25 @@ export class CliProvider implements Provider {
       raw: json,
     };
   }
+}
+
+function buildPromptWithTools(prompt: string, tools: UnifiedToolDefinition[]): string {
+  if (!tools.length) {
+    return prompt;
+  }
+
+  const toolSpec = JSON.stringify(tools, null, 2);
+  return [
+    prompt,
+    "",
+    "AVAILABLE_TOOLS_JSON:",
+    toolSpec,
+    "",
+    "If a tool is needed, respond ONLY with valid JSON in this exact shape:",
+    '{"output_text":"","tool_calls":[{"id":"call_1","name":"tool_name","arguments":"{\\"key\\":\\"value\\"}"}],"finish_reason":"tool_calls"}',
+    "",
+    'If no tool is needed, respond ONLY with valid JSON: {"output_text":"...","finish_reason":"stop"}',
+  ].join("\n");
 }
 
 function tryParseJsonContract(stdout: string): JsonContract {
@@ -179,6 +213,14 @@ function tryParseJsonContract(stdout: string): JsonContract {
   }
 
   throw new Error("Unable to parse provider JSON output. Check responseCommand.output mode.");
+}
+
+function tryParseJsonContractSoft(stdout: string): JsonContract | null {
+  try {
+    return tryParseJsonContract(stdout);
+  } catch {
+    return null;
+  }
 }
 
 function normalizeContract(value: unknown): JsonContract {

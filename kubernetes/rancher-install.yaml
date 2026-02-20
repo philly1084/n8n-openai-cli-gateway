@@ -50,36 +50,51 @@ data:
     providers:
       - id: gemini-cli
         type: cli
-        description: Gemini via OpenCode + Google OAuth plugin
+        description: Gemini CLI adapter
         models:
+          - id: gemini-3-pro-preview
+            providerModel: gemini-3-pro-preview
+          - id: gemini-3-flash-preview
+            providerModel: gemini-3-flash-preview
           - id: gemini-2.5-pro
-            providerModel: google/gemini-2.5-pro
+            providerModel: gemini-2.5-pro
           - id: gemini-2.5-flash
-            providerModel: google/gemini-2.5-flash
+            providerModel: gemini-2.5-flash
+          - id: gemini-2.5-flash-lite
+            providerModel: gemini-2.5-flash-lite
         responseCommand:
-          executable: opencode
+          executable: sh
           args:
-            - run
-            - --model
-            - "{{provider_model}}"
-            - --format
-            - default
-            - "{{prompt}}"
-          input: prompt_stdin
-          output: text
+            - -lc
+            - |
+              REQUEST_JSON="$(cat)"
+              PROMPT="$(
+                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const req=JSON.parse(d);const msgs=Array.isArray(req.messages)?req.messages:[];const tools=Array.isArray(req.tools)?req.tools:[];const norm=v=>typeof v==="string"?v:JSON.stringify(v??"");const msgText=msgs.map(m=>`${String(m.role||"user").toUpperCase()}:\n${norm(m.content)}`).join("\n\n");const toolJson=JSON.stringify(tools,null,2);const instruction=["You are connected through an OpenAI-compatible gateway.","If you need to call a tool, respond ONLY with JSON:","{\"output_text\":\"\",\"tool_calls\":[{\"id\":\"call_1\",\"name\":\"tool_name\",\"arguments\":{\"arg\":\"value\"}}],\"finish_reason\":\"tool_calls\"}","If no tool is needed, respond ONLY with JSON:","{\"output_text\":\"<assistant reply>\",\"finish_reason\":\"stop\"}"].join("\n");process.stdout.write([msgText,"","AVAILABLE_TOOLS_JSON:",toolJson,"",instruction].join("\n"));});'
+              )"
+              RAW_OUTPUT="$(gemini --model "{{provider_model}}" --output-format text --prompt "$PROMPT")" || exit $?
+              printf "%s" "$RAW_OUTPUT" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const t=d.trim();if(!t){process.stdout.write(JSON.stringify({output_text:"",finish_reason:"stop"}));return;}try{const j=JSON.parse(t);if(j&&typeof j==="object"){process.stdout.write(JSON.stringify(j));return;}}catch{}const lines=t.split(/\r?\n/).reverse();for(const line of lines){const c=line.trim();if(!c)continue;try{const j=JSON.parse(c);if(j&&typeof j==="object"){process.stdout.write(JSON.stringify(j));return;}}catch{}}process.stdout.write(JSON.stringify({output_text:t,finish_reason:"stop"}));});'
+          input: request_json_stdin
+          output: json_contract
           timeoutMs: 240000
         auth:
           loginCommand:
-            executable: opencode
+            executable: sh
             args:
-              - auth
-              - login
-            timeoutMs: 900000
+              - -c
+              - |
+                echo "Gemini CLI login is interactive in this version."
+                echo "Run in a TTY shell: gemini"
+                echo "Then run: /auth and choose Login with Google."
+                exit 1
+            timeoutMs: 10000
           statusCommand:
             executable: sh
             args:
               - -c
-              - opencode auth list | grep -qi google
+              - |
+                test -f "$HOME/.gemini/oauth_creds.json" \
+                  && echo '{"ok":true,"source":"oauth_creds.json"}' \
+                  || (echo '{"ok":false,"error":"missing ~/.gemini/oauth_creds.json"}' && exit 1)
             timeoutMs: 30000
       - id: antigravity-cli
         type: cli
@@ -114,11 +129,15 @@ data:
             timeoutMs: 30000
       - id: codex-cli
         type: cli
-        description: OpenAI Codex CLI adapter
+        description: OpenAI (Codex CLI) adapter
         models:
           - id: codex-latest
             providerModel: codex-latest
+          - id: openai-codex-latest
+            providerModel: codex-latest
           - id: gpt-4.1
+            providerModel: gpt-4.1
+          - id: openai-gpt-4.1
             providerModel: gpt-4.1
         responseCommand:
           executable: codex
@@ -143,18 +162,6 @@ data:
               - whoami
               - --json
             timeoutMs: 30000
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: n8n-openai-cli-gateway-opencode-config
-  namespace: n8n-openai-gateway
-data:
-  opencode.json: |
-    {
-      "$schema": "https://opencode.ai/config.json",
-      "plugin": ["opencode-gemini-auth@latest"]
-    }
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -236,8 +243,6 @@ spec:
               subPath: providers.yaml
             - name: provider-home
               mountPath: /var/lib/gateway-home
-            - name: opencode-config
-              mountPath: /var/lib/gateway-home/.config/opencode
           livenessProbe:
             httpGet:
               path: /healthz
@@ -270,9 +275,6 @@ spec:
         - name: provider-home
           persistentVolumeClaim:
             claimName: n8n-openai-cli-gateway-home
-        - name: opencode-config
-          configMap:
-            name: n8n-openai-cli-gateway-opencode-config
 ---
 apiVersion: v1
 kind: Service
