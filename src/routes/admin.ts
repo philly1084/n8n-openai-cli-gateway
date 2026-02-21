@@ -116,6 +116,22 @@ export const adminRoutes: FastifyPluginAsync<AdminRoutesOptions> = async (app, o
     }
     return job;
   });
+
+  app.get("/stats/models", async () => {
+    return options.registry.getModelStats();
+  });
+
+  app.get("/stats/models/:modelId", async (request, reply) => {
+    const params = request.params as { modelId?: string };
+    const modelId = params.modelId?.trim() || "";
+    const snapshot = options.registry.getModelStatsById(modelId);
+    if (!snapshot) {
+      return reply.status(404).send({
+        error: `Unknown model: ${modelId}`,
+      });
+    }
+    return snapshot;
+  });
 };
 
 function isAdminAuthorized(request: FastifyRequest, adminApiKey: string): boolean {

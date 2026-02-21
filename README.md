@@ -51,6 +51,7 @@ Each provider defines:
 - `models` exposed to n8n.
 - `responseCommand` to run model inference.
 - optional `auth.loginCommand` and `auth.statusCommand`.
+- optional per-model `fallbackModels` list of model ids to try when a provider command fails.
 
 Supported template variables in commands:
 
@@ -61,6 +62,12 @@ Supported template variables in commands:
 - `{{request_file}}` path to temp request JSON
 - `{{request_id}}`
 - `{{provider_id}}`
+
+Fallback behavior:
+
+- The gateway first runs the requested model id.
+- If that model's command exits with an error and `fallbackModels` are configured, it tries each fallback id in order.
+- Fallbacks can cross providers (for example Gemini -> Codex or Codex -> Gemini).
 
 ## 2) Run locally
 
@@ -105,6 +112,20 @@ Check auth status:
 
 ```bash
 curl -X POST http://localhost:8080/admin/providers/gemini-cli/status \
+  -H "x-admin-key: replace-me-admin"
+```
+
+Model-level health/fallback stats:
+
+```bash
+curl http://localhost:8080/admin/stats/models \
+  -H "x-admin-key: replace-me-admin"
+```
+
+Single model stats:
+
+```bash
+curl http://localhost:8080/admin/stats/models/gpt-5-codex \
   -H "x-admin-key: replace-me-admin"
 ```
 

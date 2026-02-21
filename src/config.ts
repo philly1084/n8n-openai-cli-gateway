@@ -25,6 +25,7 @@ const providersFileSchema = z.object({
               id: z.string().min(1),
               providerModel: z.string().optional(),
               description: z.string().optional(),
+              fallbackModels: z.array(z.string().min(1)).optional(),
             }),
           )
           .min(1),

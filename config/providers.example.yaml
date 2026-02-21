@@ -5,8 +5,12 @@ providers:
     models:
       - id: gemini-2.5-pro
         providerModel: google/gemini-2.5-pro
+        fallbackModels:
+          - gpt-4.1
       - id: gemini-2.5-flash
         providerModel: google/gemini-2.5-flash
+        fallbackModels:
+          - gpt-4.1
     responseCommand:
       executable: opencode
       args:
@@ -71,8 +75,12 @@ providers:
     models:
       - id: codex-latest
         providerModel: codex-latest
+        fallbackModels:
+          - gemini-2.5-pro
       - id: gpt-4.1
         providerModel: gpt-4.1
+        fallbackModels:
+          - gemini-2.5-flash
     responseCommand:
       executable: codex
       args:

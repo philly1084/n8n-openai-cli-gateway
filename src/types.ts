@@ -58,6 +58,7 @@ export interface ProviderModelConfig {
   id: string;
   providerModel?: string;
   description?: string;
+  fallbackModels?: string[];
 }
 
 export interface CliProviderConfig {
