@@ -54,29 +54,14 @@ data:
         models:
           - id: gemini-3-pro-preview
             providerModel: gemini-3-pro-preview
-            fallbackModels:
-              - gpt-5-codex
-              - gpt-4.1
           - id: gemini-3-flash-preview
             providerModel: gemini-3-flash-preview
-            fallbackModels:
-              - gpt-4.1
-              - gpt-5-codex
           - id: gemini-2.5-pro
             providerModel: gemini-2.5-pro
-            fallbackModels:
-              - gpt-4.1
-              - gpt-5-codex
           - id: gemini-2.5-flash
             providerModel: gemini-2.5-flash
-            fallbackModels:
-              - gpt-4.1
-              - gpt-5-codex
           - id: gemini-2.5-flash-lite
             providerModel: gemini-2.5-flash-lite
-            fallbackModels:
-              - gpt-4.1
-              - gpt-5-codex
         responseCommand:
           executable: sh
           args:
@@ -84,7 +69,7 @@ data:
             - |
               REQUEST_JSON="$(cat)"
               PROMPT="$(
-                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const req=JSON.parse(d);const msgs=Array.isArray(req.messages)?req.messages:[];const tools=Array.isArray(req.tools)?req.tools:[];const norm=v=>typeof v==="string"?v:JSON.stringify(v??"");const msgText=msgs.map(m=>`${String(m.role||"user").toUpperCase()}:\n${norm(m.content)}`).join("\n\n");const toolJson=JSON.stringify(tools,null,2);const instruction=["You are connected through an OpenAI-compatible gateway.","Do not use any internal tools, shell commands, filesystem access, web browsing, or MCP tools.","Return raw JSON only. Do not wrap JSON in markdown/code fences.","If you need to call a tool, respond ONLY with JSON:","{\"output_text\":\"\",\"tool_calls\":[{\"id\":\"call_1\",\"name\":\"tool_name\",\"arguments\":{\"arg\":\"value\"}}],\"finish_reason\":\"tool_calls\"}","If no tool is needed, respond ONLY with JSON:","{\"output_text\":\"<assistant reply>\",\"finish_reason\":\"stop\"}"].join("\n");process.stdout.write([msgText,"","AVAILABLE_TOOLS_JSON:",toolJson,"",instruction].join("\n"));});'
+                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const req=JSON.parse(d);const msgs=Array.isArray(req.messages)?req.messages:[];const tools=Array.isArray(req.tools)?req.tools:[];const norm=v=>typeof v==="string"?v:JSON.stringify(v??"");const msgText=msgs.map(m=>`${String(m.role||"user").toUpperCase()}:\n${norm(m.content)}`).join("\n\n");const toolJson=JSON.stringify(tools,null,2);const instruction=["You are connected through an OpenAI-compatible gateway.","Use ONLY tools listed in AVAILABLE_TOOLS_JSON when needed; do not use hidden/internal tools outside that list.","Return raw JSON only. Do not wrap JSON in markdown/code fences.","If you need to call a tool, respond ONLY with JSON:","{\"output_text\":\"\",\"tool_calls\":[{\"id\":\"call_1\",\"name\":\"tool_name\",\"arguments\":{\"arg\":\"value\"}}],\"finish_reason\":\"tool_calls\"}","If no tool is needed, respond ONLY with JSON:","{\"output_text\":\"<assistant reply>\",\"finish_reason\":\"stop\"}"].join("\n");process.stdout.write([msgText,"","AVAILABLE_TOOLS_JSON:",toolJson,"",instruction].join("\n"));});'
               )"
               RAW_OUTPUT="$(gemini --model "{{provider_model}}" --output-format text --prompt "$PROMPT")" || exit $?
               printf "%s" "$RAW_OUTPUT" | node -e '
@@ -226,44 +211,20 @@ data:
         models:
           - id: codex-latest
             providerModel: codex-latest
-            fallbackModels:
-              - gemini-3-pro-preview
-              - gemini-2.5-pro
           - id: openai-codex-latest
             providerModel: codex-latest
-            fallbackModels:
-              - gemini-3-pro-preview
-              - gemini-2.5-pro
           - id: gpt-5-codex
-            providerModel: gpt-5-codex
-            fallbackModels:
-              - gemini-3-pro-preview
-              - gemini-2.5-pro
+            providerModel: codex-latest
           - id: openai-gpt-5-codex
-            providerModel: gpt-5-codex
-            fallbackModels:
-              - gemini-3-pro-preview
-              - gemini-2.5-pro
+            providerModel: codex-latest
           - id: openai-codex/chatgpt-5.3
             providerModel: codex-latest
-            fallbackModels:
-              - gemini-3-pro-preview
-              - gemini-2.5-pro
           - id: openai-codex/chatgpt-5.2
             providerModel: codex-latest
-            fallbackModels:
-              - gemini-3-pro-preview
-              - gemini-2.5-pro
           - id: gpt-4.1
             providerModel: gpt-4.1
-            fallbackModels:
-              - gemini-3-flash-preview
-              - gemini-2.5-flash
           - id: openai-gpt-4.1
             providerModel: gpt-4.1
-            fallbackModels:
-              - gemini-3-flash-preview
-              - gemini-2.5-flash
         responseCommand:
           executable: node
           args:
@@ -299,17 +260,26 @@ data:
                   cat /tmp/codex-status.txt
                   exit 0
                 fi
-                if codex whoami >/tmp/codex-status.txt 2>&1; then
-                  cat /tmp/codex-status.txt
+                if [ -f "$HOME/.codex/auth.json" ] || [ -f "$HOME/.codex/oauth_creds.json" ] || [ -f "$HOME/.config/codex/auth.json" ]; then
+                  echo '{"ok":true,"source":"local-auth-cache"}'
                   exit 0
                 fi
                 cat /tmp/codex-status.txt
+                echo '{"ok":false,"error":"codex login status failed"}'
                 exit 1
             timeoutMs: 30000
       - id: ollama-cli
         type: cli
         description: Ollama local backup adapter with native tool calling
         models:
+          - id: ollama-local-best
+            providerModel: qwen3:8b
+          - id: ollama-local-fast
+            providerModel: qwen3:4b
+          - id: ollama-phi4-mini
+            providerModel: phi4-mini:3.8b
+          - id: ollama-phi35-mini-q4
+            providerModel: phi3.5:3.8b
           - id: ollama-qwen3-8b
             providerModel: qwen3:8b
           - id: ollama-qwen3-4b
@@ -321,16 +291,40 @@ data:
             - |
               REQUEST_JSON="$(cat)"
               OLLAMA_URL="${OLLAMA_BASE_URL:-http://ollama.n8n-openai-gateway.svc.cluster.local:11434}"
-              OLLAMA_NUM_THREAD="${OLLAMA_NUM_THREAD:-10}"
+              OLLAMA_NUM_THREAD="${OLLAMA_NUM_THREAD:-6}"
+              OLLAMA_NUM_CTX="${OLLAMA_NUM_CTX:-2048}"
+              OLLAMA_NUM_PREDICT="${OLLAMA_NUM_PREDICT:-384}"
+              HAS_TOOLS="$(
+                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const req=JSON.parse(d);const tools=Array.isArray(req.tools)?req.tools:[];process.stdout.write(tools.length>0?"1":"0");}catch{process.stdout.write("0");}});'
+              )"
 
               PAYLOAD="$(
-                printf "%s" "$REQUEST_JSON" | node -e 'let d="";const numThread=Number(process.argv[1]);process.stdin.on("data",c=>d+=c).on("end",()=>{const req=JSON.parse(d);const msgs=Array.isArray(req.messages)?req.messages:[];const tools=Array.isArray(req.tools)?req.tools:[];const normalized=msgs.map((m)=>{const out={role:String(m.role||"user"),content:typeof m.content==="string"?m.content:JSON.stringify(m.content??"")};if(out.role==="tool"){const n=typeof m.name==="string"&&m.name?m.name:(typeof m.tool_call_id==="string"&&m.tool_call_id?m.tool_call_id:undefined);if(n)out.tool_name=n;}return out;});const body={model:"{{provider_model}}",messages:normalized,tools,stream:false};if(Number.isFinite(numThread)&&numThread>0){body.options={num_thread:Math.trunc(numThread)};}process.stdout.write(JSON.stringify(body));});' "$OLLAMA_NUM_THREAD"
+                printf "%s" "$REQUEST_JSON" | node -e 'let d="";const numThread=Number(process.argv[1]);const numCtx=Number(process.argv[2]);const numPredict=Number(process.argv[3]);process.stdin.on("data",c=>d+=c).on("end",()=>{const req=JSON.parse(d);const msgs=Array.isArray(req.messages)?req.messages:[];const tools=Array.isArray(req.tools)?req.tools:[];const normalized=msgs.map((m)=>{const out={role:String(m.role||"user"),content:typeof m.content==="string"?m.content:JSON.stringify(m.content??"")};if(out.role==="tool"){const n=typeof m.name==="string"&&m.name?m.name:(typeof m.tool_call_id==="string"&&m.tool_call_id?m.tool_call_id:undefined);if(n)out.tool_name=n;}return out;});const body={model:"{{provider_model}}",messages:normalized,tools,stream:false};const options={};if(Number.isFinite(numThread)&&numThread>0){options.num_thread=Math.trunc(numThread);}if(Number.isFinite(numCtx)&&numCtx>0){options.num_ctx=Math.trunc(numCtx);}if(Number.isFinite(numPredict)&&numPredict>0){options.num_predict=Math.trunc(numPredict);}if(Object.keys(options).length>0){body.options=options;}process.stdout.write(JSON.stringify(body));});' "$OLLAMA_NUM_THREAD" "$OLLAMA_NUM_CTX" "$OLLAMA_NUM_PREDICT"
               )"
 
               RESPONSE_JSON="$(curl -fsS "$OLLAMA_URL/api/chat" -H "Content-Type: application/json" -d "$PAYLOAD")" || exit $?
 
               printf "%s" "$RESPONSE_JSON" | node -e '
                 let d="";
+                const hasTools=process.argv[1]==="1";
+                const providerModel=String(process.argv[2]||"").toLowerCase();
+                const isPhiModel=/\bphi/.test(providerModel);
+                const looksLikePretendToolUse=(value)=>{
+                  if(typeof value!=="string") return false;
+                  const t=value.toLowerCase();
+                  if(t.includes("simulated action")) return true;
+                  if(t.includes("working memory tool")) return true;
+                  if(t.includes("status table")) return true;
+                  if(t.includes("query memory")) return true;
+                  if(/\b(use|using|call|invoke|query|save|store|write)\b[\s\S]{0,100}\b(tool|memory|table)\b/.test(t)) return true;
+                  return false;
+                };
+                const maybeRejectMissingToolCalls=(text,toolCallCount)=>{
+                  if(!hasTools||!isPhiModel||toolCallCount>0) return false;
+                  if(!looksLikePretendToolUse(text)) return false;
+                  process.stderr.write("ollama phi pseudo-tool output detected without tool_calls\n");
+                  return true;
+                };
                 process.stdin.on("data",c=>d+=c).on("end",()=>{
                   const res=JSON.parse(d);
                   const msg=res&&typeof res.message==="object"&&res.message?res.message:{};
@@ -438,6 +432,9 @@ data:
                       :(typeof parsedContract.text==="string"
                         ?parsedContract.text
                         :(typeof parsedContract.content==="string"?parsedContract.content:content));
+                    if(maybeRejectMissingToolCalls(outputText,parsedToolCalls.length)){
+                      process.exit(86);
+                    }
                     const finishReason=parsedToolCalls.length>0
                       ?"tool_calls"
                       :(typeof parsedContract.finish_reason==="string"&&parsedContract.finish_reason
@@ -455,12 +452,15 @@ data:
                     .replace(/^```(?:json)?\s*/i,"")
                     .replace(/```$/,"")
                     .trim();
+                  if(maybeRejectMissingToolCalls(unfenced||content,0)){
+                    process.exit(86);
+                  }
                   process.stdout.write(JSON.stringify({
                     output_text:unfenced||content,
                     finish_reason:"stop"
                   }));
                 });
-              '
+              ' "$HAS_TOOLS" "{{provider_model}}"
           input: request_json_stdin
           output: json_contract
           timeoutMs: 240000
@@ -537,7 +537,7 @@ spec:
             - name: OLLAMA_HOST
               value: "0.0.0.0:11434"
             - name: OLLAMA_CONTEXT_LENGTH
-              value: "8192"
+              value: "2048"
           volumeMounts:
             - name: ollama-models
               mountPath: /root/.ollama
@@ -559,7 +559,7 @@ spec:
               memory: 8Gi
             limits:
               cpu: "10"
-              memory: 20Gi
+              memory: 16Gi
       volumes:
         - name: ollama-models
           persistentVolumeClaim:
@@ -635,7 +635,11 @@ spec:
             - name: OLLAMA_BASE_URL
               value: "http://ollama.n8n-openai-gateway.svc.cluster.local:11434"
             - name: OLLAMA_NUM_THREAD
-              value: "10"
+              value: "6"
+            - name: OLLAMA_NUM_CTX
+              value: "2048"
+            - name: OLLAMA_NUM_PREDICT
+              value: "384"
             - name: CODEX_APPSERVER_MODEL_PROVIDER
               value: "openai"
             - name: CODEX_APPSERVER_TIMEOUT_MS

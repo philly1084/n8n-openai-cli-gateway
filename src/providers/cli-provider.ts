@@ -43,7 +43,10 @@ export class CliProvider implements Provider {
     }
 
     const basePrompt = buildPrompt(request.messages);
-    const prompt = buildPromptWithTools(basePrompt, request.tools);
+    const prompt =
+      this.config.responseCommand.input === "prompt_stdin"
+        ? buildPromptWithTools(basePrompt, request.tools)
+        : basePrompt;
     const tmpDir = await mkdtemp(path.join(os.tmpdir(), "n8n-openai-gateway-"));
     const promptFile = path.join(tmpDir, "prompt.txt");
     const requestFile = path.join(tmpDir, "request.json");
