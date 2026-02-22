@@ -48,12 +48,246 @@ metadata:
 data:
   providers.yaml: |
     providers:
+      - id: gemini-cli
+        type: cli
+        description: Gemini CLI adapter
+        models:
+          - id: gemini-3-pro-preview
+            providerModel: gemini-3-pro-preview
+          - id: gemini-3-flash-preview
+            providerModel: gemini-3-flash-preview
+          - id: gemini-2.5-pro
+            providerModel: gemini-2.5-pro
+          - id: gemini-2.5-flash
+            providerModel: gemini-2.5-flash
+          - id: gemini-2.5-flash-lite
+            providerModel: gemini-2.5-flash-lite
+        responseCommand:
+          executable: sh
+          args:
+            - -lc
+            - |
+              REQUEST_JSON="$(cat)"
+              PROMPT="$(
+                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const req=JSON.parse(d);const msgs=Array.isArray(req.messages)?req.messages:[];const tools=Array.isArray(req.tools)?req.tools:[];const norm=v=>typeof v==="string"?v:JSON.stringify(v??"");const msgText=msgs.map(m=>`${String(m.role||"user").toUpperCase()}:\n${norm(m.content)}`).join("\n\n");const toolJson=JSON.stringify(tools,null,2);const instruction=["You are connected through an OpenAI-compatible gateway.","Use ONLY tools listed in AVAILABLE_TOOLS_JSON when needed; do not use hidden/internal tools outside that list.","Return raw JSON only. Do not wrap JSON in markdown/code fences.","If you need to call a tool, respond ONLY with JSON:","{\"output_text\":\"\",\"tool_calls\":[{\"id\":\"call_1\",\"name\":\"tool_name\",\"arguments\":{\"arg\":\"value\"}}],\"finish_reason\":\"tool_calls\"}","If no tool is needed, respond ONLY with JSON:","{\"output_text\":\"<assistant reply>\",\"finish_reason\":\"stop\"}"].join("\n");process.stdout.write([msgText,"","AVAILABLE_TOOLS_JSON:",toolJson,"",instruction].join("\n"));});'
+              )"
+              RAW_OUTPUT="$(gemini --model "{{provider_model}}" --output-format text --prompt "$PROMPT")" || exit $?
+              printf "%s" "$RAW_OUTPUT" | node -e '
+                let d="";
+                process.stdin.on("data",c=>d+=c).on("end",()=>{
+                  const t=d.trim();
+                  if(!t){
+                    process.stdout.write(JSON.stringify({output_text:"",finish_reason:"stop"}));
+                    return;
+                  }
+
+                  const seen=new Set();
+                  const queue=[];
+                  const push=(s)=>{
+                    if(typeof s!=="string") return;
+                    const v=s.trim();
+                    if(!v||seen.has(v)) return;
+                    seen.add(v);
+                    queue.push(v);
+                  };
+
+                  const pushDerived=(s)=>{
+                    const fence=/```(?:json)?\s*([\s\S]*?)```/gi;
+                    let m;
+                    while((m=fence.exec(s))!==null){
+                      push(m[1]);
+                    }
+                    const start=s.indexOf("{");
+                    const end=s.lastIndexOf("}");
+                    if(start!==-1&&end>start){
+                      push(s.slice(start,end+1));
+                    }
+                  };
+
+                  const isContract=(j)=>j&&typeof j==="object"&&(
+                    "output_text" in j || "tool_calls" in j || "finish_reason" in j || "text" in j || "content" in j
+                  );
+
+                  push(t);
+                  pushDerived(t);
+
+                  for(let i=0;i<queue.length&&i<50;i++){
+                    const cur=queue[i];
+                    pushDerived(cur);
+                    let parsed=null;
+                    try{ parsed=JSON.parse(cur);}catch{}
+                    if(!parsed||typeof parsed!=="object") continue;
+
+                    if(isContract(parsed)){
+                      const innerCandidates=[
+                        typeof parsed.output_text==="string"?parsed.output_text:"",
+                        typeof parsed.text==="string"?parsed.text:"",
+                        typeof parsed.content==="string"?parsed.content:""
+                      ].filter(Boolean);
+
+                      let promoted=null;
+                      for(const c of innerCandidates){
+                        push(c);
+                        pushDerived(c);
+                        try{
+                          const j2=JSON.parse(c);
+                          if(isContract(j2)){promoted=j2;break;}
+                        }catch{}
+                      }
+                      process.stdout.write(JSON.stringify(promoted||parsed));
+                      return;
+                    }
+
+                    if(typeof parsed.response==="string") push(parsed.response);
+                    if(parsed.message&&typeof parsed.message==="object"&&typeof parsed.message.content==="string"){
+                      push(parsed.message.content);
+                    }
+                  }
+
+                  const unfenced=t
+                    .replace(/^```(?:json)?\s*/i,"")
+                    .replace(/```$/,"")
+                    .trim();
+                  process.stdout.write(JSON.stringify({output_text:unfenced||t,finish_reason:"stop"}));
+                });
+              '
+          input: request_json_stdin
+          output: json_contract
+          timeoutMs: 240000
+        auth:
+          loginCommand:
+            executable: sh
+            args:
+              - -c
+              - |
+                echo "Gemini CLI login is interactive in this version."
+                echo "Run in a TTY shell: gemini"
+                echo "Then run: /auth and choose Login with Google."
+                exit 1
+            timeoutMs: 10000
+          statusCommand:
+            executable: sh
+            args:
+              - -c
+              - |
+                test -f "$HOME/.gemini/oauth_creds.json" \
+                  && echo '{"ok":true,"source":"oauth_creds.json"}' \
+                  || (echo '{"ok":false,"error":"missing ~/.gemini/oauth_creds.json"}' && exit 1)
+            timeoutMs: 30000
+      - id: antigravity-cli
+        type: cli
+        description: Antigravity CLI adapter
+        models:
+          - id: antigravity-default
+            providerModel: default
+        responseCommand:
+          executable: antigravity
+          args:
+            - chat
+            - --model
+            - "{{provider_model}}"
+            - --json
+          input: request_json_stdin
+          output: json_contract
+          timeoutMs: 240000
+        auth:
+          loginCommand:
+            executable: antigravity
+            args:
+              - auth
+              - login
+              - --no-browser
+            timeoutMs: 900000
+          statusCommand:
+            executable: antigravity
+            args:
+              - auth
+              - status
+              - --json
+            timeoutMs: 30000
+      - id: codex-cli
+        type: cli
+        description: OpenAI (Codex CLI) adapter
+        models:
+          - id: codex-latest
+            providerModel: gpt-5.3-codex
+          - id: openai-codex-latest
+            providerModel: gpt-5.3-codex
+          - id: gpt-5-codex
+            providerModel: gpt-5.3-codex
+          - id: openai-gpt-5-codex
+            providerModel: gpt-5.3-codex
+          - id: gpt-5.3-codex
+            providerModel: gpt-5.3-codex
+          - id: openai-gpt-5.3-codex
+            providerModel: gpt-5.3-codex
+          - id: openai-codex/chatgpt-5.3
+            providerModel: gpt-5.3-codex
+          - id: gpt-5.2-codex
+            providerModel: gpt-5.2-codex
+          - id: openai-gpt-5.2-codex
+            providerModel: gpt-5.2-codex
+          - id: openai-codex/chatgpt-5.2
+            providerModel: gpt-5.2-codex
+        responseCommand:
+          executable: node
+          args:
+            - /app/dist/scripts/codex-appserver-bridge.js
+            - --model
+            - "{{provider_model}}"
+          input: request_json_stdin
+          output: json_contract
+          timeoutMs: 240000
+        auth:
+          loginCommand:
+            executable: sh
+            args:
+              - -lc
+              - |
+                if codex login --help 2>&1 | grep -q -- '--device-auth'; then
+                  echo "Starting Codex device auth (no localhost callback required)..."
+                  exec codex login --device-auth
+                fi
+                if codex login --help 2>&1 | grep -q -- '--no-browser'; then
+                  echo "Starting Codex no-browser auth..."
+                  exec codex login --no-browser
+                fi
+                echo "Starting Codex interactive login..."
+                exec codex login
+            timeoutMs: 900000
+          statusCommand:
+            executable: sh
+            args:
+              - -lc
+              - |
+                if codex login status >/tmp/codex-status.txt 2>&1; then
+                  cat /tmp/codex-status.txt
+                  exit 0
+                fi
+                if [ -f "$HOME/.codex/auth.json" ] || [ -f "$HOME/.codex/oauth_creds.json" ] || [ -f "$HOME/.config/codex/auth.json" ]; then
+                  echo '{"ok":true,"source":"local-auth-cache"}'
+                  exit 0
+                fi
+                cat /tmp/codex-status.txt
+                echo '{"ok":false,"error":"codex login status failed"}'
+                exit 1
+            timeoutMs: 30000
       - id: ollama-cli
         type: cli
-        description: Ollama local adapter (GLM4 Q4 only)
+        description: Ollama local backup adapter with native tool calling
         models:
-          - id: ollama-glm4-q4
-            providerModel: glm4:9b-chat-q4_K_M
+          - id: ollama-local-best
+            providerModel: qwen3:8b
+          - id: ollama-local-fast
+            providerModel: qwen3:4b
+          - id: ollama-phi4-mini
+            providerModel: phi4-mini:3.8b
+          - id: ollama-phi35-mini-q4
+            providerModel: phi3.5:3.8b
+          - id: ollama-qwen3-8b
+            providerModel: qwen3:8b
+          - id: ollama-qwen3-4b
+            providerModel: qwen3:4b
         responseCommand:
           executable: sh
           args:
@@ -410,6 +644,16 @@ spec:
               value: "2048"
             - name: OLLAMA_NUM_PREDICT
               value: "384"
+            - name: CODEX_APPSERVER_MODEL_PROVIDER
+              value: "openai"
+            - name: CODEX_APPSERVER_TIMEOUT_MS
+              value: "240000"
+            - name: CODEX_APPSERVER_INITIALIZE_TIMEOUT_MS
+              value: "60000"
+            - name: CODEX_APPSERVER_START_TIMEOUT_MS
+              value: "45000"
+            - name: CODEX_APPSERVER_CHATGPT_FALLBACK_MODEL
+              value: "gpt-5.2-codex"
             - name: N8N_API_KEY
               valueFrom:
                 secretKeyRef:
