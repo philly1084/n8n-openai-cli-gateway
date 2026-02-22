@@ -399,6 +399,28 @@ function parseTimeoutMs(): number {
   return 240_000;
 }
 
+function parseInitializeTimeoutMs(totalTimeoutMs: number): number {
+  const raw =
+    typeof process.env.CODEX_APPSERVER_INITIALIZE_TIMEOUT_MS === "string"
+      ? Number(process.env.CODEX_APPSERVER_INITIALIZE_TIMEOUT_MS)
+      : NaN;
+  if (Number.isFinite(raw) && raw > 0) {
+    return Math.min(Math.trunc(raw), totalTimeoutMs);
+  }
+  return Math.min(60_000, totalTimeoutMs);
+}
+
+function parseStartupRequestTimeoutMs(totalTimeoutMs: number): number {
+  const raw =
+    typeof process.env.CODEX_APPSERVER_START_TIMEOUT_MS === "string"
+      ? Number(process.env.CODEX_APPSERVER_START_TIMEOUT_MS)
+      : NaN;
+  if (Number.isFinite(raw) && raw > 0) {
+    return Math.min(Math.trunc(raw), totalTimeoutMs);
+  }
+  return Math.min(45_000, totalTimeoutMs);
+}
+
 function parseModelProvider(): string {
   if (
     typeof process.env.CODEX_APPSERVER_MODEL_PROVIDER === "string" &&
@@ -421,9 +443,17 @@ function readStdin(): Promise<string> {
   });
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 async function run(): Promise<void> {
   const model = parseModelArg(process.argv.slice(2));
   const timeoutMs = parseTimeoutMs();
+  const initializeTimeoutMs = parseInitializeTimeoutMs(timeoutMs);
+  const startupRequestTimeoutMs = parseStartupRequestTimeoutMs(timeoutMs);
   const modelProvider = parseModelProvider();
   const startedAt = Date.now();
 
@@ -453,14 +483,33 @@ async function run(): Promise<void> {
   const rpc = new JsonRpcStdioClient(appServer);
 
   try {
-    await rpc.request(
-      "initialize",
-      {
-        clientInfo: { name: "n8n-openai-cli-gateway", version: "0.1.0" },
-        capabilities: { experimentalApi: true },
-      },
-      15_000,
-    );
+    let initialized = false;
+    let initializeError: unknown = null;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        await rpc.request(
+          "initialize",
+          {
+            clientInfo: { name: "n8n-openai-cli-gateway", version: "0.1.0" },
+            capabilities: { experimentalApi: true },
+          },
+          initializeTimeoutMs,
+        );
+        initialized = true;
+        break;
+      } catch (error) {
+        initializeError = error;
+        if (attempt < 2) {
+          await delay(750);
+        }
+      }
+    }
+    if (!initialized) {
+      if (initializeError instanceof Error) {
+        throw initializeError;
+      }
+      throw new Error("JSON-RPC request timed out: initialize");
+    }
     rpc.notify("initialized");
 
     const threadStartResult = (await rpc.request(
@@ -473,7 +522,7 @@ async function run(): Promise<void> {
         experimentalRawEvents: true,
         persistExtendedHistory: false,
       },
-      30_000,
+      startupRequestTimeoutMs,
     )) as Record<string, unknown>;
 
     const thread =
@@ -495,7 +544,7 @@ async function run(): Promise<void> {
         input: [{ type: "text", text: prompt }],
         model,
       },
-      30_000,
+      startupRequestTimeoutMs,
     )) as Record<string, unknown>;
 
     const turn =

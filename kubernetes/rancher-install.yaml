@@ -644,6 +644,10 @@ spec:
               value: "openai"
             - name: CODEX_APPSERVER_TIMEOUT_MS
               value: "240000"
+            - name: CODEX_APPSERVER_INITIALIZE_TIMEOUT_MS
+              value: "60000"
+            - name: CODEX_APPSERVER_START_TIMEOUT_MS
+              value: "45000"
             - name: N8N_API_KEY
               valueFrom:
                 secretKeyRef:
