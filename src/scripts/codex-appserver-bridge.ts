@@ -11,6 +11,7 @@ interface GatewayRequest {
   prompt?: unknown;
   messages?: unknown;
   tools?: unknown;
+  metadata?: unknown;
 }
 
 interface JsonRpcResponse {
@@ -250,10 +251,34 @@ function buildPrompt(request: GatewayRequest): string {
     return messageText;
   }
 
+  const metadata =
+    request.metadata && typeof request.metadata === "object"
+      ? (request.metadata as Record<string, unknown>)
+      : {};
+  const toolChoice = metadata.tool_choice;
+  const forcedToolName =
+    toolChoice &&
+    typeof toolChoice === "object" &&
+    (toolChoice as Record<string, unknown>).type === "function" &&
+    (toolChoice as Record<string, unknown>).function &&
+    typeof (toolChoice as Record<string, unknown>).function === "object" &&
+    typeof ((toolChoice as Record<string, unknown>).function as Record<string, unknown>)
+      .name === "string"
+      ? String(
+          ((toolChoice as Record<string, unknown>).function as Record<string, unknown>)
+            .name,
+        )
+      : undefined;
+
   const toolJson = JSON.stringify(tools, null, 2);
   const instruction = [
     "You are connected through an OpenAI-compatible gateway.",
+    "The tools listed in AVAILABLE_TOOLS_JSON are the only tools you can use in this turn.",
+    "Do not claim that tools are unavailable when AVAILABLE_TOOLS_JSON is non-empty.",
     "Do not use any internal tools, shell commands, filesystem access, web browsing, or MCP tools.",
+    forcedToolName
+      ? `tool_choice is set. You MUST call exactly this function name: ${forcedToolName}.`
+      : "If the user asks to use/call a tool and AVAILABLE_TOOLS_JSON is non-empty, you MUST return a tool_calls response.",
     "If a tool is needed, return raw JSON only:",
     '{"output_text":"","tool_calls":[{"id":"call_1","name":"tool_name","arguments":{"arg":"value"}}],"finish_reason":"tool_calls"}',
     "If no tool is needed, return raw JSON only:",
