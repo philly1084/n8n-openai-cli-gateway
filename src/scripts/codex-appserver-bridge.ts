@@ -413,6 +413,27 @@ function parseModelProvider(): string {
   return "openai";
 }
 
+function parseChatGptFallbackModel(): string {
+  if (
+    typeof process.env.CODEX_APPSERVER_CHATGPT_FALLBACK_MODEL === "string" &&
+    process.env.CODEX_APPSERVER_CHATGPT_FALLBACK_MODEL.trim()
+  ) {
+    return process.env.CODEX_APPSERVER_CHATGPT_FALLBACK_MODEL.trim();
+  }
+  return "gpt-5.2-codex";
+}
+
+function isChatGptCodexLatestUnsupportedError(error: unknown): boolean {
+  const message =
+    error instanceof Error ? error.message : String(error ?? "");
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("codex-latest") &&
+    lower.includes("not supported") &&
+    lower.includes("chatgpt account")
+  );
+}
+
 function readStdin(): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     let data = "";
@@ -437,6 +458,7 @@ async function run(): Promise<void> {
   const initializeTimeoutMs = parseInitializeTimeoutMs(timeoutMs);
   const startupRequestTimeoutMs = parseStartupRequestTimeoutMs(timeoutMs);
   const modelProvider = parseModelProvider();
+  const chatGptFallbackModel = parseChatGptFallbackModel();
   const startedAt = Date.now();
 
   const requestJson = await readStdin();
@@ -494,18 +516,47 @@ async function run(): Promise<void> {
     }
     rpc.notify("initialized");
 
-    const threadStartResult = (await rpc.request(
-      "thread/start",
-      {
-        model,
-        modelProvider,
-        approvalPolicy: "never",
-        sandbox: "read-only",
-        experimentalRawEvents: true,
-        persistExtendedHistory: false,
-      },
-      startupRequestTimeoutMs,
-    )) as Record<string, unknown>;
+    let selectedModel = model;
+    let threadStartResult: Record<string, unknown>;
+    try {
+      threadStartResult = (await rpc.request(
+        "thread/start",
+        {
+          model: selectedModel,
+          modelProvider,
+          approvalPolicy: "never",
+          sandbox: "read-only",
+          experimentalRawEvents: true,
+          persistExtendedHistory: false,
+        },
+        startupRequestTimeoutMs,
+      )) as Record<string, unknown>;
+    } catch (error) {
+      if (
+        selectedModel === "codex-latest" &&
+        chatGptFallbackModel !== selectedModel &&
+        isChatGptCodexLatestUnsupportedError(error)
+      ) {
+        selectedModel = chatGptFallbackModel;
+        process.stderr.write(
+          `codex-appserver-bridge: model codex-latest rejected for ChatGPT account; retrying with ${selectedModel}\n`,
+        );
+        threadStartResult = (await rpc.request(
+          "thread/start",
+          {
+            model: selectedModel,
+            modelProvider,
+            approvalPolicy: "never",
+            sandbox: "read-only",
+            experimentalRawEvents: true,
+            persistExtendedHistory: false,
+          },
+          startupRequestTimeoutMs,
+        )) as Record<string, unknown>;
+      } else {
+        throw error;
+      }
+    }
 
     const thread =
       threadStartResult &&
@@ -524,7 +575,7 @@ async function run(): Promise<void> {
       {
         threadId,
         input: [{ type: "text", text: prompt }],
-        model,
+        model: selectedModel,
       },
       startupRequestTimeoutMs,
     )) as Record<string, unknown>;
