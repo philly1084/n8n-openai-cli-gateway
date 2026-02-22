@@ -218,9 +218,9 @@ data:
           - id: openai-gpt-5-codex
             providerModel: codex-latest
           - id: openai-codex/chatgpt-5.3
-            providerModel: chatgpt-5.3
+            providerModel: codex-latest
           - id: openai-codex/chatgpt-5.2
-            providerModel: chatgpt-5.2
+            providerModel: codex-latest
           - id: gpt-4.1
             providerModel: gpt-4.1
           - id: openai-gpt-4.1
@@ -648,8 +648,6 @@ spec:
               value: "60000"
             - name: CODEX_APPSERVER_START_TIMEOUT_MS
               value: "45000"
-            - name: CODEX_APPSERVER_CHATGPT_FALLBACK_MODEL
-              value: "chatgpt-5.3"
             - name: N8N_API_KEY
               valueFrom:
                 secretKeyRef:
