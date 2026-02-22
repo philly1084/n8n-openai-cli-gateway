@@ -69,6 +69,29 @@ Fallback behavior:
 - If that model's command exits with an error and `fallbackModels` are configured, it tries each fallback id in order.
 - Fallbacks can cross providers (for example Gemini -> Codex or Codex -> Gemini).
 
+### Codex OAuth app-server bridge
+
+The repository includes `src/scripts/codex-appserver-bridge.ts`, which runs Codex through `codex app-server` (stdio JSON-RPC) and converts results to the gateway `json_contract`.
+
+Use this in provider config:
+
+```yaml
+responseCommand:
+  executable: node
+  args:
+    - dist/scripts/codex-appserver-bridge.js
+    - --model
+    - "{{provider_model}}"
+  input: request_json_stdin
+  output: json_contract
+  timeoutMs: 240000
+```
+
+Optional environment variables:
+
+- `CODEX_APPSERVER_MODEL_PROVIDER` (default `openai`)
+- `CODEX_APPSERVER_TIMEOUT_MS` (default `240000`)
+
 ## 2) Run locally
 
 ```powershell

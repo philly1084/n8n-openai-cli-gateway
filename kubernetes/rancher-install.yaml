@@ -84,7 +84,7 @@ data:
             - |
               REQUEST_JSON="$(cat)"
               PROMPT="$(
-                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const req=JSON.parse(d);const msgs=Array.isArray(req.messages)?req.messages:[];const tools=Array.isArray(req.tools)?req.tools:[];const norm=v=>typeof v==="string"?v:JSON.stringify(v??"");const msgText=msgs.map(m=>`${String(m.role||"user").toUpperCase()}:\n${norm(m.content)}`).join("\n\n");const toolJson=JSON.stringify(tools,null,2);const instruction=["You are connected through an OpenAI-compatible gateway.","Return raw JSON only. Do not wrap JSON in markdown/code fences.","If you need to call a tool, respond ONLY with JSON:","{\"output_text\":\"\",\"tool_calls\":[{\"id\":\"call_1\",\"name\":\"tool_name\",\"arguments\":{\"arg\":\"value\"}}],\"finish_reason\":\"tool_calls\"}","If no tool is needed, respond ONLY with JSON:","{\"output_text\":\"<assistant reply>\",\"finish_reason\":\"stop\"}"].join("\n");process.stdout.write([msgText,"","AVAILABLE_TOOLS_JSON:",toolJson,"",instruction].join("\n"));});'
+                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const req=JSON.parse(d);const msgs=Array.isArray(req.messages)?req.messages:[];const tools=Array.isArray(req.tools)?req.tools:[];const norm=v=>typeof v==="string"?v:JSON.stringify(v??"");const msgText=msgs.map(m=>`${String(m.role||"user").toUpperCase()}:\n${norm(m.content)}`).join("\n\n");const toolJson=JSON.stringify(tools,null,2);const instruction=["You are connected through an OpenAI-compatible gateway.","Do not use any internal tools, shell commands, filesystem access, web browsing, or MCP tools.","Return raw JSON only. Do not wrap JSON in markdown/code fences.","If you need to call a tool, respond ONLY with JSON:","{\"output_text\":\"\",\"tool_calls\":[{\"id\":\"call_1\",\"name\":\"tool_name\",\"arguments\":{\"arg\":\"value\"}}],\"finish_reason\":\"tool_calls\"}","If no tool is needed, respond ONLY with JSON:","{\"output_text\":\"<assistant reply>\",\"finish_reason\":\"stop\"}"].join("\n");process.stdout.write([msgText,"","AVAILABLE_TOOLS_JSON:",toolJson,"",instruction].join("\n"));});'
               )"
               RAW_OUTPUT="$(gemini --model "{{provider_model}}" --output-format text --prompt "$PROMPT")" || exit $?
               printf "%s" "$RAW_OUTPUT" | node -e '
@@ -265,180 +265,11 @@ data:
               - gemini-3-flash-preview
               - gemini-2.5-flash
         responseCommand:
-          executable: sh
+          executable: node
           args:
-            - -lc
-            - |
-              REQUEST_JSON="$(cat)"
-              PROMPT="$(
-                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const req=JSON.parse(d);const msgs=Array.isArray(req.messages)?req.messages:[];const tools=Array.isArray(req.tools)?req.tools:[];const norm=v=>typeof v==="string"?v:JSON.stringify(v??"");const msgText=typeof req.prompt==="string"&&req.prompt.trim()?req.prompt:msgs.map(m=>`${String(m.role||"user").toUpperCase()}:\n${norm(m.content)}`).join("\n\n");const toolJson=JSON.stringify(tools,null,2);const instruction=["You are connected through an OpenAI-compatible gateway.","Return raw JSON only. Do not wrap JSON in markdown/code fences.","If you need to call a tool, respond ONLY with JSON:","{\"output_text\":\"\",\"tool_calls\":[{\"id\":\"call_1\",\"name\":\"tool_name\",\"arguments\":{\"arg\":\"value\"}}],\"finish_reason\":\"tool_calls\"}","If no tool is needed, respond ONLY with JSON:","{\"output_text\":\"<assistant reply>\",\"finish_reason\":\"stop\"}"].join("\n");process.stdout.write([msgText,"","AVAILABLE_TOOLS_JSON:",toolJson,"",instruction].join("\n"));}catch{process.stdout.write(d);}});'
-              )"
-
-              if codex exec --help >/dev/null 2>&1; then
-                LAST_MSG_FILE="$(mktemp)"
-                if ! printf "%s" "$PROMPT" | codex exec --model "{{provider_model}}" --skip-git-repo-check --output-last-message "$LAST_MSG_FILE" - >/tmp/codex.stdout 2>/tmp/codex.stderr; then
-                  cat /tmp/codex.stderr >&2
-                  cat /tmp/codex.stdout >&2
-                  rm -f "$LAST_MSG_FILE" /tmp/codex.stdout /tmp/codex.stderr
-                  exit 1
-                fi
-                node -e '
-                  const fs=require("fs");
-                  const p=process.argv[1];
-                  let t="";
-                  try{t=fs.readFileSync(p,"utf8").trim();}catch{}
-                  if(!t){
-                    process.stdout.write(JSON.stringify({output_text:"",finish_reason:"stop"}));
-                    process.exit(0);
-                  }
-
-                  const seen=new Set();
-                  const queue=[];
-                  const push=(s)=>{
-                    if(typeof s!=="string") return;
-                    const v=s.trim();
-                    if(!v||seen.has(v)) return;
-                    seen.add(v);
-                    queue.push(v);
-                  };
-                  const pushDerived=(s)=>{
-                    const fence=/```(?:json)?\s*([\s\S]*?)```/gi;
-                    let m;
-                    while((m=fence.exec(s))!==null){
-                      push(m[1]);
-                    }
-                    const start=s.indexOf("{");
-                    const end=s.lastIndexOf("}");
-                    if(start!==-1&&end>start){
-                      push(s.slice(start,end+1));
-                    }
-                  };
-                  const isContract=(j)=>j&&typeof j==="object"&&(
-                    "output_text" in j || "tool_calls" in j || "finish_reason" in j || "text" in j || "content" in j
-                  );
-
-                  push(t);
-                  pushDerived(t);
-
-                  for(let i=0;i<queue.length&&i<50;i++){
-                    const cur=queue[i];
-                    pushDerived(cur);
-                    let parsed=null;
-                    try{parsed=JSON.parse(cur);}catch{}
-                    if(!parsed||typeof parsed!=="object") continue;
-
-                    if(isContract(parsed)){
-                      const innerCandidates=[
-                        typeof parsed.output_text==="string"?parsed.output_text:"",
-                        typeof parsed.text==="string"?parsed.text:"",
-                        typeof parsed.content==="string"?parsed.content:""
-                      ].filter(Boolean);
-                      let promoted=null;
-                      for(const c of innerCandidates){
-                        push(c);
-                        pushDerived(c);
-                        try{
-                          const j2=JSON.parse(c);
-                          if(isContract(j2)){promoted=j2;break;}
-                        }catch{}
-                      }
-                      process.stdout.write(JSON.stringify(promoted||parsed));
-                      process.exit(0);
-                    }
-
-                    if(typeof parsed.response==="string") push(parsed.response);
-                    if(parsed.message&&typeof parsed.message==="object"&&typeof parsed.message.content==="string"){
-                      push(parsed.message.content);
-                    }
-                  }
-
-                  const unfenced=t.replace(/^```(?:json)?\s*/i,"").replace(/```$/,"").trim();
-                  process.stdout.write(JSON.stringify({output_text:unfenced||t,finish_reason:"stop"}));
-                ' "$LAST_MSG_FILE"
-                rm -f "$LAST_MSG_FILE" /tmp/codex.stdout /tmp/codex.stderr
-                exit 0
-              fi
-
-              if codex chat --help >/dev/null 2>&1; then
-                printf "%s" "$REQUEST_JSON" | codex chat --model "{{provider_model}}" --json
-                exit $?
-              fi
-
-              RAW_OUTPUT="$(printf "%s" "$PROMPT" | codex --model "{{provider_model}}" - 2>&1)" || exit $?
-              printf "%s" "$RAW_OUTPUT" | node -e '
-                let d="";
-                process.stdin.on("data",c=>d+=c).on("end",()=>{
-                  const t=d.trim();
-                  if(!t){
-                    process.stdout.write(JSON.stringify({output_text:"",finish_reason:"stop"}));
-                    return;
-                  }
-
-                  const seen=new Set();
-                  const queue=[];
-                  const push=(s)=>{
-                    if(typeof s!=="string") return;
-                    const v=s.trim();
-                    if(!v||seen.has(v)) return;
-                    seen.add(v);
-                    queue.push(v);
-                  };
-                  const pushDerived=(s)=>{
-                    const fence=/```(?:json)?\s*([\s\S]*?)```/gi;
-                    let m;
-                    while((m=fence.exec(s))!==null){
-                      push(m[1]);
-                    }
-                    const start=s.indexOf("{");
-                    const end=s.lastIndexOf("}");
-                    if(start!==-1&&end>start){
-                      push(s.slice(start,end+1));
-                    }
-                  };
-                  const isContract=(j)=>j&&typeof j==="object"&&(
-                    "output_text" in j || "tool_calls" in j || "finish_reason" in j || "text" in j || "content" in j
-                  );
-
-                  push(t);
-                  pushDerived(t);
-
-                  for(let i=0;i<queue.length&&i<50;i++){
-                    const cur=queue[i];
-                    pushDerived(cur);
-                    let parsed=null;
-                    try{parsed=JSON.parse(cur);}catch{}
-                    if(!parsed||typeof parsed!=="object") continue;
-
-                    if(isContract(parsed)){
-                      const innerCandidates=[
-                        typeof parsed.output_text==="string"?parsed.output_text:"",
-                        typeof parsed.text==="string"?parsed.text:"",
-                        typeof parsed.content==="string"?parsed.content:""
-                      ].filter(Boolean);
-                      let promoted=null;
-                      for(const c of innerCandidates){
-                        push(c);
-                        pushDerived(c);
-                        try{
-                          const j2=JSON.parse(c);
-                          if(isContract(j2)){promoted=j2;break;}
-                        }catch{}
-                      }
-                      process.stdout.write(JSON.stringify(promoted||parsed));
-                      return;
-                    }
-
-                    if(typeof parsed.response==="string") push(parsed.response);
-                    if(parsed.message&&typeof parsed.message==="object"&&typeof parsed.message.content==="string"){
-                      push(parsed.message.content);
-                    }
-                  }
-
-                  const unfenced=t.replace(/^```(?:json)?\s*/i,"").replace(/```$/,"").trim();
-                  process.stdout.write(JSON.stringify({output_text:unfenced||t,finish_reason:"stop"}));
-                });
-              '
-              exit 0
+            - /app/dist/scripts/codex-appserver-bridge.js
+            - --model
+            - "{{provider_model}}"
           input: request_json_stdin
           output: json_contract
           timeoutMs: 240000
@@ -468,7 +299,7 @@ data:
                   cat /tmp/codex-status.txt
                   exit 0
                 fi
-                if codex whoami --json >/tmp/codex-status.txt 2>&1; then
+                if codex whoami >/tmp/codex-status.txt 2>&1; then
                   cat /tmp/codex-status.txt
                   exit 0
                 fi
@@ -805,6 +636,10 @@ spec:
               value: "http://ollama.n8n-openai-gateway.svc.cluster.local:11434"
             - name: OLLAMA_NUM_THREAD
               value: "10"
+            - name: CODEX_APPSERVER_MODEL_PROVIDER
+              value: "openai"
+            - name: CODEX_APPSERVER_TIMEOUT_MS
+              value: "240000"
             - name: N8N_API_KEY
               valueFrom:
                 secretKeyRef:

@@ -71,7 +71,7 @@ providers:
 
   - id: codex-cli
     type: cli
-    description: OpenAI Codex CLI adapter
+    description: OpenAI Codex app-server bridge adapter
     models:
       - id: codex-latest
         providerModel: codex-latest
@@ -82,12 +82,11 @@ providers:
         fallbackModels:
           - gemini-2.5-flash
     responseCommand:
-      executable: codex
+      executable: node
       args:
-        - chat
+        - dist/scripts/codex-appserver-bridge.js
         - --model
         - "{{provider_model}}"
-        - --json
       input: request_json_stdin
       output: json_contract
       timeoutMs: 240000
