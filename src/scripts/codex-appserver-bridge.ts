@@ -54,8 +54,7 @@ class JsonRpcStdioClient {
   private readonly queue: unknown[] = [];
   private readonly waiters: Array<(value: unknown | null) => void> = [];
   private readonly child: ReturnType<typeof spawn>;
-  private buffer = Buffer.alloc(0);
-  private expectedLength: number | null = null;
+  private buffer = "";
   private ended = false;
 
   constructor(child: ReturnType<typeof spawn>) {
@@ -66,8 +65,8 @@ class JsonRpcStdioClient {
     }
 
     child.stdout.on("data", (chunk: Buffer | string) => {
-      const data = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
-      this.buffer = Buffer.concat([this.buffer, data]);
+      const data = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      this.buffer += data;
       this.drainBuffer();
     });
 
@@ -84,14 +83,19 @@ class JsonRpcStdioClient {
 
   async request(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
     const id = this.nextId++;
-    this.send({ jsonrpc: "2.0", id, method, params });
-
     return await new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`JSON-RPC request timed out: ${method}`));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
+      try {
+        this.send({ jsonrpc: "2.0", id, method, params });
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
@@ -135,50 +139,28 @@ class JsonRpcStdioClient {
       throw new Error("codex app-server stdin is unavailable.");
     }
 
-    const body = JSON.stringify(payload);
-    const header = `Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n`;
-    this.child.stdin.write(header, "utf8");
-    this.child.stdin.write(body, "utf8");
+    // codex app-server stdio transport expects one JSON-RPC message per line.
+    const line = `${JSON.stringify(payload)}\n`;
+    this.child.stdin.write(line, "utf8");
   }
 
   private drainBuffer(): void {
     while (true) {
-      if (this.expectedLength === null) {
-        const headerEnd = this.buffer.indexOf("\r\n\r\n");
-        if (headerEnd === -1) {
-          return;
-        }
-
-        const headerText = this.buffer.slice(0, headerEnd).toString("utf8");
-        const lines = headerText.split(/\r\n/);
-        let contentLength = -1;
-        for (const line of lines) {
-          const match = line.match(/^Content-Length:\s*(\d+)$/i);
-          if (match) {
-            contentLength = Number(match[1]);
-            break;
-          }
-        }
-        if (!Number.isFinite(contentLength) || contentLength < 0) {
-          this.rejectAll(new Error("Invalid JSON-RPC framing from codex app-server."));
-          return;
-        }
-
-        this.expectedLength = contentLength;
-        this.buffer = this.buffer.slice(headerEnd + 4);
-      }
-
-      if (this.expectedLength === null || this.buffer.length < this.expectedLength) {
+      const newlineIndex = this.buffer.indexOf("\n");
+      if (newlineIndex === -1) {
         return;
       }
 
-      const body = this.buffer.slice(0, this.expectedLength).toString("utf8");
-      this.buffer = this.buffer.slice(this.expectedLength);
-      this.expectedLength = null;
+      const rawLine = this.buffer.slice(0, newlineIndex);
+      this.buffer = this.buffer.slice(newlineIndex + 1);
+      const line = rawLine.replace(/\r$/, "").trim();
+      if (!line) {
+        continue;
+      }
 
       let parsed: unknown;
       try {
-        parsed = JSON.parse(body);
+        parsed = JSON.parse(line);
       } catch {
         continue;
       }
