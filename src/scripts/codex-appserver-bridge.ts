@@ -231,6 +231,26 @@ function parseRequest(input: string): GatewayRequest {
   return JSON.parse(input) as GatewayRequest;
 }
 
+function extractAllowedToolNames(request: GatewayRequest): Set<string> {
+  const out = new Set<string>();
+  const tools = Array.isArray(request.tools) ? request.tools : [];
+  for (const item of tools) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    const fn =
+      record.function && typeof record.function === "object"
+        ? (record.function as Record<string, unknown>)
+        : null;
+    const name = fn && typeof fn.name === "string" ? fn.name.trim() : "";
+    if (name) {
+      out.add(name);
+    }
+  }
+  return out;
+}
+
 function buildPrompt(request: GatewayRequest): string {
   if (typeof request.prompt === "string" && request.prompt.trim()) {
     return request.prompt;
@@ -680,6 +700,7 @@ async function run(): Promise<void> {
   }
 
   const request = parseRequest(requestJson);
+  const allowedToolNames = extractAllowedToolNames(request);
   const prompt = buildPrompt(request);
 
   const appServer = spawn("codex", ["app-server", "--listen", "stdio://"], {
@@ -833,7 +854,8 @@ async function run(): Promise<void> {
             ? params.tool
             : "tool";
         const args = asToolCallArguments(params.arguments);
-        if (!toolCallIds.has(callId)) {
+        const isAllowed = allowedToolNames.has(name);
+        if (isAllowed && !toolCallIds.has(callId)) {
           toolCallIds.add(callId);
           toolCalls.push({ id: callId, name, arguments: args });
           toolCallSeenAt = Date.now();
@@ -844,7 +866,9 @@ async function run(): Promise<void> {
             contentItems: [
               {
                 type: "inputText",
-                text: "Tool execution is delegated to an external orchestrator.",
+                text: isAllowed
+                  ? "Tool execution is delegated to an external orchestrator."
+                  : `Tool '${name}' is not available. Use one from AVAILABLE_TOOLS_JSON.`,
               },
             ],
           });
@@ -866,7 +890,7 @@ async function run(): Promise<void> {
         }
 
         const call = parseToolCallFromRawItem(params.item);
-        if (call && !toolCallIds.has(call.id)) {
+        if (call && allowedToolNames.has(call.name) && !toolCallIds.has(call.id)) {
           toolCallIds.add(call.id);
           toolCalls.push(call);
           toolCallSeenAt = Date.now();
@@ -963,7 +987,7 @@ async function run(): Promise<void> {
         ? parsedContract.tool_calls
         : [];
       for (const call of parsedToolCalls) {
-        if (!toolCallIds.has(call.id)) {
+        if (allowedToolNames.has(call.name) && !toolCallIds.has(call.id)) {
           toolCallIds.add(call.id);
           toolCalls.push(call);
         }
