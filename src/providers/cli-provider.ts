@@ -274,12 +274,21 @@ function normalizeToolCalls(rawToolCalls: unknown[] | undefined): ProviderToolCa
       (functionObj ? functionObj.arguments : undefined) ??
       "{}";
 
+    const nested = extractNestedToolCall(argsRaw);
+    if (nested) {
+      calls.push({
+        id: idCandidate ?? nested.id ?? `call_${calls.length + 1}`,
+        name: nested.name || nameCandidate || "tool",
+        arguments: nested.arguments,
+      });
+      continue;
+    }
+
     if (!nameCandidate) {
       continue;
     }
 
-    const args =
-      typeof argsRaw === "string" ? argsRaw : JSON.stringify(argsRaw ?? {});
+    const args = asToolCallArguments(argsRaw);
 
     calls.push({
       id: idCandidate ?? `call_${calls.length + 1}`,
@@ -289,4 +298,158 @@ function normalizeToolCalls(rawToolCalls: unknown[] | undefined): ProviderToolCa
   }
 
   return calls;
+}
+
+function asToolCallArguments(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  try {
+    return JSON.stringify(value ?? {});
+  } catch {
+    return "{}";
+  }
+}
+
+function extractNestedToolCall(
+  value: unknown,
+): { id?: string; name: string; arguments: string } | null {
+  const queue: unknown[] = [value];
+  const seen = new Set<string>();
+
+  for (let i = 0; i < queue.length && i < 80; i += 1) {
+    const current = queue[i];
+    if (!current) {
+      continue;
+    }
+
+    if (typeof current === "string") {
+      const text = current.trim();
+      if (!text || seen.has(text)) {
+        continue;
+      }
+      seen.add(text);
+
+      for (const candidate of jsonCandidates(text)) {
+        if (seen.has(candidate)) {
+          continue;
+        }
+        seen.add(candidate);
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(candidate);
+        } catch {
+          continue;
+        }
+        queue.push(parsed);
+      }
+      continue;
+    }
+
+    if (typeof current !== "object") {
+      continue;
+    }
+
+    const obj = current as Record<string, unknown>;
+    const toolCalls = normalizeToolCallsShallow(
+      Array.isArray(obj.tool_calls) ? obj.tool_calls : undefined,
+    );
+    if (toolCalls.length > 0) {
+      const first = toolCalls[0];
+      if (first) {
+        return first;
+      }
+    }
+
+    if (typeof obj.response === "string") {
+      queue.push(obj.response);
+    }
+    if (
+      obj.message &&
+      typeof obj.message === "object" &&
+      typeof (obj.message as Record<string, unknown>).content === "string"
+    ) {
+      queue.push((obj.message as Record<string, unknown>).content);
+    }
+    if (typeof obj.output_text === "string") {
+      queue.push(obj.output_text);
+    }
+    if (typeof obj.text === "string") {
+      queue.push(obj.text);
+    }
+    if (typeof obj.content === "string") {
+      queue.push(obj.content);
+    }
+
+    for (const v of Object.values(obj)) {
+      if (typeof v === "string") {
+        queue.push(v);
+      }
+    }
+  }
+
+  return null;
+}
+
+function jsonCandidates(input: string): string[] {
+  const out: string[] = [];
+  const trimmed = input.trim();
+  if (trimmed) {
+    out.push(trimmed);
+  }
+
+  const fence = /```(?:json)?\s*([\s\S]*?)```/gi;
+  let match: RegExpExecArray | null;
+  while ((match = fence.exec(input)) !== null) {
+    const candidate = match[1]?.trim();
+    if (candidate) {
+      out.push(candidate);
+    }
+  }
+
+  const start = input.indexOf("{");
+  const end = input.lastIndexOf("}");
+  if (start !== -1 && end > start) {
+    const body = input.slice(start, end + 1).trim();
+    if (body) {
+      out.push(body);
+    }
+  }
+
+  return out;
+}
+
+function normalizeToolCallsShallow(
+  rawToolCalls: unknown[] | undefined,
+): Array<{ id?: string; name: string; arguments: string }> {
+  if (!rawToolCalls || rawToolCalls.length === 0) {
+    return [];
+  }
+
+  const out: Array<{ id?: string; name: string; arguments: string }> = [];
+  for (const entry of rawToolCalls) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+
+    const obj = entry as Record<string, unknown>;
+    const fn =
+      obj.function && typeof obj.function === "object"
+        ? (obj.function as Record<string, unknown>)
+        : undefined;
+    const name =
+      (typeof obj.name === "string" && obj.name) ||
+      (fn && typeof fn.name === "string" ? fn.name : "");
+    if (!name) {
+      continue;
+    }
+    const argsRaw = obj.arguments ?? (fn ? fn.arguments : undefined) ?? {};
+    out.push({
+      id: typeof obj.id === "string" && obj.id ? obj.id : undefined,
+      name,
+      arguments: asToolCallArguments(argsRaw),
+    });
+  }
+
+  return out;
 }

@@ -350,6 +350,192 @@ function collectAssistantTextFromThreadItem(item: unknown): string {
   return typeof record.text === "string" ? record.text.trim() : "";
 }
 
+function normalizeTextForComparison(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function appendUniqueTextPart(textParts: string[], candidate: string): void {
+  const trimmed = candidate.trim();
+  if (!trimmed) {
+    return;
+  }
+
+  const previous = textParts[textParts.length - 1];
+  if (
+    typeof previous === "string" &&
+    normalizeTextForComparison(previous) === normalizeTextForComparison(trimmed)
+  ) {
+    return;
+  }
+
+  textParts.push(trimmed);
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
+}
+
+function isFinishReason(value: unknown): value is FinishReason {
+  return (
+    value === "stop" ||
+    value === "tool_calls" ||
+    value === "length" ||
+    value === "error"
+  );
+}
+
+function normalizeToolCallsFromContract(raw: unknown): NonNullable<JsonContract["tool_calls"]> {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return [];
+  }
+
+  const calls: NonNullable<JsonContract["tool_calls"]> = [];
+  for (const entry of raw) {
+    if (!isObjectRecord(entry)) {
+      continue;
+    }
+
+    const fn = isObjectRecord(entry.function) ? entry.function : undefined;
+    const name =
+      (typeof entry.name === "string" && entry.name) ||
+      (fn && typeof fn.name === "string" ? fn.name : "");
+    if (!name) {
+      continue;
+    }
+
+    const id =
+      typeof entry.id === "string" && entry.id
+        ? entry.id
+        : `call_${calls.length + 1}`;
+    const argsRaw = entry.arguments ?? (fn ? fn.arguments : undefined);
+
+    calls.push({
+      id,
+      name,
+      arguments: asToolCallArguments(argsRaw),
+    });
+  }
+
+  return calls;
+}
+
+function parseJsonContractFromText(raw: string): JsonContract | null {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const seen = new Set<string>();
+  const queue: string[] = [];
+  const push = (value: unknown): void => {
+    if (typeof value !== "string") {
+      return;
+    }
+    const text = value.trim();
+    if (!text || seen.has(text)) {
+      return;
+    }
+    seen.add(text);
+    queue.push(text);
+  };
+  const pushDerived = (value: string): void => {
+    const fence = /```(?:json)?\s*([\s\S]*?)```/gi;
+    let match: RegExpExecArray | null;
+    while ((match = fence.exec(value)) !== null) {
+      push(match[1]);
+    }
+
+    const start = value.indexOf("{");
+    const end = value.lastIndexOf("}");
+    if (start !== -1 && end > start) {
+      push(value.slice(start, end + 1));
+    }
+  };
+  const isContractObject = (value: Record<string, unknown>): boolean => {
+    return (
+      "output_text" in value ||
+      "tool_calls" in value ||
+      "finish_reason" in value ||
+      "text" in value ||
+      "content" in value
+    );
+  };
+  const toContract = (value: Record<string, unknown>): JsonContract | null => {
+    if (!isContractObject(value)) {
+      return null;
+    }
+
+    const toolCalls = normalizeToolCallsFromContract(value.tool_calls);
+    const outputText =
+      typeof value.output_text === "string"
+        ? value.output_text
+        : typeof value.text === "string"
+          ? value.text
+          : typeof value.content === "string"
+            ? value.content
+            : "";
+    const finishReason: FinishReason = isFinishReason(value.finish_reason)
+      ? value.finish_reason
+      : toolCalls.length > 0
+        ? "tool_calls"
+        : "stop";
+
+    return {
+      output_text: outputText.trim(),
+      tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+      finish_reason: finishReason,
+    };
+  };
+
+  push(trimmed);
+  pushDerived(trimmed);
+
+  let best: JsonContract | null = null;
+  for (let i = 0; i < queue.length && i < 80; i += 1) {
+    const current = queue[i];
+    if (typeof current !== "string") {
+      continue;
+    }
+    pushDerived(current);
+
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(current);
+    } catch {
+      continue;
+    }
+    if (!isObjectRecord(parsed)) {
+      continue;
+    }
+
+    const contract = toContract(parsed);
+    if (contract) {
+      if (!best) {
+        best = contract;
+      }
+      if (contract.output_text) {
+        push(contract.output_text);
+        pushDerived(contract.output_text);
+      }
+      if (contract.tool_calls && contract.tool_calls.length > 0) {
+        return contract;
+      }
+    }
+
+    if (typeof parsed.response === "string") {
+      push(parsed.response);
+      pushDerived(parsed.response);
+    }
+    const maybeMessage = parsed.message;
+    if (isObjectRecord(maybeMessage) && typeof maybeMessage.content === "string") {
+      push(maybeMessage.content);
+      pushDerived(maybeMessage.content);
+    }
+  }
+
+  return best;
+}
+
 function parseModelArg(argv: string[]): string {
   for (let i = 0; i < argv.length; i += 1) {
     const next = argv[i + 1];
@@ -663,9 +849,7 @@ async function run(): Promise<void> {
         }
 
         const text = collectAssistantTextFromRawItem(params.item);
-        if (text) {
-          textParts.push(text);
-        }
+        appendUniqueTextPart(textParts, text);
         continue;
       }
 
@@ -681,9 +865,7 @@ async function run(): Promise<void> {
           continue;
         }
         const text = collectAssistantTextFromThreadItem(params.item);
-        if (text) {
-          textParts.push(text);
-        }
+        appendUniqueTextPart(textParts, text);
         continue;
       }
 
@@ -744,7 +926,25 @@ async function run(): Promise<void> {
       }
     }
 
-    const outputText = textParts.join("\n").trim();
+    let outputText = textParts.join("\n").trim();
+    let finishReason: FinishReason = "stop";
+
+    const parsedContract = parseJsonContractFromText(outputText);
+    if (parsedContract) {
+      outputText = parsedContract.output_text || outputText;
+      finishReason = parsedContract.finish_reason;
+
+      const parsedToolCalls = Array.isArray(parsedContract.tool_calls)
+        ? parsedContract.tool_calls
+        : [];
+      for (const call of parsedToolCalls) {
+        if (!toolCallIds.has(call.id)) {
+          toolCallIds.add(call.id);
+          toolCalls.push(call);
+        }
+      }
+    }
+
     if (toolCalls.length > 0) {
       const out: JsonContract = {
         output_text: outputText,
@@ -759,9 +959,13 @@ async function run(): Promise<void> {
       throw new Error(turnFailedMessage);
     }
 
+    if (finishReason === "tool_calls") {
+      finishReason = "stop";
+    }
+
     const out: JsonContract = {
       output_text: outputText,
-      finish_reason: "stop",
+      finish_reason: finishReason,
     };
     process.stdout.write(JSON.stringify(out));
   } finally {
