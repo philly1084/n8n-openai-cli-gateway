@@ -84,7 +84,17 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
       return sendOpenAiError(reply, 400, "input or instructions must be provided.");
     }
 
-    const tools = normalizeTools(body.tools ?? body.functions);
+    const rawTools = body.tools ?? body.functions;
+    const tools = normalizeTools(rawTools ?? body);
+    if (tools.length === 0 && rawTools !== undefined) {
+      app.log.warn(
+        {
+          model,
+          tool_payload_type: Array.isArray(rawTools) ? "array" : typeof rawTools,
+        },
+        "No tools normalized from /responses request payload.",
+      );
+    }
 
     try {
       const result = await options.registry.runModel(model, {
@@ -166,7 +176,17 @@ async function handleChatCompletionsRequest(
     return sendOpenAiError(reply, 400, "messages must include at least one item.");
   }
 
-  const tools = normalizeTools(body.tools ?? body.functions);
+  const rawTools = body.tools ?? body.functions;
+  const tools = normalizeTools(rawTools ?? body);
+  if (tools.length === 0 && rawTools !== undefined) {
+    reply.log.warn(
+      {
+        model,
+        tool_payload_type: Array.isArray(rawTools) ? "array" : typeof rawTools,
+      },
+      "No tools normalized from chat request payload.",
+    );
+  }
 
   try {
     const result = await registry.runModel(model, {
@@ -212,59 +232,131 @@ async function handleChatCompletionsRequest(
 }
 
 function normalizeTools(raw: unknown): UnifiedToolDefinition[] {
-  if (!Array.isArray(raw)) {
+  const items = normalizeToolItems(raw);
+  if (items.length === 0) {
     return [];
   }
 
   const tools: UnifiedToolDefinition[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") {
+  const seenNames = new Set<string>();
+  for (const item of items) {
+    const parsed = parseToolDefinition(item);
+    if (!parsed) {
       continue;
     }
-
-    const record = item as Record<string, unknown>;
-
-    // Legacy OpenAI-style functions array:
-    // [{ name, description, parameters }]
-    if (typeof record.name === "string" && record.name) {
-      tools.push({
-        type: "function",
-        function: {
-          name: record.name,
-          description:
-            typeof record.description === "string" ? record.description : undefined,
-          parameters: record.parameters,
-        },
-      });
+    const dedupeKey = parsed.name.toLowerCase();
+    if (seenNames.has(dedupeKey)) {
       continue;
     }
-
-    if (record.type !== "function") {
-      continue;
-    }
-
-    const fn = record.function;
-    if (!fn || typeof fn !== "object") {
-      continue;
-    }
-
-    const fnRecord = fn as Record<string, unknown>;
-    if (typeof fnRecord.name !== "string" || !fnRecord.name) {
-      continue;
-    }
-
+    seenNames.add(dedupeKey);
     tools.push({
       type: "function",
       function: {
-        name: fnRecord.name,
-        description:
-          typeof fnRecord.description === "string" ? fnRecord.description : undefined,
-        parameters: fnRecord.parameters,
+        name: parsed.name,
+        description: parsed.description,
+        parameters: parsed.parameters,
       },
     });
   }
 
   return tools;
+}
+
+function normalizeToolItems(raw: unknown): unknown[] {
+  if (Array.isArray(raw)) {
+    return raw;
+  }
+
+  if (!raw || typeof raw !== "object") {
+    return [];
+  }
+
+  const record = raw as Record<string, unknown>;
+  if (Array.isArray(record.tools)) {
+    return record.tools;
+  }
+  if (Array.isArray(record.functions)) {
+    return record.functions;
+  }
+
+  return [];
+}
+
+function parseToolDefinition(
+  value: unknown,
+): { name: string; description?: string; parameters?: unknown } | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const fnRecord =
+    record.function && typeof record.function === "object"
+      ? (record.function as Record<string, unknown>)
+      : undefined;
+  const nestedToolRecord =
+    record.tool && typeof record.tool === "object"
+      ? (record.tool as Record<string, unknown>)
+      : undefined;
+
+  const name = firstNonEmptyString(
+    record.name,
+    record.functionName,
+    record.function_name,
+    record.toolName,
+    record.tool_name,
+    typeof record.function === "string" ? record.function : undefined,
+    fnRecord?.name,
+    nestedToolRecord?.name,
+  );
+  if (!name) {
+    return null;
+  }
+
+  const description = firstNonEmptyString(
+    record.description,
+    fnRecord?.description,
+    nestedToolRecord?.description,
+  );
+
+  const parameters = firstDefined(
+    fnRecord?.parameters,
+    fnRecord?.input_schema,
+    fnRecord?.inputSchema,
+    record.parameters,
+    record.input_schema,
+    record.inputSchema,
+    nestedToolRecord?.parameters,
+    nestedToolRecord?.input_schema,
+    nestedToolRecord?.inputSchema,
+  );
+
+  return {
+    name,
+    description,
+    parameters,
+  };
+}
+
+function firstNonEmptyString(...candidates: unknown[]): string | undefined {
+  for (const candidate of candidates) {
+    if (typeof candidate === "string") {
+      const trimmed = candidate.trim();
+      if (trimmed) {
+        return trimmed;
+      }
+    }
+  }
+  return undefined;
+}
+
+function firstDefined(...candidates: unknown[]): unknown {
+  for (const candidate of candidates) {
+    if (candidate !== undefined) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 function normalizeChatMessages(raw: unknown): ChatMessage[] {
