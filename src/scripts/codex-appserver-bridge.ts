@@ -14,6 +14,12 @@ interface GatewayRequest {
   metadata?: unknown;
 }
 
+interface DynamicToolSpec {
+  name: string;
+  description: string;
+  inputSchema: unknown;
+}
+
 interface JsonRpcResponse {
   id?: unknown;
   result?: unknown;
@@ -231,8 +237,19 @@ function parseRequest(input: string): GatewayRequest {
   return JSON.parse(input) as GatewayRequest;
 }
 
-function extractAllowedToolNames(request: GatewayRequest): Set<string> {
-  const out = new Set<string>();
+function normalizeToolName(name: string): string {
+  return name
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[\s\-./]+/g, "_")
+    .replace(/[^A-Za-z0-9_]/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+}
+
+function extractAllowedToolNames(request: GatewayRequest): Map<string, string> {
+  const out = new Map<string, string>();
   const tools = Array.isArray(request.tools) ? request.tools : [];
   for (const item of tools) {
     if (!item || typeof item !== "object") {
@@ -245,9 +262,54 @@ function extractAllowedToolNames(request: GatewayRequest): Set<string> {
         : null;
     const name = fn && typeof fn.name === "string" ? fn.name.trim() : "";
     if (name) {
-      out.add(name);
+      out.set(normalizeToolName(name), name);
     }
   }
+  return out;
+}
+
+function extractDynamicTools(request: GatewayRequest): DynamicToolSpec[] {
+  const out: DynamicToolSpec[] = [];
+  const tools = Array.isArray(request.tools) ? request.tools : [];
+
+  for (const item of tools) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    const fn =
+      record.function && typeof record.function === "object"
+        ? (record.function as Record<string, unknown>)
+        : null;
+    if (!fn) {
+      continue;
+    }
+
+    const name = typeof fn.name === "string" ? fn.name.trim() : "";
+    if (!name) {
+      continue;
+    }
+
+    const description =
+      typeof fn.description === "string" && fn.description.trim()
+        ? fn.description.trim()
+        : "Tool exposed by AVAILABLE_TOOLS_JSON.";
+    const inputSchema =
+      Object.prototype.hasOwnProperty.call(fn, "parameters") &&
+      fn.parameters !== undefined
+        ? fn.parameters
+        : {
+            type: "object",
+            additionalProperties: true,
+          };
+
+    out.push({
+      name,
+      description,
+      inputSchema,
+    });
+  }
+
   return out;
 }
 
@@ -701,6 +763,7 @@ async function run(): Promise<void> {
 
   const request = parseRequest(requestJson);
   const allowedToolNames = extractAllowedToolNames(request);
+  const dynamicTools = extractDynamicTools(request);
   const prompt = buildPrompt(request);
 
   const appServer = spawn("codex", ["app-server", "--listen", "stdio://"], {
@@ -760,6 +823,7 @@ async function run(): Promise<void> {
           sandbox: "read-only",
           experimentalRawEvents: true,
           persistExtendedHistory: false,
+          dynamicTools: dynamicTools.length > 0 ? dynamicTools : undefined,
         },
         startupRequestTimeoutMs,
       )) as Record<string, unknown>;
@@ -782,6 +846,7 @@ async function run(): Promise<void> {
             sandbox: "read-only",
             experimentalRawEvents: true,
             persistExtendedHistory: false,
+            dynamicTools: dynamicTools.length > 0 ? dynamicTools : undefined,
           },
           startupRequestTimeoutMs,
         )) as Record<string, unknown>;
@@ -854,10 +919,12 @@ async function run(): Promise<void> {
             ? params.tool
             : "tool";
         const args = asToolCallArguments(params.arguments);
-        const isAllowed = allowedToolNames.has(name);
+        const normalizedName = normalizeToolName(name);
+        const mappedName = allowedToolNames.get(normalizedName);
+        const isAllowed = Boolean(mappedName);
         if (isAllowed && !toolCallIds.has(callId)) {
           toolCallIds.add(callId);
-          toolCalls.push({ id: callId, name, arguments: args });
+          toolCalls.push({ id: callId, name: mappedName!, arguments: args });
           toolCallSeenAt = Date.now();
         }
         if (Object.prototype.hasOwnProperty.call(message, "id")) {
@@ -890,9 +957,10 @@ async function run(): Promise<void> {
         }
 
         const call = parseToolCallFromRawItem(params.item);
-        if (call && allowedToolNames.has(call.name) && !toolCallIds.has(call.id)) {
+        const mappedName = call ? allowedToolNames.get(normalizeToolName(call.name)) : undefined;
+        if (call && mappedName && !toolCallIds.has(call.id)) {
           toolCallIds.add(call.id);
-          toolCalls.push(call);
+          toolCalls.push({ ...call, name: mappedName });
           toolCallSeenAt = Date.now();
           continue;
         }
@@ -987,9 +1055,10 @@ async function run(): Promise<void> {
         ? parsedContract.tool_calls
         : [];
       for (const call of parsedToolCalls) {
-        if (allowedToolNames.has(call.name) && !toolCallIds.has(call.id)) {
+        const mappedName = allowedToolNames.get(normalizeToolName(call.name));
+        if (mappedName && !toolCallIds.has(call.id)) {
           toolCallIds.add(call.id);
-          toolCalls.push(call);
+          toolCalls.push({ ...call, name: mappedName });
         }
       }
     }

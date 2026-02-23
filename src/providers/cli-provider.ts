@@ -93,7 +93,8 @@ export class CliProvider implements Provider {
         );
       }
 
-      return this.parseOutput(output.stdout);
+      const parsed = this.parseOutput(output.stdout);
+      return normalizeResultToolCalls(parsed, request.tools);
     } finally {
       await rm(tmpDir, { recursive: true, force: true });
     }
@@ -171,6 +172,73 @@ export class CliProvider implements Provider {
       raw: json,
     };
   }
+}
+
+function normalizeResultToolCalls(
+  result: ProviderResult,
+  tools: UnifiedToolDefinition[],
+): ProviderResult {
+  const allowedToolNames = extractAllowedToolNames(tools);
+  if (result.toolCalls.length === 0) {
+    return result;
+  }
+
+  if (allowedToolNames.size === 0) {
+    return {
+      ...result,
+      toolCalls: [],
+      finishReason: result.finishReason === "tool_calls" ? "stop" : result.finishReason,
+    };
+  }
+
+  const mappedToolCalls: ProviderToolCall[] = [];
+  for (const call of result.toolCalls) {
+    const mappedName = allowedToolNames.get(normalizeToolName(call.name));
+    if (!mappedName) {
+      continue;
+    }
+    mappedToolCalls.push({
+      ...call,
+      name: mappedName,
+    });
+  }
+
+  return {
+    ...result,
+    toolCalls: mappedToolCalls,
+    finishReason:
+      mappedToolCalls.length > 0
+        ? result.finishReason
+        : result.finishReason === "tool_calls"
+          ? "stop"
+          : result.finishReason,
+  };
+}
+
+function extractAllowedToolNames(tools: UnifiedToolDefinition[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const item of tools) {
+    if (!item || item.type !== "function") {
+      continue;
+    }
+    const name = typeof item.function.name === "string" ? item.function.name.trim() : "";
+    if (!name) {
+      continue;
+    }
+    out.set(normalizeToolName(name), name);
+  }
+  return out;
+}
+
+function normalizeToolName(name: string): string {
+  return name
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[\s\-./]+/g, "_")
+    .replace(/[^A-Za-z0-9_]/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
 }
 
 function buildPromptWithTools(prompt: string, tools: UnifiedToolDefinition[]): string {
