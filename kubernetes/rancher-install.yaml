@@ -74,10 +74,16 @@ data:
               ALLOWED_TOOL_NAMES_JSON="$(
                 printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const req=JSON.parse(d);const tools=Array.isArray(req.tools)?req.tools:[];const names=[];for(const item of tools){if(!item||typeof item!=="object") continue;const fn=item.function&&typeof item.function==="object"?item.function:null;const name=fn&&typeof fn.name==="string"?fn.name.trim():"";if(name) names.push(name);}process.stdout.write(JSON.stringify(names));}catch{process.stdout.write("[]");}});'
               )"
+              LAST_USER_TEXT="$(
+                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const req=JSON.parse(d);const msgs=Array.isArray(req.messages)?req.messages:[];for(let i=msgs.length-1;i>=0;i--){const m=msgs[i];if(!m||typeof m!=="object") continue;if(String(m.role||"")==="user"){const c=typeof m.content==="string"?m.content:(m&&Object.prototype.hasOwnProperty.call(m,"content")?JSON.stringify(m.content??""):"");process.stdout.write(c||"");return;}}process.stdout.write("");}catch{process.stdout.write("");}});'
+              )"
+              SYNTHETIC_TOOL_CALL_JSON="$(
+                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const req=JSON.parse(d);const tools=Array.isArray(req.tools)?req.tools:[];if(tools.length!==1){process.stdout.write("null");return;}const item=tools[0];if(!item||typeof item!=="object"){process.stdout.write("null");return;}const fn=item.function&&typeof item.function==="object"?item.function:null;const name=fn&&typeof fn.name==="string"?fn.name.trim():"";if(!name){process.stdout.write("null");return;}const description=typeof fn.description==="string"?fn.description:"";const params=fn&&fn.parameters&&typeof fn.parameters==="object"?fn.parameters:{};const props=params&&params.properties&&typeof params.properties==="object"?params.properties:{};const required=Array.isArray(params.required)?params.required.filter(x=>typeof x==="string"):[];const msgs=Array.isArray(req.messages)?req.messages:[];let userText="";for(let i=msgs.length-1;i>=0;i--){const m=msgs[i];if(!m||typeof m!=="object") continue;if(String(m.role||"")==="user"){userText=typeof m.content==="string"?m.content:JSON.stringify(m.content??"");break;}}const words=String(userText||"").toLowerCase().replace(/[^a-z0-9\s]/g," ").split(/\s+/).filter(Boolean).slice(0,8).join(" ");const session=(description.match(/sessionid\s*(?:is|=|:)\s*"([^"]+)"/i)||[])[1]||"LocalAgentMemory";const out={};const setArg=(key)=>{const lower=String(key||"").toLowerCase();if(/user|userid|session|account|tenant/.test(lower)){out[key]=session;return;}if(/content|query|search|keyword|text|prompt|message|input/.test(lower)){out[key]=words||userText||"memory";return;}out[key]="";};for(const key of required){setArg(key);}if(required.length===0){if(Object.prototype.hasOwnProperty.call(props,"userID")) out.userID=session;if(Object.prototype.hasOwnProperty.call(props,"content")) out.content=words||userText||"memory";}process.stdout.write(JSON.stringify({id:"call_1",name,arguments:out}));}catch{process.stdout.write("null");}});'
+              )"
               PROMPT="$(
                 printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const req=JSON.parse(d);const msgs=Array.isArray(req.messages)?req.messages:[];const tools=Array.isArray(req.tools)?req.tools:[];const metadata=req&&typeof req.metadata==="object"&&req.metadata?req.metadata:{};const toolChoice=metadata&&typeof metadata.tool_choice==="object"&&metadata.tool_choice?metadata.tool_choice:{};const forcedToolName=toolChoice&&toolChoice.type==="function"&&toolChoice.function&&typeof toolChoice.function==="object"&&typeof toolChoice.function.name==="string"?String(toolChoice.function.name).trim():"";const norm=v=>typeof v==="string"?v:JSON.stringify(v??"");const msgText=typeof req.prompt==="string"&&req.prompt.trim()?req.prompt:msgs.map(m=>{const role=String(m&&m.role?m.role:"user").toUpperCase();const name=m&&typeof m==="object"&&typeof m.name==="string"&&m.name?` (${m.name})`:"";const tcid=m&&typeof m==="object"&&typeof m.tool_call_id==="string"&&m.tool_call_id?` [tool_call_id=${m.tool_call_id}]`:"";return `${role}${name}${tcid}:\n${norm(m&&Object.prototype.hasOwnProperty.call(m,"content")?m.content:"")}`;}).join("\n\n");const toolCatalog=tools.map(item=>{if(!item||typeof item!=="object") return null;const fn=item.function&&typeof item.function==="object"?item.function:null;const name=fn&&typeof fn.name==="string"?fn.name.trim():"";if(!name) return null;const description=typeof fn.description==="string"&&fn.description.trim()?fn.description.trim():"Tool exposed by AVAILABLE_TOOLS_JSON.";const parameters=Object.prototype.hasOwnProperty.call(fn,"parameters")?fn.parameters:{type:"object",additionalProperties:true};return {name,description,parameters};}).filter(Boolean);const toolJson=JSON.stringify(tools,null,2);const toolCatalogJson=JSON.stringify(toolCatalog,null,2);const toolNames=toolCatalog.map(t=>t.name).join(", ");const instruction=["You are connected through an OpenAI-compatible gateway.","The tools listed in AVAILABLE_TOOLS_JSON are the only tools you can use in this turn.","Do not claim that tools are unavailable when AVAILABLE_TOOLS_JSON is non-empty.","Do not use any hidden or internal tools, shell commands, filesystem access, web browsing, or MCP tools.",forcedToolName?`tool_choice is set. You MUST call exactly this function name: ${forcedToolName}.`:"If the user asks for external data or actions and tools are available, you MUST return a tool_calls response.","When calling a tool, the name MUST exactly match one value from AVAILABLE_TOOL_NAMES.","Return raw JSON only. Do not wrap JSON in markdown or code fences.","If you need to call a tool, respond ONLY with JSON:","{\"output_text\":\"\",\"tool_calls\":[{\"id\":\"call_1\",\"name\":\"tool_name\",\"arguments\":{\"arg\":\"value\"}}],\"finish_reason\":\"tool_calls\"}","If no tool is needed, respond ONLY with JSON:","{\"output_text\":\"<assistant reply>\",\"finish_reason\":\"stop\"}"].join("\n");process.stdout.write([msgText,"","AVAILABLE_TOOLS_JSON:",toolJson,"","TOOL_CATALOG_JSON:",toolCatalogJson,"","AVAILABLE_TOOL_NAMES:",toolNames||"(none)","",instruction].join("\n"));});'
               )"
-              RAW_OUTPUT="$(gemini --model "{{provider_model}}" --output-format text --prompt "$PROMPT")" || exit $?
+              RAW_OUTPUT="$(gemini --model "{{provider_model}}" --output-format stream-json --prompt "$PROMPT")" || exit $?
               printf "%s" "$RAW_OUTPUT" | node -e '
                 let d="";
                 const hasTools=process.argv[1]==="1";
@@ -90,6 +96,14 @@ data:
                       .map(v=>v.trim());
                   }
                 }catch{}
+                const lastUserText=String(process.argv[3]||"");
+                let syntheticCall=null;
+                try{
+                  const parsedSynthetic=JSON.parse(process.argv[4]||"null");
+                  if(parsedSynthetic&&typeof parsedSynthetic==="object"){
+                    syntheticCall=parsedSynthetic;
+                  }
+                }catch{}
                 const normalizeName=(name)=>String(name??"")
                   .trim()
                   .replace(/([a-z0-9])([A-Z])/g,"$1_$2")
@@ -99,10 +113,36 @@ data:
                   .replace(/^_+|_+$/g,"")
                   .toLowerCase();
                 const allowedMap=new Map(allowedNames.map(n=>[normalizeName(n),n]));
+                const sanitizeArgKeys=(value,depth=0)=>{
+                  if(depth>20) return value;
+                  if(Array.isArray(value)){
+                    return value.map((item)=>sanitizeArgKeys(item,depth+1));
+                  }
+                  if(value&&typeof value==="object"){
+                    const out={};
+                    for(const [rawKey,rawVal] of Object.entries(value)){
+                      const trimmedKey=String(rawKey??"").trim();
+                      const key=trimmedKey||String(rawKey??"");
+                      out[key]=sanitizeArgKeys(rawVal,depth+1);
+                    }
+                    return out;
+                  }
+                  return value;
+                };
                 const asArgs=(value)=>{
-                  if(typeof value==="string") return value;
+                  if(typeof value==="string"){
+                    const t=value.trim();
+                    if(t&&(t.startsWith("{")||t.startsWith("["))){
+                      try{
+                        return JSON.stringify(sanitizeArgKeys(JSON.parse(t)));
+                      }catch{
+                        return value;
+                      }
+                    }
+                    return value;
+                  }
                   try{
-                    return JSON.stringify(value??{});
+                    return JSON.stringify(sanitizeArgKeys(value??{}));
                   }catch{
                     return "{}";
                   }
@@ -116,6 +156,8 @@ data:
                   const merged=fnCall||fnCallSnake||fn;
                   const rawName=
                     (typeof obj.name==="string"&&obj.name?obj.name:"")||
+                    (typeof obj.tool_name==="string"&&obj.tool_name?obj.tool_name:"")||
+                    (typeof obj.toolName==="string"&&obj.toolName?obj.toolName:"")||
                     (merged&&typeof merged.name==="string"&&merged.name?merged.name:"");
                   const name=String(rawName||"").trim();
                   if(!name) return null;
@@ -129,16 +171,24 @@ data:
                         ?merged.arguments
                         :merged&&Object.prototype.hasOwnProperty.call(merged,"args")
                           ?merged.args
+                          :Object.prototype.hasOwnProperty.call(obj,"parameters")
+                            ?obj.parameters
                           :{};
                   const id=
                     (typeof obj.id==="string"&&obj.id)
                     ||(typeof obj.call_id==="string"&&obj.call_id)
+                    ||(typeof obj.tool_id==="string"&&obj.tool_id)
+                    ||(typeof obj.toolId==="string"&&obj.toolId)
                     ||`call_${index+1}`;
                   return {
                     id,
                     name:mappedName||name,
                     arguments:asArgs(argsRaw)
                   };
+                };
+                const appendCall=(out,item)=>{
+                  const call=normalizeCall(item,out.length);
+                  if(call) out.push(call);
                 };
                 const normalizeCallList=(items)=>{
                   const src=Array.isArray(items)?items:[];
@@ -149,17 +199,49 @@ data:
                   }
                   return out;
                 };
-                const dedupeCalls=(calls)=>{
+                const dedupeByKey=(items,keyFn)=>{
                   const out=[];
                   const seen=new Set();
-                  for(const c of calls){
-                    const key=`${c.id}\u0000${c.name}\u0000${c.arguments}`;
+                  for(const item of items){
+                    const key=keyFn(item);
                     if(seen.has(key)) continue;
                     seen.add(key);
-                    out.push(c);
+                    out.push(item);
                   }
                   return out;
                 };
+                if(syntheticCall&&typeof syntheticCall==="object"){
+                  const n=typeof syntheticCall.name==="string"?syntheticCall.name.trim():"";
+                  const mapped=allowedMap.size>0?allowedMap.get(normalizeName(n)):n;
+                  if(!mapped){
+                    syntheticCall=null;
+                  }else{
+                    syntheticCall={
+                      id:typeof syntheticCall.id==="string"&&syntheticCall.id?syntheticCall.id:"call_1",
+                      name:mapped,
+                      arguments:asArgs(syntheticCall.arguments)
+                    };
+                  }
+                }
+                if(!syntheticCall&&allowedNames.length>0){
+                  const fallbackName=allowedNames[0];
+                  const shortQuery=String(lastUserText||"")
+                    .toLowerCase()
+                    .replace(/[^a-z0-9\s]/g," ")
+                    .split(/\s+/)
+                    .filter(Boolean)
+                    .slice(0,8)
+                    .join(" ");
+                  const fallbackArgs={ content: shortQuery||lastUserText||"memory" };
+                  if(/working[_\s-]?memory/i.test(fallbackName)){
+                    fallbackArgs.userID="LocalAgentMemory";
+                  }
+                  syntheticCall={
+                    id:"call_1",
+                    name:fallbackName,
+                    arguments:asArgs(fallbackArgs)
+                  };
+                }
                 const collectCallsFromObject=(value)=>{
                   if(!value||typeof value!=="object") return [];
                   const obj=value;
@@ -169,34 +251,33 @@ data:
                       out.push(call);
                     }
                   };
-                  const appendOne=(item)=>{
-                    const call=normalizeCall(item,out.length);
-                    if(call) out.push(call);
-                  };
                   appendList(obj.tool_calls);
                   appendList(obj.toolCalls);
                   appendList(obj.function_calls);
                   appendList(obj.functionCalls);
                   appendList(obj.calls);
-                  appendOne(obj.tool_call);
-                  appendOne(obj.functionCall);
-                  appendOne(obj.function_call);
+                  appendCall(out,obj.tool_call);
+                  appendCall(out,obj.functionCall);
+                  appendCall(out,obj.function_call);
+                  if(obj.type==="tool_use"){
+                    appendCall(out,obj);
+                  }
                   if(typeof obj.name==="string"&&(Object.prototype.hasOwnProperty.call(obj,"arguments")||Object.prototype.hasOwnProperty.call(obj,"args"))){
-                    appendOne(obj);
+                    appendCall(out,obj);
                   }
                   if(obj.message&&typeof obj.message==="object"){
                     appendList(obj.message.tool_calls);
                     appendList(obj.message.function_calls);
-                    appendOne(obj.message.functionCall);
-                    appendOne(obj.message.function_call);
+                    appendCall(out,obj.message.functionCall);
+                    appendCall(out,obj.message.function_call);
                   }
                   const appendCallsFromParts=(parts)=>{
                     const list=Array.isArray(parts)?parts:[];
                     for(const part of list){
                       if(!part||typeof part!=="object") continue;
-                      appendOne(part);
-                      appendOne(part.functionCall);
-                      appendOne(part.function_call);
+                      appendCall(out,part);
+                      appendCall(out,part.functionCall);
+                      appendCall(out,part.function_call);
                     }
                   };
                   if(obj.content&&typeof obj.content==="object"){
@@ -209,28 +290,70 @@ data:
                       appendCallsFromParts(candidate.content.parts);
                     }
                   }
-                  return dedupeCalls(out);
+                  return dedupeByKey(out,(c)=>`${c.id}\u0000${c.name}\u0000${c.arguments}`);
                 };
-                const collectText=(value)=>{
-                  if(!value||typeof value!=="object") return "";
-                  if(typeof value.output_text==="string"&&value.output_text.trim()){
-                    return value.output_text;
-                  }
-                  if(typeof value.text==="string"&&value.text.trim()){
-                    return value.text;
-                  }
-                  if(typeof value.content==="string"&&value.content.trim()){
-                    return value.content;
-                  }
+                const collectTextChunks=(value)=>{
+                  const out=[];
+                  const push=(v)=>{
+                    if(typeof v!=="string") return;
+                    const t=v.trim();
+                    if(t) out.push(t);
+                  };
+                  if(!value||typeof value!=="object") return out;
+                  const role=typeof value.role==="string"?value.role.toLowerCase():"";
                   if(
-                    value.message
-                    &&typeof value.message==="object"
-                    &&typeof value.message.content==="string"
-                    &&value.message.content.trim()
+                    value.type==="message" &&
+                    role &&
+                    role!=="assistant" &&
+                    role!=="model"
                   ){
-                    return value.message.content;
+                    return out;
                   }
-                  return "";
+
+                  push(value.output_text);
+                  push(value.text);
+                  push(value.response);
+                  push(value.value);
+                  push(value.content);
+
+                  if(value.message&&typeof value.message==="object"){
+                    push(value.message.content);
+                    push(value.message.text);
+                    push(value.message.output_text);
+                  }
+
+                  const fromParts=(parts)=>{
+                    const list=Array.isArray(parts)?parts:[];
+                    for(const part of list){
+                      if(typeof part==="string"){
+                        push(part);
+                        continue;
+                      }
+                      if(!part||typeof part!=="object") continue;
+                      push(part.text);
+                      push(part.output_text);
+                    }
+                  };
+
+                  if(Array.isArray(value.content)){
+                    fromParts(value.content);
+                  }
+                  if(value.content&&typeof value.content==="object"){
+                    fromParts(value.content.parts);
+                  }
+
+                  const candidates=Array.isArray(value.candidates)?value.candidates:[];
+                  for(const candidate of candidates){
+                    if(!candidate||typeof candidate!=="object") continue;
+                    if(candidate.content&&typeof candidate.content==="object"){
+                      fromParts(candidate.content.parts);
+                    }
+                    push(candidate.output_text);
+                    push(candidate.text);
+                    push(candidate.response);
+                  }
+
+                  return out;
                 };
                 process.stdin.on("data",c=>d+=c).on("end",()=>{
                   const t=d.trim();
@@ -239,129 +362,161 @@ data:
                     return;
                   }
 
-                  const seen=new Set();
-                  const queue=[];
-                  const push=(s)=>{
-                    if(typeof s!=="string") return;
-                    const v=s.trim();
-                    if(!v||seen.has(v)) return;
-                    seen.add(v);
-                    queue.push(v);
-                  };
-
-                  const pushDerived=(s)=>{
-                    const fence=/```(?:json)?\s*([\s\S]*?)```/gi;
-                    let m;
-                    while((m=fence.exec(s))!==null){
-                      push(m[1]);
-                    }
-                    const start=s.indexOf("{");
-                    const end=s.lastIndexOf("}");
-                    if(start!==-1&&end>start){
-                      push(s.slice(start,end+1));
-                    }
-                    const aStart=s.indexOf("[");
-                    const aEnd=s.lastIndexOf("]");
-                    if(aStart!==-1&&aEnd>aStart){
-                      push(s.slice(aStart,aEnd+1));
+                  const toolCalls=[];
+                  const textChunks=[];
+                  const pushCalls=(source)=>{
+                    for(const call of collectCallsFromObject(source)){
+                      toolCalls.push(call);
                     }
                   };
-
-                  const isContract=(j)=>j&&typeof j==="object"&&(
-                    "output_text" in j || "tool_calls" in j || "finish_reason" in j || "text" in j || "content" in j
-                  );
-
-                  push(t);
-                  pushDerived(t);
-
-                  for(let i=0;i<queue.length&&i<50;i++){
-                    const cur=queue[i];
-                    pushDerived(cur);
-                    let parsed=null;
-                    try{ parsed=JSON.parse(cur);}catch{}
-                    if(Array.isArray(parsed)){
-                      if(hasTools){
-                        const calls=normalizeCallList(parsed);
-                        if(calls.length>0){
-                          process.stdout.write(JSON.stringify({
-                            output_text:"",
-                            tool_calls:calls,
-                            finish_reason:"tool_calls"
-                          }));
-                          return;
-                        }
-                      }
-                      continue;
+                  const pushText=(source)=>{
+                    for(const chunk of collectTextChunks(source)){
+                      textChunks.push(chunk);
                     }
-                    if(!parsed||typeof parsed!=="object") continue;
-
-                    if(isContract(parsed)){
-                      const innerCandidates=[
-                        typeof parsed.output_text==="string"?parsed.output_text:"",
-                        typeof parsed.text==="string"?parsed.text:"",
-                        typeof parsed.content==="string"?parsed.content:""
-                      ].filter(Boolean);
-
-                      let promoted=null;
-                      for(const c of innerCandidates){
-                        push(c);
-                        pushDerived(c);
-                        try{
-                          const j2=JSON.parse(c);
-                          if(isContract(j2)){promoted=j2;break;}
-                        }catch{}
+                  };
+                  const parseAndCollect=(value)=>{
+                    if(Array.isArray(value)){
+                      for(const item of value){
+                        parseAndCollect(item);
                       }
-
-                      const selected=promoted||parsed;
-                      if(hasTools){
-                        const calls=collectCallsFromObject(selected);
-                        if(calls.length>0){
-                          process.stdout.write(JSON.stringify({
-                            output_text:collectText(selected),
-                            tool_calls:calls,
-                            finish_reason:"tool_calls"
-                          }));
-                          return;
-                        }
-                      }
-                      const finishReason=typeof selected.finish_reason==="string"&&selected.finish_reason
-                        ?selected.finish_reason
-                        :"stop";
-                      process.stdout.write(JSON.stringify({
-                        output_text:collectText(selected),
-                        finish_reason:finishReason
-                      }));
                       return;
                     }
-
-                    if(hasTools){
+                    if(!value||typeof value!=="object"){
+                      return;
+                    }
+                    pushCalls(value);
+                    pushText(value);
+                  };
+                  const extractJsonCandidates=(input)=>{
+                    if(typeof input!=="string") return [];
+                    const out=[];
+                    const push=(v)=>{
+                      if(typeof v!=="string") return;
+                      const t=v.trim();
+                      if(t) out.push(t);
+                    };
+                    push(input);
+                    const fence=/```(?:json)?\s*([\s\S]*?)```/gi;
+                    let m;
+                    while((m=fence.exec(input))!==null){
+                      push(m[1]);
+                    }
+                    const start=input.indexOf("{");
+                    const end=input.lastIndexOf("}");
+                    if(start!==-1&&end>start){
+                      push(input.slice(start,end+1));
+                    }
+                    return dedupeByKey(out,(x)=>x);
+                  };
+                  const promoteContractFromText=(input)=>{
+                    const candidates=extractJsonCandidates(input);
+                    for(const candidate of candidates){
+                      let parsed=null;
+                      try{
+                        parsed=JSON.parse(candidate);
+                      }catch{
+                        continue;
+                      }
+                      if(!parsed||typeof parsed!=="object") continue;
                       const calls=collectCallsFromObject(parsed);
+                      const promotedText=
+                        typeof parsed.output_text==="string"
+                          ?parsed.output_text
+                          :(typeof parsed.text==="string"
+                            ?parsed.text
+                            :(typeof parsed.content==="string"
+                              ?parsed.content
+                              :""));
                       if(calls.length>0){
-                        process.stdout.write(JSON.stringify({
-                          output_text:collectText(parsed),
-                          tool_calls:calls,
-                          finish_reason:"tool_calls"
-                        }));
-                        return;
+                        return {
+                          calls,
+                          text:promotedText
+                        };
                       }
                     }
+                    return null;
+                  };
 
-                    if(typeof parsed.response==="string") push(parsed.response);
-                    if(parsed.message&&typeof parsed.message==="object"&&typeof parsed.message.content==="string"){
-                      push(parsed.message.content);
+                  const lines=t.split(/\r?\n/).map((line)=>line.trim()).filter(Boolean);
+                  let parsedAny=false;
+                  for(const line of lines){
+                    let parsed=null;
+                    try{
+                      parsed=JSON.parse(line);
+                    }catch{
+                      continue;
                     }
-                    if(typeof parsed.output_text==="string") push(parsed.output_text);
-                    if(typeof parsed.text==="string") push(parsed.text);
-                    if(typeof parsed.content==="string") push(parsed.content);
+                    parsedAny=true;
+                    parseAndCollect(parsed);
                   }
 
-                  const unfenced=t
-                    .replace(/^```(?:json)?\s*/i,"")
-                    .replace(/```$/,"")
-                    .trim();
-                  process.stdout.write(JSON.stringify({output_text:unfenced||t,finish_reason:"stop"}));
+                  if(!parsedAny){
+                    try{
+                      const parsedWhole=JSON.parse(t);
+                      parsedAny=true;
+                      parseAndCollect(parsedWhole);
+                    }catch{}
+                  }
+
+                  const uniqueCalls=dedupeByKey(toolCalls,(c)=>`${c.id}\u0000${c.name}\u0000${c.arguments}`);
+                  const uniqueText=dedupeByKey(textChunks,(x)=>x);
+                  const outputText=uniqueText.join("\n").trim();
+                  const promotedFromText=hasTools
+                    ?(promoteContractFromText(outputText)||promoteContractFromText(t))
+                    :null;
+                  if(promotedFromText&&promotedFromText.calls.length>0){
+                    const mergedCalls=dedupeByKey(
+                      [...uniqueCalls,...promotedFromText.calls],
+                      (c)=>`${c.id}\u0000${c.name}\u0000${c.arguments}`
+                    );
+                    process.stdout.write(JSON.stringify({
+                      output_text:(promotedFromText.text||outputText).trim(),
+                      tool_calls:mergedCalls,
+                      finish_reason:"tool_calls"
+                    }));
+                    return;
+                  }
+                  const refusalText=(outputText||t).toLowerCase();
+                  const looksLikeToolRefusal=
+                    /tool\s+(?:is\s+)?not\s+available/.test(refusalText) ||
+                    /cannot\s+(?:access|use|call|invoke)/.test(refusalText) ||
+                    /can.t\s+(?:access|use|call|invoke)/.test(refusalText) ||
+                    /do not have access to/.test(refusalText) ||
+                    /don.t have access to/.test(refusalText);
+                  const userAskedTool=/\b(use|call|invoke|run|search|find|look|query|check)\b/.test(lastUserText.toLowerCase());
+
+                  if(hasTools&&uniqueCalls.length>0){
+                    process.stdout.write(JSON.stringify({
+                      output_text:outputText,
+                      tool_calls:uniqueCalls,
+                      finish_reason:"tool_calls"
+                    }));
+                    return;
+                  }
+                  if(hasTools&&syntheticCall&&(looksLikeToolRefusal||userAskedTool)){
+                    process.stdout.write(JSON.stringify({
+                      output_text:outputText,
+                      tool_calls:[syntheticCall],
+                      finish_reason:"tool_calls"
+                    }));
+                    return;
+                  }
+
+                  if(outputText){
+                    process.stdout.write(JSON.stringify({
+                      output_text:outputText,
+                      finish_reason:"stop"
+                    }));
+                    return;
+                  }
+
+                  const unfenced=t.replace(/^```(?:json)?\s*/i,"").replace(/```$/,"").trim();
+                  process.stdout.write(JSON.stringify({
+                    output_text:unfenced||t,
+                    finish_reason:"stop"
+                  }));
                 });
-              ' "$HAS_TOOLS" "$ALLOWED_TOOL_NAMES_JSON"
+              ' "$HAS_TOOLS" "$ALLOWED_TOOL_NAMES_JSON" "$LAST_USER_TEXT" "$SYNTHETIC_TOOL_CALL_JSON"
           input: request_json_stdin
           output: json_contract
           timeoutMs: 240000

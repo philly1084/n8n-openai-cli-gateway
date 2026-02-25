@@ -178,12 +178,12 @@ function normalizeResultToolCalls(
   result: ProviderResult,
   tools: UnifiedToolDefinition[],
 ): ProviderResult {
-  const allowedToolNames = extractAllowedToolNames(tools);
+  const allowedTools = extractAllowedTools(tools);
   if (result.toolCalls.length === 0) {
     return result;
   }
 
-  if (allowedToolNames.size === 0) {
+  if (allowedTools.size === 0) {
     return {
       ...result,
       toolCalls: [],
@@ -193,13 +193,14 @@ function normalizeResultToolCalls(
 
   const mappedToolCalls: ProviderToolCall[] = [];
   for (const call of result.toolCalls) {
-    const mappedName = allowedToolNames.get(normalizeToolName(call.name));
-    if (!mappedName) {
+    const toolMeta = allowedTools.get(normalizeToolName(call.name));
+    if (!toolMeta) {
       continue;
     }
     mappedToolCalls.push({
       ...call,
-      name: mappedName,
+      name: toolMeta.name,
+      arguments: canonicalizeArgumentsForTool(call.arguments, toolMeta.argumentKeyMap),
     });
   }
 
@@ -215,8 +216,13 @@ function normalizeResultToolCalls(
   };
 }
 
-function extractAllowedToolNames(tools: UnifiedToolDefinition[]): Map<string, string> {
-  const out = new Map<string, string>();
+type AllowedToolMeta = {
+  name: string;
+  argumentKeyMap: Map<string, string>;
+};
+
+function extractAllowedTools(tools: UnifiedToolDefinition[]): Map<string, AllowedToolMeta> {
+  const out = new Map<string, AllowedToolMeta>();
   for (const item of tools) {
     if (!item || item.type !== "function") {
       continue;
@@ -225,7 +231,10 @@ function extractAllowedToolNames(tools: UnifiedToolDefinition[]): Map<string, st
     if (!name) {
       continue;
     }
-    out.set(normalizeToolName(name), name);
+    out.set(normalizeToolName(name), {
+      name,
+      argumentKeyMap: buildArgumentKeyMap(item.function.parameters),
+    });
   }
   return out;
 }
@@ -239,6 +248,67 @@ function normalizeToolName(name: string): string {
     .replace(/_+/g, "_")
     .replace(/^_+|_+$/g, "")
     .toLowerCase();
+}
+
+function normalizeArgumentKey(name: string): string {
+  return normalizeToolName(name);
+}
+
+function buildArgumentKeyMap(parameters: unknown): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!parameters || typeof parameters !== "object") {
+    return out;
+  }
+  const props = (parameters as Record<string, unknown>).properties;
+  if (!props || typeof props !== "object" || Array.isArray(props)) {
+    return out;
+  }
+  for (const key of Object.keys(props as Record<string, unknown>)) {
+    if (!key) {
+      continue;
+    }
+    out.set(normalizeArgumentKey(key), key);
+  }
+  return out;
+}
+
+function canonicalizeArgumentsForTool(
+  rawArgs: string,
+  argumentKeyMap: Map<string, string>,
+): string {
+  if (argumentKeyMap.size === 0) {
+    return rawArgs;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawArgs);
+  } catch {
+    return rawArgs;
+  }
+
+  const sanitized = sanitizeArgumentKeys(parsed);
+  if (!sanitized || typeof sanitized !== "object" || Array.isArray(sanitized)) {
+    try {
+      return JSON.stringify(sanitized ?? {});
+    } catch {
+      return rawArgs;
+    }
+  }
+
+  const out: Record<string, unknown> = {};
+  for (const [rawKey, value] of Object.entries(sanitized as Record<string, unknown>)) {
+    const trimmedKey = String(rawKey ?? "").trim();
+    const canonicalKey =
+      argumentKeyMap.get(normalizeArgumentKey(trimmedKey)) ?? trimmedKey;
+    out[canonicalKey] = value;
+  }
+
+  try {
+    return JSON.stringify(out);
+  } catch {
+    return rawArgs;
+  }
 }
 
 function buildPromptWithTools(prompt: string, tools: UnifiedToolDefinition[]): string {
@@ -333,13 +403,23 @@ function normalizeToolCalls(rawToolCalls: unknown[] | undefined): ProviderToolCa
         ? (obj.function as Record<string, unknown>)
         : undefined;
 
-    const idCandidate = typeof obj.id === "string" && obj.id ? obj.id : undefined;
+    const idCandidate =
+      (typeof obj.id === "string" && obj.id) ||
+      (typeof obj.call_id === "string" && obj.call_id) ||
+      (typeof obj.tool_id === "string" && obj.tool_id) ||
+      (typeof obj.toolId === "string" && obj.toolId) ||
+      undefined;
     const nameCandidate =
       (typeof obj.name === "string" && obj.name) ||
+      (typeof obj.tool_name === "string" && obj.tool_name) ||
+      (typeof obj.toolName === "string" && obj.toolName) ||
       (functionObj && typeof functionObj.name === "string" ? functionObj.name : undefined);
     const argsRaw =
       obj.arguments ??
+      obj.args ??
+      obj.parameters ??
       (functionObj ? functionObj.arguments : undefined) ??
+      (functionObj ? functionObj.args : undefined) ??
       "{}";
 
     const nested = extractNestedToolCall(argsRaw);
@@ -368,12 +448,39 @@ function normalizeToolCalls(rawToolCalls: unknown[] | undefined): ProviderToolCa
   return calls;
 }
 
+function sanitizeArgumentKeys(value: unknown, depth = 0): unknown {
+  if (depth > 20) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeArgumentKeys(item, depth + 1));
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [rawKey, rawVal] of Object.entries(value as Record<string, unknown>)) {
+      const trimmedKey = String(rawKey ?? "").trim();
+      const key = trimmedKey || String(rawKey ?? "");
+      out[key] = sanitizeArgumentKeys(rawVal, depth + 1);
+    }
+    return out;
+  }
+  return value;
+}
+
 function asToolCallArguments(value: unknown): string {
   if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed && (trimmed.startsWith("{") || trimmed.startsWith("["))) {
+      try {
+        return JSON.stringify(sanitizeArgumentKeys(JSON.parse(trimmed)));
+      } catch {
+        return value;
+      }
+    }
     return value;
   }
   try {
-    return JSON.stringify(value ?? {});
+    return JSON.stringify(sanitizeArgumentKeys(value ?? {}));
   } catch {
     return "{}";
   }
@@ -507,13 +614,26 @@ function normalizeToolCallsShallow(
         : undefined;
     const name =
       (typeof obj.name === "string" && obj.name) ||
+      (typeof obj.tool_name === "string" && obj.tool_name) ||
+      (typeof obj.toolName === "string" && obj.toolName) ||
       (fn && typeof fn.name === "string" ? fn.name : "");
     if (!name) {
       continue;
     }
-    const argsRaw = obj.arguments ?? (fn ? fn.arguments : undefined) ?? {};
+    const argsRaw =
+      obj.arguments ??
+      obj.args ??
+      obj.parameters ??
+      (fn ? fn.arguments : undefined) ??
+      (fn ? fn.args : undefined) ??
+      {};
     out.push({
-      id: typeof obj.id === "string" && obj.id ? obj.id : undefined,
+      id:
+        (typeof obj.id === "string" && obj.id) ||
+        (typeof obj.call_id === "string" && obj.call_id) ||
+        (typeof obj.tool_id === "string" && obj.tool_id) ||
+        (typeof obj.toolId === "string" && obj.toolId) ||
+        undefined,
       name,
       arguments: asToolCallArguments(argsRaw),
     });
