@@ -1072,7 +1072,7 @@ data:
               - |
                 echo "Kimi Code CLI login is interactive in this version."
                 echo "Run in a TTY shell: kimi"
-                echo "Then run: /login and complete auth."
+                echo "Then run: /setup and complete auth."
                 exit 1
             timeoutMs: 10000
           statusCommand:
@@ -1084,7 +1084,7 @@ data:
                   echo '{"ok":true,"source":"~/.kimi/config.toml"}'
                   exit 0
                 fi
-                echo '{"ok":false,"error":"missing ~/.kimi/config.toml (run kimi then /login)"}'
+                echo '{"ok":false,"error":"missing ~/.kimi/config.toml (run kimi then /setup)"}'
                 exit 1
             timeoutMs: 30000
       - id: antigravity-cli
@@ -1524,6 +1524,38 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        - name: kimi-bootstrap
+          image: ghcr.io/philly1084/n8n-openai-cli-gateway:main
+          imagePullPolicy: Always
+          command:
+            - sh
+            - -lc
+            - |
+              set -eu
+              export HOME=/var/lib/gateway-home
+              export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+              mkdir -p "$HOME/.local/bin"
+              if [ ! -x "$HOME/.local/bin/uv" ]; then
+                curl -LsSf https://astral.sh/uv/install.sh | sh
+              fi
+              if [ ! -x "$HOME/.local/bin/kimi" ]; then
+                "$HOME/.local/bin/uv" tool install --python 3.13 kimi-cli
+              fi
+              "$HOME/.local/bin/kimi" --version >/dev/null
+          env:
+            - name: HOME
+              value: /var/lib/gateway-home
+            - name: PATH
+              value: /var/lib/gateway-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: provider-home
+              mountPath: /var/lib/gateway-home
       containers:
         - name: gateway
           image: ghcr.io/philly1084/n8n-openai-cli-gateway:main
@@ -1549,6 +1581,8 @@ spec:
               value: /app/config/providers.yaml
             - name: HOME
               value: /var/lib/gateway-home
+            - name: PATH
+              value: /var/lib/gateway-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
             - name: OLLAMA_BASE_URL
               value: "http://ollama.n8n-openai-gateway.svc.cluster.local:11434"
             - name: OLLAMA_NUM_THREAD
