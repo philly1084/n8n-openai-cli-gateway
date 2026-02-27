@@ -193,7 +193,7 @@ function normalizeResultToolCalls(
 
   const mappedToolCalls: ProviderToolCall[] = [];
   for (const call of result.toolCalls) {
-    const toolMeta = allowedTools.get(normalizeToolName(call.name));
+    const toolMeta = resolveAllowedToolMeta(call.name, allowedTools);
     if (!toolMeta) {
       continue;
     }
@@ -220,6 +220,34 @@ type AllowedToolMeta = {
   name: string;
   argumentKeyMap: Map<string, string>;
 };
+
+function normalizeToolAlias(name: string): string {
+  return normalizeToolName(name)
+    .replace(/^(tool_|function_|fn_)+/, "")
+    .replace(/(_tool|_function|_fn|_api|_call)+$/, "");
+}
+
+function resolveAllowedToolMeta(
+  rawName: string,
+  allowedTools: Map<string, AllowedToolMeta>,
+): AllowedToolMeta | null {
+  const direct = allowedTools.get(normalizeToolName(rawName));
+  if (direct) {
+    return direct;
+  }
+
+  const alias = allowedTools.get(normalizeToolAlias(rawName));
+  if (alias) {
+    return alias;
+  }
+
+  if (allowedTools.size === 1) {
+    const only = allowedTools.values().next().value;
+    return only ?? null;
+  }
+
+  return null;
+}
 
 function extractAllowedTools(tools: UnifiedToolDefinition[]): Map<string, AllowedToolMeta> {
   const out = new Map<string, AllowedToolMeta>();

@@ -113,6 +113,42 @@ data:
                   .replace(/^_+|_+$/g,"")
                   .toLowerCase();
                 const allowedMap=new Map(allowedNames.map(n=>[normalizeName(n),n]));
+                const normalizeAlias=(name)=>normalizeName(name)
+                  .replace(/^(tool_|function_|fn_)+/,"")
+                  .replace(/(_tool|_function|_fn|_api|_call)+$/,"");
+                const resolveAllowedName=(name)=>{
+                  const raw=String(name??"").trim();
+                  if(!raw) return "";
+                  if(allowedMap.size===0) return raw;
+                  const direct=allowedMap.get(normalizeName(raw));
+                  if(direct) return direct;
+                  const aliasNorm=normalizeAlias(raw);
+                  if(aliasNorm){
+                    const alias=allowedMap.get(aliasNorm);
+                    if(alias) return alias;
+                  }
+                  if(allowedNames.length===1){
+                    return allowedNames[0];
+                  }
+                  return "";
+                };
+                const getProp=(obj,keyCandidates)=>{
+                  if(!obj||typeof obj!=="object") return undefined;
+                  const source=obj;
+                  for(const key of keyCandidates){
+                    if(Object.prototype.hasOwnProperty.call(source,key)){
+                      return source[key];
+                    }
+                  }
+                  const normalizedCandidates=keyCandidates.map((k)=>normalizeName(k));
+                  for(const [rawKey,val] of Object.entries(source)){
+                    const normalizedRaw=normalizeName(rawKey);
+                    if(normalizedCandidates.includes(normalizedRaw)){
+                      return val;
+                    }
+                  }
+                  return undefined;
+                };
                 const sanitizeArgKeys=(value,depth=0)=>{
                   if(depth>20) return value;
                   if(Array.isArray(value)){
@@ -155,30 +191,23 @@ data:
                   const fnCallSnake=obj.function_call&&typeof obj.function_call==="object"?obj.function_call:null;
                   const merged=fnCall||fnCallSnake||fn;
                   const rawName=
-                    (typeof obj.name==="string"&&obj.name?obj.name:"")||
-                    (typeof obj.tool_name==="string"&&obj.tool_name?obj.tool_name:"")||
-                    (typeof obj.toolName==="string"&&obj.toolName?obj.toolName:"")||
-                    (merged&&typeof merged.name==="string"&&merged.name?merged.name:"");
+                    (typeof getProp(obj,["name"])==="string"&&getProp(obj,["name"])?getProp(obj,["name"]):"")||
+                    (typeof getProp(obj,["tool_name","toolName"])==="string"&&getProp(obj,["tool_name","toolName"])?getProp(obj,["tool_name","toolName"]):"")||
+                    (typeof getProp(merged,["name"])==="string"&&getProp(merged,["name"])?getProp(merged,["name"]):"");
                   const name=String(rawName||"").trim();
                   if(!name) return null;
-                  const mappedName=allowedMap.size>0?allowedMap.get(normalizeName(name)):name;
+                  const mappedName=resolveAllowedName(name);
                   if(allowedMap.size>0&&!mappedName) return null;
-                  const argsRaw=Object.prototype.hasOwnProperty.call(obj,"arguments")
-                    ?obj.arguments
-                    :Object.prototype.hasOwnProperty.call(obj,"args")
-                      ?obj.args
-                      :merged&&Object.prototype.hasOwnProperty.call(merged,"arguments")
-                        ?merged.arguments
-                        :merged&&Object.prototype.hasOwnProperty.call(merged,"args")
-                          ?merged.args
-                          :Object.prototype.hasOwnProperty.call(obj,"parameters")
-                            ?obj.parameters
-                          :{};
+                  const argsFromObj=getProp(obj,["arguments","args","parameters"]);
+                  const argsFromMerged=getProp(merged,["arguments","args","parameters"]);
+                  const argsRaw=argsFromObj!==undefined
+                    ?argsFromObj
+                    :argsFromMerged!==undefined
+                      ?argsFromMerged
+                      :{};
+                  const idFromObj=getProp(obj,["id","call_id","tool_id","toolId"]);
                   const id=
-                    (typeof obj.id==="string"&&obj.id)
-                    ||(typeof obj.call_id==="string"&&obj.call_id)
-                    ||(typeof obj.tool_id==="string"&&obj.tool_id)
-                    ||(typeof obj.toolId==="string"&&obj.toolId)
+                    (typeof idFromObj==="string"&&idFromObj?String(idFromObj).trim():"")
                     ||`call_${index+1}`;
                   return {
                     id,
@@ -212,7 +241,7 @@ data:
                 };
                 if(syntheticCall&&typeof syntheticCall==="object"){
                   const n=typeof syntheticCall.name==="string"?syntheticCall.name.trim():"";
-                  const mapped=allowedMap.size>0?allowedMap.get(normalizeName(n)):n;
+                  const mapped=resolveAllowedName(n);
                   if(!mapped){
                     syntheticCall=null;
                   }else{
