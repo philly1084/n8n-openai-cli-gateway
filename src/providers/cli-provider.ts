@@ -138,7 +138,7 @@ export class CliProvider implements Provider {
     const mode = this.config.responseCommand.output;
     if (mode === "text") {
       // Allow text-mode providers to opt into tool calling by emitting the JSON contract.
-      const contract = tryParseJsonContractSoft(stdout);
+      const contract = tryParseJsonContractFromText(stdout);
       if (contract && (contract.output_text || contract.text || contract.content || contract.tool_calls?.length)) {
         const toolCalls = normalizeToolCalls(contract.tool_calls);
         return {
@@ -164,6 +164,31 @@ export class CliProvider implements Provider {
     const finishReason =
       json.finish_reason ??
       (toolCalls.length > 0 ? "tool_calls" : "stop");
+
+    // Some provider wrappers return a valid outer contract whose output_text is itself
+    // another contract string. Promote the nested contract so callers receive clean text.
+    const nestedContract = tryParseJsonContractFromText(outputText);
+    if (nestedContract) {
+      const nestedToolCalls = normalizeToolCalls(nestedContract.tool_calls);
+      const promotedToolCalls =
+        nestedToolCalls.length > 0 ? nestedToolCalls : toolCalls;
+      const promotedOutputText = (
+        nestedContract.output_text ??
+        nestedContract.text ??
+        nestedContract.content ??
+        outputText
+      ).trim();
+      const promotedFinishReason =
+        nestedContract.finish_reason ??
+        (promotedToolCalls.length > 0 ? "tool_calls" : finishReason);
+
+      return {
+        outputText: promotedOutputText,
+        toolCalls: promotedToolCalls,
+        finishReason: promotedFinishReason,
+        raw: json,
+      };
+    }
 
     return {
       outputText,
@@ -390,6 +415,59 @@ function tryParseJsonContractSoft(stdout: string): JsonContract | null {
   } catch {
     return null;
   }
+}
+
+function tryParseJsonContractFromText(value: string): JsonContract | null {
+  if (!value.trim()) {
+    return null;
+  }
+
+  for (const candidate of extractJsonTextCandidates(value)) {
+    const contract = tryParseJsonContractSoft(candidate);
+    if (!contract) {
+      continue;
+    }
+    if (
+      contract.output_text !== undefined ||
+      contract.text !== undefined ||
+      contract.content !== undefined ||
+      contract.finish_reason !== undefined ||
+      contract.tool_calls !== undefined
+    ) {
+      return contract;
+    }
+  }
+
+  return null;
+}
+
+function extractJsonTextCandidates(input: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      return;
+    }
+    seen.add(trimmed);
+    out.push(trimmed);
+  };
+
+  push(input);
+
+  const fencePattern = /```(?:json)?\s*([\s\S]*?)```/gi;
+  let match: RegExpExecArray | null = null;
+  while ((match = fencePattern.exec(input)) !== null) {
+    push(match[1] ?? "");
+  }
+
+  const firstBrace = input.indexOf("{");
+  const lastBrace = input.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    push(input.slice(firstBrace, lastBrace + 1));
+  }
+
+  return out;
 }
 
 function normalizeContract(value: unknown): JsonContract {
