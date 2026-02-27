@@ -30,7 +30,9 @@ const providersFileSchema = z.object({
           )
           .min(1),
         responseCommand: commandSchema.extend({
-          output: z.enum(["text", "json_contract"]).default("text"),
+          output: z
+            .enum(["text", "text_plain", "text_contract_final_line", "json_contract"])
+            .default("text"),
           input: z.enum(["prompt_stdin", "request_json_stdin"]).default("prompt_stdin"),
         }),
         auth: z

@@ -136,6 +136,33 @@ export class CliProvider implements Provider {
 
   private parseOutput(stdout: string): ProviderResult {
     const mode = this.config.responseCommand.output;
+    if (mode === "text_plain") {
+      return {
+        outputText: stdout.trim(),
+        toolCalls: [],
+        finishReason: "stop",
+      };
+    }
+
+    if (mode === "text_contract_final_line") {
+      const contract = tryParseJsonContractFromFinalLine(stdout);
+      if (contract && (contract.output_text || contract.text || contract.content || contract.tool_calls?.length)) {
+        const toolCalls = normalizeToolCalls(contract.tool_calls);
+        return {
+          outputText: (contract.output_text ?? contract.text ?? contract.content ?? "").trim(),
+          toolCalls,
+          finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
+          raw: contract,
+        };
+      }
+
+      return {
+        outputText: stdout.trim(),
+        toolCalls: [],
+        finishReason: "stop",
+      };
+    }
+
     if (mode === "text") {
       // Allow text-mode providers to opt into tool calling by emitting the JSON contract.
       const contract = tryParseJsonContractFromText(stdout);
@@ -439,6 +466,25 @@ function tryParseJsonContractFromText(value: string): JsonContract | null {
   }
 
   return null;
+}
+
+function extractFinalNonEmptyLine(input: string): string | null {
+  const lines = input.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i]?.trim();
+    if (line) {
+      return line;
+    }
+  }
+  return null;
+}
+
+function tryParseJsonContractFromFinalLine(value: string): JsonContract | null {
+  const finalLine = extractFinalNonEmptyLine(value);
+  if (!finalLine) {
+    return null;
+  }
+  return tryParseJsonContractSoft(finalLine);
 }
 
 function extractJsonTextCandidates(input: string): string[] {

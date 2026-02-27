@@ -177,7 +177,19 @@ x-api-key: <N8N_API_KEY>
 
 `responseCommand.output: text`:
 
-- raw stdout becomes assistant text.
+- legacy text mode: raw stdout is returned as assistant text, but the gateway may
+  promote JSON-like content to a tool-call contract.
+
+`responseCommand.output: text_plain`:
+
+- strict plain text mode: raw stdout becomes assistant text.
+- no JSON/tool-call extraction is attempted.
+
+`responseCommand.output: text_contract_final_line`:
+
+- hybrid strict mode for tool experiments.
+- the gateway only tries to parse the final non-empty line as a JSON contract.
+- if that final line is invalid contract JSON, output is treated as plain text (`finish_reason: "stop"`).
 
 `responseCommand.output: json_contract`:
 
@@ -198,6 +210,11 @@ x-api-key: <N8N_API_KEY>
 ```
 
 The gateway also accepts `responses` follow-up tool input entries of `type: "function_call_output"` and maps them to tool-role messages for the next model turn.
+
+### Gemini provider guidance
+
+- Use `gemini-cli` for reliability (text-only baseline via `text_plain`).
+- Use `gemini-cli-tools` for staged tool-call testing (strict final-line contract via `text_contract_final_line`).
 
 ## Kubernetes
 

@@ -38,7 +38,11 @@ export interface ProviderResult {
   raw?: unknown;
 }
 
-export type CommandOutputMode = "text" | "json_contract";
+export type CommandOutputMode =
+  | "text"
+  | "text_plain"
+  | "text_contract_final_line"
+  | "json_contract";
 export type CommandInputMode = "prompt_stdin" | "request_json_stdin";
 
 export interface CommandSpec {
