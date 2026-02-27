@@ -576,7 +576,7 @@ data:
           - id: kimi-for-coding
             providerModel: kimi-for-coding
           - id: kimi-k2-turbo-preview
-            providerModel: kimi-k2-turbo-preview
+            providerModel: kimi-for-coding
         responseCommand:
           executable: sh
           args:
@@ -598,7 +598,17 @@ data:
               PROMPT="$(
                 printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const req=JSON.parse(d);const msgs=Array.isArray(req.messages)?req.messages:[];const tools=Array.isArray(req.tools)?req.tools:[];const metadata=req&&typeof req.metadata==="object"&&req.metadata?req.metadata:{};const toolChoice=metadata&&typeof metadata.tool_choice==="object"&&metadata.tool_choice?metadata.tool_choice:{};const forcedToolName=toolChoice&&toolChoice.type==="function"&&toolChoice.function&&typeof toolChoice.function==="object"&&typeof toolChoice.function.name==="string"?String(toolChoice.function.name).trim():"";const norm=v=>typeof v==="string"?v:JSON.stringify(v??"");const msgText=typeof req.prompt==="string"&&req.prompt.trim()?req.prompt:msgs.map(m=>{const role=String(m&&m.role?m.role:"user").toUpperCase();const name=m&&typeof m==="object"&&typeof m.name==="string"&&m.name?` (${m.name})`:"";const tcid=m&&typeof m==="object"&&typeof m.tool_call_id==="string"&&m.tool_call_id?` [tool_call_id=${m.tool_call_id}]`:"";return `${role}${name}${tcid}:\n${norm(m&&Object.prototype.hasOwnProperty.call(m,"content")?m.content:"")}`;}).join("\n\n");const toolCatalog=tools.map(item=>{if(!item||typeof item!=="object") return null;const fn=item.function&&typeof item.function==="object"?item.function:null;const name=fn&&typeof fn.name==="string"?fn.name.trim():"";if(!name) return null;const description=typeof fn.description==="string"&&fn.description.trim()?fn.description.trim():"Tool exposed by AVAILABLE_TOOLS_JSON.";const parameters=Object.prototype.hasOwnProperty.call(fn,"parameters")?fn.parameters:{type:"object",additionalProperties:true};return {name,description,parameters};}).filter(Boolean);const toolJson=JSON.stringify(tools,null,2);const toolCatalogJson=JSON.stringify(toolCatalog,null,2);const toolNames=toolCatalog.map(t=>t.name).join(", ");const instruction=["You are connected through an OpenAI-compatible gateway.","The tools listed in AVAILABLE_TOOLS_JSON are the only tools you can use in this turn.","Do not claim that tools are unavailable when AVAILABLE_TOOLS_JSON is non-empty.","Do not use any hidden or internal tools, shell commands, filesystem access, web browsing, or MCP tools.",forcedToolName?`tool_choice is set. You MUST call exactly this function name: ${forcedToolName}.`:"Use tools only when needed for external actions or data. For normal chat tasks including creative writing, respond directly with finish_reason stop.","When calling a tool, the name MUST exactly match one value from AVAILABLE_TOOL_NAMES.","Return raw JSON only. Do not wrap JSON in markdown or code fences.","If you need to call a tool, respond ONLY with JSON:","{\"output_text\":\"\",\"tool_calls\":[{\"id\":\"call_1\",\"name\":\"tool_name\",\"arguments\":{\"arg\":\"value\"}}],\"finish_reason\":\"tool_calls\"}","If no tool is needed, respond ONLY with JSON:","{\"output_text\":\"<assistant reply>\",\"finish_reason\":\"stop\"}"].join("\n");process.stdout.write([msgText,"","AVAILABLE_TOOLS_JSON:",toolJson,"","TOOL_CATALOG_JSON:",toolCatalogJson,"","AVAILABLE_TOOL_NAMES:",toolNames||"(none)","",instruction].join("\n"));});'
               )"
-              RAW_OUTPUT="$(kimi --print --model "{{provider_model}}" --output-format=stream-json --prompt "$PROMPT")" || exit $?
+              export HOME="${HOME:-/var/lib/gateway-home}"
+              export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+              KIMI_CONFIG_FILE="$HOME/.kimi/config.toml"
+              if [ ! -f "$KIMI_CONFIG_FILE" ] && [ -f "$HOME/.kimi/config.json" ]; then
+                KIMI_CONFIG_FILE="$HOME/.kimi/config.json"
+              fi
+              if [ -f "$KIMI_CONFIG_FILE" ]; then
+                RAW_OUTPUT="$(kimi --config-file "$KIMI_CONFIG_FILE" --print --model "{{provider_model}}" --output-format=stream-json --prompt "$PROMPT")" || exit $?
+              else
+                RAW_OUTPUT="$(kimi --print --model "{{provider_model}}" --output-format=stream-json --prompt "$PROMPT")" || exit $?
+              fi
               printf "%s" "$RAW_OUTPUT" | node -e '
                 let d="";
                 const hasTools=process.argv[1]==="1";
