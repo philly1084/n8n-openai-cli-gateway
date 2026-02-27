@@ -513,6 +513,9 @@ data:
                     /do not have access to/.test(refusalText) ||
                     /don.t have access to/.test(refusalText);
                   const userAskedTool=/\b(use|call|invoke|run|search|find|look|query|check)\b/.test(lastUserText.toLowerCase());
+                  const looksLikeToolCapabilitySummary=
+                    /\b(i can help|i can assist|i can)\b/.test(refusalText) &&
+                    /\b(tool|tools|working memory|deep research|ssh)\b/.test(refusalText);
 
                   if(hasTools&&uniqueCalls.length>0){
                     process.stdout.write(JSON.stringify({
@@ -522,7 +525,7 @@ data:
                     }));
                     return;
                   }
-                  if(hasTools&&syntheticCall&&userAskedTool){
+                  if(hasTools&&syntheticCall&&(userAskedTool||looksLikeToolRefusal||looksLikeToolCapabilitySummary)){
                     process.stdout.write(JSON.stringify({
                       output_text:outputText,
                       tool_calls:[syntheticCall],
@@ -1038,6 +1041,9 @@ data:
                     /do not have access to/.test(refusalText) ||
                     /don.t have access to/.test(refusalText);
                   const userAskedTool=/\b(use|call|invoke|run|search|find|look|query|check)\b/.test(lastUserText.toLowerCase());
+                  const looksLikeToolCapabilitySummary=
+                    /\b(i can help|i can assist|i can)\b/.test(refusalText) &&
+                    /\b(tool|tools|working memory|deep research|ssh)\b/.test(refusalText);
 
                   if(hasTools&&uniqueCalls.length>0){
                     process.stdout.write(JSON.stringify({
@@ -1047,7 +1053,7 @@ data:
                     }));
                     return;
                   }
-                  if(hasTools&&syntheticCall&&userAskedTool){
+                  if(hasTools&&syntheticCall&&(userAskedTool||looksLikeToolRefusal||looksLikeToolCapabilitySummary)){
                     process.stdout.write(JSON.stringify({
                       output_text:outputText,
                       tool_calls:[syntheticCall],
