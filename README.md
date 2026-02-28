@@ -12,6 +12,7 @@ OpenAI-compatible gateway for n8n that exposes:
 - `POST /v1/messages` (alias of chat completions)
 - `POST /v1/message` (alias of chat completions)
 - `POST /v1/responses`
+- `POST /v1/images/generations`
 - `GET /v1/models`
 
 Also exposed under `/openai/v1/*` for in-cluster compatibility URLs.
@@ -215,6 +216,35 @@ The gateway also accepts `responses` follow-up tool input entries of `type: "fun
 
 - Use `gemini-cli` for reliability (text-only baseline via `text_plain`).
 - Use `gemini-cli-tools` for staged tool-call testing (strict final-line contract via `text_contract_final_line`).
+
+### Image generation provider output
+
+`POST /v1/images/generations` runs the selected CLI model and maps provider output to OpenAI image response format.
+
+Accepted provider output patterns:
+
+- plain URL text: `https://...`
+- plain data URL text: `data:image/png;base64,...`
+- JSON object/array in text:
+  - `{"data":[{"url":"https://..."}]}`
+  - `{"data":[{"b64_json":"..."}]}`
+  - `[{"url":"https://..."}]`
+  - `{"images":[{"b64_json":"...","revised_prompt":"..."}]}`
+
+Returned shape:
+
+```json
+{
+  "created": 0,
+  "data": [
+    {
+      "url": "https://...",
+      "b64_json": "...",
+      "revised_prompt": "optional"
+    }
+  ]
+}
+```
 
 ## Kubernetes
 

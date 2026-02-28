@@ -146,6 +146,55 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
       return handleModelError(reply, error);
     }
   });
+
+  app.post("/images/generations", async (request, reply) => {
+    const body = request.body as Record<string, unknown> | undefined;
+    if (!body) {
+      return sendOpenAiError(reply, 400, "Body is required.");
+    }
+
+    const model = typeof body.model === "string" ? body.model.trim() : "";
+    if (!model) {
+      return sendOpenAiError(reply, 400, "model is required.");
+    }
+
+    const prompt = extractTextContent(body.prompt);
+    if (!prompt.trim()) {
+      return sendOpenAiError(reply, 400, "prompt is required.");
+    }
+
+    const nRaw = body.n;
+    const n =
+      typeof nRaw === "number" && Number.isInteger(nRaw) && nRaw > 0
+        ? Math.min(nRaw, 10)
+        : 1;
+
+    try {
+      const result = await options.registry.runModel(model, {
+        requestId: makeId("req"),
+        messages: [{ role: "user", content: prompt }],
+        tools: [],
+        metadata: body,
+      });
+
+      const images = parseImageGenerations(result.outputText);
+      if (images.length === 0) {
+        return sendOpenAiError(
+          reply,
+          500,
+          "Provider returned no parseable image data.",
+          "provider_error",
+        );
+      }
+
+      return {
+        created: Math.floor(Date.now() / 1000),
+        data: images.slice(0, n),
+      };
+    } catch (error) {
+      return handleModelError(reply, error);
+    }
+  });
 };
 
 async function handleChatCompletionsRequest(
@@ -499,4 +548,143 @@ function handleModelError(reply: FastifyReply, error: unknown): FastifyReply {
   const message =
     error instanceof Error ? error.message : "Unexpected provider execution error.";
   return sendOpenAiError(reply, 500, message, "provider_error");
+}
+
+type OpenAiImageItem = {
+  url?: string;
+  b64_json?: string;
+  revised_prompt?: string;
+};
+
+function parseImageGenerations(text: string): OpenAiImageItem[] {
+  const direct = normalizeImagePayload(text.trim());
+  if (direct.length > 0) {
+    return direct;
+  }
+
+  for (const candidate of extractJsonCandidates(text)) {
+    const parsed = normalizeImagePayload(candidate);
+    if (parsed.length > 0) {
+      return parsed;
+    }
+  }
+
+  return [];
+}
+
+function extractJsonCandidates(input: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      return;
+    }
+    seen.add(trimmed);
+    out.push(trimmed);
+  };
+
+  push(input);
+
+  const fence = /```(?:json)?\s*([\s\S]*?)```/gi;
+  let match: RegExpExecArray | null;
+  while ((match = fence.exec(input)) !== null) {
+    push(match[1] ?? "");
+  }
+
+  const start = input.indexOf("{");
+  const end = input.lastIndexOf("}");
+  if (start !== -1 && end > start) {
+    push(input.slice(start, end + 1));
+  }
+
+  return out;
+}
+
+function normalizeImagePayload(raw: unknown): OpenAiImageItem[] {
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return [];
+    }
+
+    const parsed = tryParseJson(trimmed);
+    if (parsed !== null) {
+      return normalizeImagePayload(parsed);
+    }
+
+    const dataUrlMatch = /^data:image\/[a-zA-Z0-9.+-]+;base64,(.+)$/i.exec(trimmed);
+    if (dataUrlMatch && dataUrlMatch[1]) {
+      return [{ b64_json: dataUrlMatch[1] }];
+    }
+
+    if (/^https?:\/\//i.test(trimmed)) {
+      return [{ url: trimmed }];
+    }
+
+    return [];
+  }
+
+  if (Array.isArray(raw)) {
+    return raw.flatMap((item) => normalizeImageItem(item)).filter(isImageItem);
+  }
+
+  if (!raw || typeof raw !== "object") {
+    return [];
+  }
+
+  const obj = raw as Record<string, unknown>;
+  if (Array.isArray(obj.data)) {
+    return obj.data.flatMap((item) => normalizeImageItem(item)).filter(isImageItem);
+  }
+
+  if (Array.isArray(obj.images)) {
+    return obj.images.flatMap((item) => normalizeImageItem(item)).filter(isImageItem);
+  }
+
+  const single = normalizeImageItem(obj);
+  return single ? [single] : [];
+}
+
+function normalizeImageItem(raw: unknown): OpenAiImageItem | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const obj = raw as Record<string, unknown>;
+  const url = typeof obj.url === "string" ? obj.url.trim() : "";
+  const b64 =
+    typeof obj.b64_json === "string"
+      ? obj.b64_json.trim()
+      : typeof obj.base64 === "string"
+        ? obj.base64.trim()
+        : "";
+  const revisedPrompt =
+    typeof obj.revised_prompt === "string"
+      ? obj.revised_prompt
+      : typeof obj.revisedPrompt === "string"
+        ? obj.revisedPrompt
+        : undefined;
+
+  if (!url && !b64) {
+    return null;
+  }
+
+  return {
+    url: url || undefined,
+    b64_json: b64 || undefined,
+    revised_prompt: revisedPrompt,
+  };
+}
+
+function isImageItem(value: OpenAiImageItem | null): value is OpenAiImageItem {
+  return Boolean(value && (value.url || value.b64_json));
+}
+
+function tryParseJson(value: string): unknown | null {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
 }
