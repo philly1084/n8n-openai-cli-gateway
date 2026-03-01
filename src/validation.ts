@@ -10,16 +10,21 @@ const chatMessageSchema = z.object({
   tool_call_id: z.string().optional(),
 });
 
-// Tool definition validation
-const toolFunctionSchema = z.object({
-  name: z.string(),
+// Tool definition validation - flexible schema to allow various tool formats
+// The actual normalization happens in the route handlers
+const toolDefinitionSchema = z.object({
+  type: z.literal("function").optional(),
+  function: z
+    .object({
+      name: z.string().optional(),
+      description: z.string().optional(),
+      parameters: z.unknown().optional(),
+    })
+    .optional(),
+  // Allow other properties that the normalization logic handles
+  name: z.string().optional(),
   description: z.string().optional(),
   parameters: z.unknown().optional(),
-});
-
-const toolDefinitionSchema = z.object({
-  type: z.literal("function"),
-  function: toolFunctionSchema,
 });
 
 // Chat completions request schema
