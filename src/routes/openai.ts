@@ -142,6 +142,15 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
       }
 
       for (const call of result.toolCalls) {
+        // Log tool calls for debugging
+        app.log.debug(
+          {
+            tool_call_id: call.id,
+            tool_name: call.name,
+            tool_arguments: call.arguments.slice(0, 500),
+          },
+          "Returning tool call"
+        );
         output.push({
           type: "function_call",
           id: call.id,
@@ -275,6 +284,20 @@ async function handleChatCompletionsRequest(
       tools,
       metadata: body as Record<string, unknown>,
     });
+
+    // Log tool calls for debugging
+    if (result.toolCalls.length > 0) {
+      for (const call of result.toolCalls) {
+        reply.log.debug(
+          {
+            tool_call_id: call.id,
+            tool_name: call.name,
+            tool_arguments: call.arguments.slice(0, 500),
+          },
+          "Returning chat completion tool call"
+        );
+      }
+    }
 
     return {
       id: makeId("chatcmpl"),
