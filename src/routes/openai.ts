@@ -481,11 +481,35 @@ function normalizeResponsesInput(raw: unknown): ChatMessage[] {
     const callId =
       typeof record.call_id === "string"
         ? record.call_id
-        : typeof record.id === "string"
-          ? record.id
-          : undefined;
+        : typeof record.tool_call_id === "string"
+          ? record.tool_call_id
+          : typeof record.id === "string"
+            ? record.id
+            : undefined;
     const outputText = extractTextContent(
       record.output ?? record.content ?? record.text ?? "",
+    );
+    return [
+      {
+        role: "tool",
+        content: outputText,
+        tool_call_id: callId,
+      },
+    ];
+  }
+
+  // Handle tool role directly (n8n sometimes sends this)
+  if (role === "tool" || record.type === "tool_result") {
+    const callId =
+      typeof record.tool_call_id === "string"
+        ? record.tool_call_id
+        : typeof record.call_id === "string"
+          ? record.call_id
+          : typeof record.id === "string"
+            ? record.id
+            : undefined;
+    const outputText = extractTextContent(
+      record.content ?? record.output ?? record.text ?? "",
     );
     return [
       {

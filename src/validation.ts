@@ -8,7 +8,10 @@ const chatMessageSchema = z.object({
   content: z.unknown(),
   name: z.string().optional(),
   tool_call_id: z.string().optional(),
-});
+  tool_calls: z.unknown().optional(),
+  tool_call: z.unknown().optional(),
+  function_call: z.unknown().optional(),
+}).passthrough();
 
 // Tool definition validation - flexible schema to allow various tool formats
 // The actual normalization happens in the route handlers
@@ -42,18 +45,22 @@ export const chatCompletionsRequestSchema = z.object({
   user: z.string().optional(),
 });
 
-// Responses API input item schema
+// Responses API input item schema - flexible for n8n compatibility
 const responseInputItemSchema = z.union([
   z.string(),
   z.object({
     role: chatRoleSchema.optional(),
-    type: z.enum(["input_text", "function_call_output", "message"]).optional(),
+    type: z.enum(["input_text", "function_call_output", "message", "tool_result"]).optional(),
     text: z.string().optional(),
     content: z.unknown().optional(),
     call_id: z.string().optional(),
     id: z.string().optional(),
     output: z.unknown().optional(),
-  }),
+    name: z.string().optional(),
+    arguments: z.unknown().optional(),
+    tool_call_id: z.string().optional(),
+    // Allow additional properties for flexibility
+  }).passthrough(),
 ]);
 
 // Responses API request schema
