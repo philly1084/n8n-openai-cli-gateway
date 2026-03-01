@@ -165,6 +165,41 @@ All endpoints are also available under `/openai/v1/*` for in-cluster compatibili
 | `GET /admin/rate-limits` | Get rate limits for all providers |
 | `GET /admin/rate-limits/:providerId` | Get rate limits for specific provider |
 
+#### CLI Execution Endpoints (Software Development Workflows)
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /admin/cli/exec` | Execute arbitrary CLI command |
+| `POST /admin/cli/git/clone` | Clone a git repository |
+| `POST /admin/cli/git/commit` | Commit changes to git |
+| `POST /admin/cli/git/push` | Push changes to remote |
+| `POST /admin/cli/docker/build` | Build Docker image |
+| `POST /admin/cli/kubectl/apply` | Apply Kubernetes manifests |
+| `GET /admin/cli/jobs` | List CLI execution jobs |
+| `GET /admin/cli/jobs/:id` | Get CLI job status and output |
+
+**Allowed Commands:** git, docker, kubectl, helm, npm, node, python, make, terraform, aws, gcloud, az, and standard Unix utilities.
+
+**Example - Clone and Deploy:**
+```bash
+# Clone repository
+curl -X POST http://localhost:8080/admin/cli/git/clone \
+  -H "x-admin-key: <key>" \
+  -d '{"repo": "https://github.com/user/app.git", "dir": "./app"}'
+
+# Build Docker image
+curl -X POST http://localhost:8080/admin/cli/docker/build \
+  -H "x-admin-key: <key>" \
+  -d '{"tag": "myapp:v1", "context": "./app", "cwd": "."}'
+
+# Deploy to Kubernetes
+curl -X POST http://localhost:8080/admin/cli/kubectl/apply \
+  -H "x-admin-key: <key>" \
+  -d '{"dir": "./app/k8s", "namespace": "production"}'
+```
+| `GET /admin/rate-limits` | Get rate limits for all providers |
+| `GET /admin/rate-limits/:providerId` | Get rate limits for specific provider |
+
 ### Health Check
 
 | Endpoint | Description |

@@ -235,7 +235,56 @@ curl -H "x-api-key: <key>" http://localhost:8080/healthz -v
 # < x-request-id: req_abc123...
 ```
 
-## 7) Point n8n at this gateway
+## 7) CLI Execution for Software Development
+
+The gateway includes endpoints to execute CLI commands for automated software development workflows. This allows n8n to trigger git operations, Docker builds, and Kubernetes deployments programmatically.
+
+### Available Commands
+
+- **Git**: `clone`, `commit`, `push`
+- **Docker**: `build`, `push`
+- **Kubernetes**: `kubectl apply`, `helm install`
+- **Build tools**: `npm`, `node`, `make`, `terraform`
+- **General**: Any command in the allowed whitelist
+
+### Example Workflow
+
+Clone a repository, build a Docker image, and deploy to Kubernetes:
+
+```bash
+# 1. Clone repository
+curl -X POST http://localhost:8080/admin/cli/git/clone \
+  -H "x-admin-key: <admin-key>" \
+  -d '{"repo": "https://github.com/user/myapp.git", "dir": "myapp"}'
+
+# 2. Build Docker image
+curl -X POST http://localhost:8080/admin/cli/docker/build \
+  -H "x-admin-key: <admin-key>" \
+  -d '{"tag": "ghcr.io/user/myapp:v1.0.0", "context": "./myapp"}'
+
+# 3. Push to registry
+curl -X POST http://localhost:8080/admin/cli/exec \
+  -H "x-admin-key: <admin-key>" \
+  -d '{"command": "docker", "args": ["push", "ghcr.io/user/myapp:v1.0.0"]}'
+
+# 4. Deploy to Kubernetes
+curl -X POST http://localhost:8080/admin/cli/kubectl/apply \
+  -H "x-admin-key: <admin-key>" \
+  -d '{"dir": "./myapp/k8s", "namespace": "production"}'
+```
+
+### Check Job Status
+
+All CLI commands run asynchronously. Get the job ID from the response and poll for results:
+
+```bash
+curl http://localhost:8080/admin/cli/jobs/cli_abc123 \
+  -H "x-admin-key: <admin-key>"
+```
+
+Response includes `stdout`, `stderr`, `exitCode`, and `status` (running/completed/failed/timed_out).
+
+## 8) Point n8n at this gateway
 
 In n8n OpenAI credentials:
 
