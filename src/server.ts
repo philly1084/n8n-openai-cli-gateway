@@ -6,6 +6,7 @@ import { JobManager } from "./jobs/job-manager";
 import { ProviderRegistry } from "./providers/registry";
 import { LruMap } from "./utils/lru-map";
 import { makeId } from "./utils/ids";
+import { metrics, trackRequest } from "./metrics";
 
 // Rate limit configuration constants
 const RATE_LIMIT_STORE_MAX_SIZE = 10000;
@@ -93,6 +94,22 @@ export function buildServer(config: AppConfig, registry: ProviderRegistry) {
     const requestId = makeId("req");
     request.headers["x-request-id"] = requestId;
     reply.header("x-request-id", requestId);
+    // Store start time for metrics
+    (request as unknown as Record<string, number>).startTime = Date.now();
+  });
+
+  // Track request metrics
+  app.addHook("onResponse", async (request, reply) => {
+    const startTime = (request as unknown as Record<string, number>).startTime;
+    if (startTime) {
+      const duration = Date.now() - startTime;
+      trackRequest(
+        request.method,
+        request.url,
+        reply.statusCode,
+        duration,
+      );
+    }
   });
 
   // Rate limiting hook for OpenAI routes
@@ -122,6 +139,24 @@ export function buildServer(config: AppConfig, registry: ProviderRegistry) {
     ts: new Date().toISOString(),
     requestId: request.headers["x-request-id"],
   }));
+
+  // Prometheus metrics endpoint (admin only)
+  app.get("/metrics", async (request, reply) => {
+    // Check admin authorization
+    const xAdmin = request.headers["x-admin-key"];
+    const authorization = request.headers.authorization;
+    const isAdmin = 
+      (typeof xAdmin === "string" && xAdmin === config.adminApiKey) ||
+      (authorization && authorization.toLowerCase().startsWith("bearer ") && 
+       authorization.slice("bearer ".length).trim() === config.adminApiKey);
+    
+    if (!isAdmin) {
+      return reply.status(401).send({ error: "Unauthorized" });
+    }
+    
+    reply.header("Content-Type", "text/plain");
+    return metrics.export();
+  });
 
   app.register(openAiRoutes, {
     prefix: "/v1",

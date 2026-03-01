@@ -6,6 +6,7 @@ import type {
 import { ModelStatsTracker } from "../stats/model-stats";
 import { CliProvider } from "./cli-provider";
 import type { Provider } from "./provider";
+import { trackProvider, trackFallback } from "../metrics";
 
 interface ModelBinding {
   modelId: string;
@@ -152,6 +153,7 @@ export class ProviderRegistry {
           attemptIndex,
           durationMs: Date.now() - startedAt,
         });
+        trackProvider(binding.provider.id, binding.modelId, true, Date.now() - startedAt);
         return result;
       } catch (error) {
         lastError = error;
@@ -164,6 +166,7 @@ export class ProviderRegistry {
           durationMs: Date.now() - startedAt,
           error,
         });
+        trackProvider(binding.provider.id, binding.modelId, false, Date.now() - startedAt);
         const nextModelId = binding.fallbackModelIds.find((fallback) => !visited.has(fallback));
         if (!nextModelId) {
           break;
@@ -174,6 +177,7 @@ export class ProviderRegistry {
           toModelId: nextModelId,
           reason: failureKind,
         });
+        trackFallback(binding.provider.id, nextModelId, failureKind);
         currentModelId = nextModelId;
       }
     }
