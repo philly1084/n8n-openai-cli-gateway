@@ -14,6 +14,7 @@ type: Opaque
 stringData:
   n8nApiKey: "replace-with-long-random-n8n-key"
   adminApiKey: "replace-with-long-random-admin-key"
+  geminiApiKey: "replace-with-gemini-api-key-for-nanobanana-extension"
 ---
 apiVersion: v1
 kind: Secret
@@ -52,6 +53,12 @@ data:
         type: cli
         description: Gemini CLI adapter (text-only baseline)
         models:
+          - id: gemini-2.5-flash-image
+            providerModel: gemini-2.5-flash-image
+            fallbackModels:
+              - gemini-3-pro-image-preview
+          - id: gemini-3-pro-image-preview
+            providerModel: gemini-3-pro-image-preview
           - id: gemini-3.1-pro-preview
             providerModel: gemini-3.1-pro-preview
           - id: gemini-3.1-flash-preview
@@ -99,10 +106,134 @@ data:
                   && echo '{"ok":true,"source":"oauth_creds.json"}' \
                   || (echo '{"ok":false,"error":"missing ~/.gemini/oauth_creds.json"}' && exit 1)
             timeoutMs: 30000
+      - id: gemini-cli-nanobanana-image
+        type: cli
+        description: Gemini CLI + Nano Banana image generation adapter
+        models:
+          - id: gemini-2.5-flash-image-nb
+            providerModel: gemini-2.5-flash-image
+            fallbackModels:
+              - gemini-3-pro-image-preview-nb
+          - id: gemini-3-pro-image-preview-nb
+            providerModel: gemini-3-pro-image-preview
+        responseCommand:
+          executable: sh
+          args:
+            - -lc
+            - |
+              set -eu
+              REQUEST_JSON="$(cat)"
+              HOME="${HOME:-/var/lib/gateway-home}"
+              export HOME
+              export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+              export NANOBANANA_MODEL="{{provider_model}}"
+
+              if ! command -v gemini >/dev/null 2>&1; then
+                echo "gemini CLI not found in PATH." >&2
+                exit 1
+              fi
+
+              EXT_LIST="$(gemini extensions list 2>&1 || true)"
+              if ! printf "%s" "$EXT_LIST" | grep -Eqi "nanobanana|nano[[:space:]]*banana"; then
+                echo "nanobanana extension not found; attempting install..." >&2
+                printf "y\n" | gemini extensions install nanobanana >/tmp/nanobanana-install.log 2>&1 || true
+              fi
+              EXT_LIST="$(gemini extensions list 2>&1 || true)"
+              if ! printf "%s" "$EXT_LIST" | grep -Eqi "nanobanana|nano[[:space:]]*banana"; then
+                printf "y\n" | gemini extensions install https://github.com/gemini-cli-extensions/nanobanana >/tmp/nanobanana-install.log 2>&1 || true
+              fi
+              EXT_LIST="$(gemini extensions list 2>&1 || true)"
+              if ! printf "%s" "$EXT_LIST" | grep -Eqi "nanobanana|nano[[:space:]]*banana"; then
+                if grep -Eqi "already installed" /tmp/nanobanana-install.log 2>/dev/null; then
+                  EXT_LIST="nanobanana (detected via install log: already installed)"
+                else
+                  echo "nanobanana extension is not installed after automatic install attempts." >&2
+                  cat /tmp/nanobanana-install.log >&2 || true
+                  echo "extensions list output:" >&2
+                  printf "%s\n" "$EXT_LIST" >&2
+                  exit 1
+                fi
+              fi
+
+              if ! printf "%s" "$EXT_LIST" | grep -Eqi "nanobanana|nano[[:space:]]*banana"; then
+                echo "nanobanana extension is not installed after automatic install attempts." >&2
+                cat /tmp/nanobanana-install.log >&2 || true
+                exit 1
+              fi
+
+              mkdir -p "$HOME/.gemini/policies"
+              cat > "$HOME/.gemini/policies/90-nanobanana-allow.toml" <<'EOF'
+              [[rule]]
+              toolName = "generate_image"
+              decision = "allow"
+              priority = 200
+
+              [[rule]]
+              toolName = "nanobanana__generate_image"
+              decision = "allow"
+              priority = 200
+
+              [[rule]]
+              toolName = "nanobanana__*"
+              decision = "allow"
+              priority = 190
+              EOF
+
+              NB_PROMPT="$(
+                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const req=JSON.parse(d);const msgs=Array.isArray(req.messages)?req.messages:[];let userPrompt="";for(let i=msgs.length-1;i>=0;i--){const m=msgs[i];if(m&&typeof m==="object"&&String(m.role||"")==="user"){userPrompt=typeof m.content==="string"?m.content:JSON.stringify(m.content??"");break;}}const md=req&&typeof req.metadata==="object"&&req.metadata?req.metadata:{};const promptFromMeta=typeof md.prompt==="string"?md.prompt:"";const size=typeof md.size==="string"&&md.size.trim()?md.size.trim():"";const prompt=(promptFromMeta||userPrompt||"Generate an image").trim();const sizeLine=size?`Requested output size: ${size}.`:"";const out=["Use the Nano Banana extension to generate exactly one image for this request.",sizeLine,`Prompt: ${prompt}`,"Do not return markdown image links. Keep text brief."].filter(Boolean).join("\n");process.stdout.write(out);}catch{process.stdout.write("Generate exactly one image using the Nano Banana extension.");}});'
+              )"
+
+              RUN_DIR="$(mktemp -d "$HOME/nanobanana-run-XXXXXX")"
+              mkdir -p "$RUN_DIR/nanobanana-output" "$HOME/nanobanana-output"
+              cd "$RUN_DIR"
+
+              gemini --model "gemini-2.5-pro" --prompt "$NB_PROMPT" >/tmp/gemini-nb-out.txt
+
+              IMAGE_PATH="$(
+                find "$RUN_DIR/nanobanana-output" "$HOME/nanobanana-output" 2>/dev/null -type f \( -name "*.png" -o -name "*.jpg" -o -name "*.jpeg" -o -name "*.webp" \) \
+                  | xargs -r ls -1t 2>/dev/null \
+                  | head -n 1
+              )"
+
+              if [ -z "$IMAGE_PATH" ]; then
+                echo "Nano Banana did not produce an image file. gemini output:" >&2
+                cat /tmp/gemini-nb-out.txt >&2 || true
+                exit 1
+              fi
+
+              B64_IMAGE="$(base64 "$IMAGE_PATH" | tr -d '\n')"
+              printf "%s" "$B64_IMAGE" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const b64=String(d||"").trim();process.stdout.write(JSON.stringify({data:[{b64_json:b64}]}));});'
+          input: request_json_stdin
+          output: text_plain
+          timeoutMs: 240000
+        auth:
+          loginCommand:
+            executable: sh
+            args:
+              - -c
+              - |
+                echo "Gemini CLI login is interactive in this version."
+                echo "Run in a TTY shell: gemini"
+                echo "Then run: /auth and choose Login with Google."
+                exit 1
+            timeoutMs: 10000
+          statusCommand:
+            executable: sh
+            args:
+              - -c
+              - |
+                test -f "$HOME/.gemini/oauth_creds.json" \
+                  && echo '{"ok":true,"source":"oauth_creds.json"}' \
+                  || (echo '{"ok":false,"error":"missing ~/.gemini/oauth_creds.json"}' && exit 1)
+            timeoutMs: 30000
       - id: gemini-cli-tools
         type: cli
         description: Gemini CLI adapter (strict final-line tool contract)
         models:
+          - id: gemini-2.5-flash-image-tools
+            providerModel: gemini-2.5-flash-image
+          - id: gemini-3-pro-image-preview-tools
+            providerModel: gemini-3-pro-image-preview
           - id: gemini-3.1-pro-preview-tools
             providerModel: gemini-3.1-pro-preview
           - id: gemini-3.1-flash-preview-tools
@@ -1232,6 +1363,40 @@ spec:
           volumeMounts:
             - name: provider-home
               mountPath: /var/lib/gateway-home
+        - name: gemini-nanobanana-bootstrap
+          image: ghcr.io/philly1084/n8n-openai-cli-gateway:main
+          imagePullPolicy: Always
+          command:
+            - sh
+            - -lc
+            - |
+              set -eu
+              export HOME=/var/lib/gateway-home
+              export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+              if ! command -v gemini >/dev/null 2>&1; then
+                echo "gemini CLI not found; skipping nanobanana bootstrap."
+                exit 0
+              fi
+              EXT_LIST="$(gemini extensions list 2>&1 || true)"
+              if printf "%s" "$EXT_LIST" | grep -Eqi "nanobanana|nano[[:space:]]*banana"; then
+                echo "nanobanana extension already installed."
+                exit 0
+              fi
+              printf "y\n" | gemini extensions install https://github.com/gemini-cli-extensions/nanobanana || \
+              printf "y\n" | gemini extensions install nanobanana || true
+          env:
+            - name: HOME
+              value: /var/lib/gateway-home
+            - name: PATH
+              value: /var/lib/gateway-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: provider-home
+              mountPath: /var/lib/gateway-home
       containers:
         - name: gateway
           image: ghcr.io/philly1084/n8n-openai-cli-gateway:main
@@ -1287,6 +1452,26 @@ spec:
                 secretKeyRef:
                   name: n8n-openai-cli-gateway-secrets
                   key: adminApiKey
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: n8n-openai-cli-gateway-secrets
+                  key: geminiApiKey
+            - name: GOOGLE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: n8n-openai-cli-gateway-secrets
+                  key: geminiApiKey
+            - name: NANOBANANA_GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: n8n-openai-cli-gateway-secrets
+                  key: geminiApiKey
+            - name: NANOBANANA_GOOGLE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: n8n-openai-cli-gateway-secrets
+                  key: geminiApiKey
           volumeMounts:
             - name: providers-config
               mountPath: /app/config/providers.yaml

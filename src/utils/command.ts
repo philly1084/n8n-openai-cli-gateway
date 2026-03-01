@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import type { CommandSpec } from "../types";
-import { applyTemplate, applyTemplateRecord } from "./template";
+import { applyTemplate, applyTemplateRecord, checkShellSafety, type TemplateOptions } from "./template.js";
 
 export interface ResolvedCommand {
   executable: string;
@@ -18,15 +18,36 @@ export interface CommandOutput {
   timedOut: boolean;
 }
 
+export interface ResolveCommandOptions extends TemplateOptions {
+  /** Optional logger for shell safety warnings */
+  logger?: {
+    warn: (msg: string, meta?: Record<string, unknown>) => void;
+  };
+}
+
 export function resolveCommand(
   spec: CommandSpec,
   vars: Record<string, string>,
+  options: ResolveCommandOptions = {},
 ): ResolvedCommand {
+  const { logger, ...templateOptions } = options;
+
+  // Check for shell safety issues and log warnings
+  if (logger) {
+    const warnings = checkShellSafety(vars);
+    for (const warning of warnings) {
+      logger.warn(warning.warning, {
+        variable: warning.key,
+        valuePreview: warning.value,
+      });
+    }
+  }
+
   return {
-    executable: applyTemplate(spec.executable, vars),
-    args: spec.args.map((arg) => applyTemplate(arg, vars)),
-    env: applyTemplateRecord(spec.env, vars),
-    cwd: spec.cwd ? applyTemplate(spec.cwd, vars) : undefined,
+    executable: applyTemplate(spec.executable, vars, templateOptions),
+    args: spec.args.map((arg) => applyTemplate(arg, vars, templateOptions)),
+    env: applyTemplateRecord(spec.env, vars, templateOptions),
+    cwd: spec.cwd ? applyTemplate(spec.cwd, vars, templateOptions) : undefined,
     timeoutMs: spec.timeoutMs,
   };
 }

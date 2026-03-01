@@ -1,8 +1,14 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
+import { z } from "zod";
 import type { ProviderRegistry } from "../providers/registry";
 import type { ChatMessage, UnifiedToolDefinition } from "../types";
 import { makeId } from "../utils/ids";
 import { extractTextContent } from "../utils/prompt";
+import {
+  chatCompletionsRequestSchema,
+  responsesRequestSchema,
+  imageGenerationsRequestSchema,
+} from "../validation";
 
 interface OpenAiRoutesOptions {
   registry: ProviderRegistry;
@@ -20,46 +26,49 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
     }
   });
 
-  app.get("/models", async () => {
-    return {
-      object: "list",
-      data: options.registry.listModels().map((model) => ({
-        id: model.id,
-        object: "model",
-        created: 0,
-        owned_by: model.providerId,
-      })),
-    };
-  });
+  app.get("/models", async () => ({
+    object: "list",
+    data: options.registry.listModels().map((model) => ({
+      id: model.id,
+      object: "model",
+      created: 0,
+      owned_by: model.providerId,
+    })),
+  }));
 
   app.post("/chat/completions", async (request, reply) => {
-    const body = request.body as Record<string, unknown> | undefined;
-    return await handleChatCompletionsRequest(body, reply, options.registry);
+    const validationResult = validateBody(request.body, chatCompletionsRequestSchema);
+    if (!validationResult.success) {
+      return sendOpenAiError(reply, 400, validationResult.error, "invalid_request_error");
+    }
+    return await handleChatCompletionsRequest(validationResult.data, reply, options.registry);
   });
 
   app.post("/messages", async (request, reply) => {
-    const body = request.body as Record<string, unknown> | undefined;
-    return await handleChatCompletionsRequest(body, reply, options.registry);
+    const validationResult = validateBody(request.body, chatCompletionsRequestSchema);
+    if (!validationResult.success) {
+      return sendOpenAiError(reply, 400, validationResult.error, "invalid_request_error");
+    }
+    return await handleChatCompletionsRequest(validationResult.data, reply, options.registry);
   });
 
   app.post("/message", async (request, reply) => {
-    const body = request.body as Record<string, unknown> | undefined;
-    return await handleChatCompletionsRequest(body, reply, options.registry);
+    const validationResult = validateBody(request.body, chatCompletionsRequestSchema);
+    if (!validationResult.success) {
+      return sendOpenAiError(reply, 400, validationResult.error, "invalid_request_error");
+    }
+    return await handleChatCompletionsRequest(validationResult.data, reply, options.registry);
   });
 
   app.post("/responses", async (request, reply) => {
-    const body = request.body as Record<string, unknown> | undefined;
-    if (!body) {
-      return sendOpenAiError(reply, 400, "Body is required.");
+    const validationResult = validateBody(request.body, responsesRequestSchema);
+    if (!validationResult.success) {
+      return sendOpenAiError(reply, 400, validationResult.error, "invalid_request_error");
     }
 
-    const model = typeof body.model === "string" ? body.model : "";
-    if (!model) {
-      return sendOpenAiError(reply, 400, "model is required.");
-    }
+    const body = validationResult.data;
 
-    const stream = body.stream === true;
-    if (stream) {
+    if (body.stream) {
       return sendOpenAiError(
         reply,
         400,
@@ -68,8 +77,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
     }
 
     const inputMessages = normalizeResponsesInput(body.input);
-    const instructions =
-      typeof body.instructions === "string" ? body.instructions.trim() : "";
+    const instructions = body.instructions?.trim() ?? "";
 
     const messages: ChatMessage[] = [];
     if (instructions) {
@@ -84,24 +92,24 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
       return sendOpenAiError(reply, 400, "input or instructions must be provided.");
     }
 
-    const rawTools = body.tools ?? body.functions;
-    const tools = normalizeTools(rawTools ?? body);
-    if (tools.length === 0 && rawTools !== undefined) {
+    const rawTools = body.tools ?? [];
+    const tools = normalizeTools(rawTools);
+    if (tools.length === 0 && rawTools.length > 0) {
       app.log.warn(
         {
-          model,
-          tool_payload_type: Array.isArray(rawTools) ? "array" : typeof rawTools,
+          model: body.model,
+          tool_payload_type: "array",
         },
         "No tools normalized from /responses request payload.",
       );
     }
 
     try {
-      const result = await options.registry.runModel(model, {
+      const result = await options.registry.runModel(body.model, {
         requestId: makeId("req"),
         messages,
         tools,
-        metadata: body,
+        metadata: body as Record<string, unknown>,
       });
 
       const output: unknown[] = [];
@@ -133,7 +141,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
         object: "response",
         created_at: Math.floor(Date.now() / 1000),
         status: "completed",
-        model,
+        model: body.model,
         output_text: result.outputText,
         output,
         usage: {
@@ -148,33 +156,26 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
   });
 
   app.post("/images/generations", async (request, reply) => {
-    const body = request.body as Record<string, unknown> | undefined;
-    if (!body) {
-      return sendOpenAiError(reply, 400, "Body is required.");
+    const validationResult = validateBody(request.body, imageGenerationsRequestSchema);
+    if (!validationResult.success) {
+      return sendOpenAiError(reply, 400, validationResult.error, "invalid_request_error");
     }
 
-    const model = typeof body.model === "string" ? body.model.trim() : "";
-    if (!model) {
-      return sendOpenAiError(reply, 400, "model is required.");
-    }
-
+    const body = validationResult.data;
     const prompt = extractTextContent(body.prompt);
+
     if (!prompt.trim()) {
       return sendOpenAiError(reply, 400, "prompt is required.");
     }
 
-    const nRaw = body.n;
-    const n =
-      typeof nRaw === "number" && Number.isInteger(nRaw) && nRaw > 0
-        ? Math.min(nRaw, 10)
-        : 1;
+    const n = Math.min(body.n ?? 1, 10);
 
     try {
-      const result = await options.registry.runModel(model, {
+      const result = await options.registry.runModel(body.model, {
         requestId: makeId("req"),
         messages: [{ role: "user", content: prompt }],
         tools: [],
-        metadata: body,
+        metadata: body as Record<string, unknown>,
       });
 
       const images = parseImageGenerations(result.outputText);
@@ -197,22 +198,37 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
   });
 };
 
+interface ValidationResult<T> {
+  success: true;
+  data: T;
+}
+
+interface ValidationError {
+  success: false;
+  error: string;
+}
+
+function validateBody<T>(
+  body: unknown,
+  schema: z.ZodSchema<T>,
+): ValidationResult<T> | ValidationError {
+  const result = schema.safeParse(body);
+  if (!result.success) {
+    const issues = result.error.issues.map((issue) => {
+      const path = issue.path.length > 0 ? issue.path.join(".") : "root";
+      return `${path}: ${issue.message}`;
+    });
+    return { success: false, error: issues.join("; ") };
+  }
+  return { success: true, data: result.data };
+}
+
 async function handleChatCompletionsRequest(
-  body: Record<string, unknown> | undefined,
+  body: z.infer<typeof chatCompletionsRequestSchema>,
   reply: FastifyReply,
   registry: ProviderRegistry,
 ) {
-  if (!body) {
-    return sendOpenAiError(reply, 400, "Body is required.");
-  }
-
-  const model = typeof body.model === "string" ? body.model : "";
-  if (!model) {
-    return sendOpenAiError(reply, 400, "model is required.");
-  }
-
-  const stream = body.stream === true;
-  if (stream) {
+  if (body.stream) {
     return sendOpenAiError(
       reply,
       400,
@@ -225,31 +241,31 @@ async function handleChatCompletionsRequest(
     return sendOpenAiError(reply, 400, "messages must include at least one item.");
   }
 
-  const rawTools = body.tools ?? body.functions;
-  const tools = normalizeTools(rawTools ?? body);
-  if (tools.length === 0 && rawTools !== undefined) {
+  const rawTools = body.tools ?? [];
+  const tools = normalizeTools(rawTools);
+  if (tools.length === 0 && rawTools.length > 0) {
     reply.log.warn(
       {
-        model,
-        tool_payload_type: Array.isArray(rawTools) ? "array" : typeof rawTools,
+        model: body.model,
+        tool_payload_type: "array",
       },
       "No tools normalized from chat request payload.",
     );
   }
 
   try {
-    const result = await registry.runModel(model, {
+    const result = await registry.runModel(body.model, {
       requestId: makeId("req"),
       messages,
       tools,
-      metadata: body,
+      metadata: body as Record<string, unknown>,
     });
 
     return {
       id: makeId("chatcmpl"),
       object: "chat.completion",
       created: Math.floor(Date.now() / 1000),
-      model,
+      model: body.model,
       choices: [
         {
           index: 0,
@@ -280,7 +296,7 @@ async function handleChatCompletionsRequest(
   }
 }
 
-function normalizeTools(raw: unknown): UnifiedToolDefinition[] {
+function normalizeTools(raw: unknown[]): UnifiedToolDefinition[] {
   const items = normalizeToolItems(raw);
   if (items.length === 0) {
     return [];
@@ -311,7 +327,7 @@ function normalizeTools(raw: unknown): UnifiedToolDefinition[] {
   return tools;
 }
 
-function normalizeToolItems(raw: unknown): unknown[] {
+function normalizeToolItems(raw: unknown[]): unknown[] {
   if (Array.isArray(raw)) {
     return raw;
   }
@@ -408,7 +424,7 @@ function firstDefined(...candidates: unknown[]): unknown {
   return undefined;
 }
 
-function normalizeChatMessages(raw: unknown): ChatMessage[] {
+function normalizeChatMessages(raw: unknown[]): ChatMessage[] {
   if (!Array.isArray(raw)) {
     return [];
   }

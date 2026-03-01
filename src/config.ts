@@ -96,6 +96,33 @@ export function loadAppConfig(): AppConfig {
     throw new Error(`Invalid MAX_JOB_LOG_LINES: ${maxJobLogLinesRaw}`);
   }
 
+  // Graceful shutdown timeout (default: 30 seconds)
+  const shutdownTimeoutMsRaw = process.env.SHUTDOWN_TIMEOUT_MS?.trim() || "30000";
+  const shutdownTimeoutMs = Number(shutdownTimeoutMsRaw);
+  if (!Number.isInteger(shutdownTimeoutMs) || shutdownTimeoutMs < 1000) {
+    throw new Error(`Invalid SHUTDOWN_TIMEOUT_MS: ${shutdownTimeoutMsRaw}`);
+  }
+
+  // Rate limiting configuration
+  const rateLimitMaxRaw = process.env.RATE_LIMIT_MAX?.trim() || "100";
+  const rateLimitMax = Number(rateLimitMaxRaw);
+  if (!Number.isInteger(rateLimitMax) || rateLimitMax < 1) {
+    throw new Error(`Invalid RATE_LIMIT_MAX: ${rateLimitMaxRaw}`);
+  }
+
+  const rateLimitWindowMsRaw = process.env.RATE_LIMIT_WINDOW_MS?.trim() || "60000";
+  const rateLimitWindowMs = Number(rateLimitWindowMsRaw);
+  if (!Number.isInteger(rateLimitWindowMs) || rateLimitWindowMs < 1000) {
+    throw new Error(`Invalid RATE_LIMIT_WINDOW_MS: ${rateLimitWindowMsRaw}`);
+  }
+
+  // Request body size limit (default: 10MB)
+  const maxRequestBodySizeRaw = process.env.MAX_REQUEST_BODY_SIZE?.trim() || "10485760";
+  const maxRequestBodySize = Number(maxRequestBodySizeRaw);
+  if (!Number.isInteger(maxRequestBodySize) || maxRequestBodySize < 1024) {
+    throw new Error(`Invalid MAX_REQUEST_BODY_SIZE: ${maxRequestBodySizeRaw}`);
+  }
+
   return {
     host,
     port,
@@ -104,6 +131,10 @@ export function loadAppConfig(): AppConfig {
     adminApiKey,
     logLevel,
     maxJobLogLines,
+    shutdownTimeoutMs,
+    rateLimitMax,
+    rateLimitWindowMs,
+    maxRequestBodySize,
   };
 }
 

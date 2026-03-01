@@ -89,6 +89,13 @@ export interface AppConfig {
   providersPath: string;
   logLevel: "trace" | "debug" | "info" | "warn" | "error" | "fatal";
   maxJobLogLines: number;
+  // Graceful shutdown timeout in milliseconds
+  shutdownTimeoutMs: number;
+  // Rate limiting configuration
+  rateLimitMax: number;
+  rateLimitWindowMs: number;
+  // Request body size limit in bytes
+  maxRequestBodySize: number;
 }
 
 export interface AuthStatusResult {

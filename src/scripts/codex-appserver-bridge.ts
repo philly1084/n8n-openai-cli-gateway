@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import process from "node:process";
+import { normalizeToolName } from "../utils/tools";
 
 interface GatewayMessage {
   role?: unknown;
@@ -235,17 +236,6 @@ function normalizeValue(value: unknown): string {
 
 function parseRequest(input: string): GatewayRequest {
   return JSON.parse(input) as GatewayRequest;
-}
-
-function normalizeToolName(name: string): string {
-  return name
-    .trim()
-    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-    .replace(/[\s\-./]+/g, "_")
-    .replace(/[^A-Za-z0-9_]/g, "_")
-    .replace(/_+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .toLowerCase();
 }
 
 function extractAllowedToolNames(request: GatewayRequest): Map<string, string> {

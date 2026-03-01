@@ -13,6 +13,7 @@ import type {
 } from "../types";
 import { runCommand, resolveCommand } from "../utils/command";
 import { buildPrompt } from "../utils/prompt";
+import { normalizeToolName, normalizeToolAlias, normalizeArgumentKey } from "../utils/tools";
 import type { Provider } from "./provider";
 
 interface JsonContract {
@@ -70,7 +71,10 @@ export class CliProvider implements Provider {
     };
 
     try {
-      const resolved = resolveCommand(this.config.responseCommand, vars);
+      const resolved = resolveCommand(this.config.responseCommand, vars, {
+        escapeShell: true,
+        logger: console,
+      });
       const stdinPayload =
         this.config.responseCommand.input === "request_json_stdin"
           ? JSON.stringify(requestPayload)
@@ -273,11 +277,7 @@ type AllowedToolMeta = {
   argumentKeyMap: Map<string, string>;
 };
 
-function normalizeToolAlias(name: string): string {
-  return normalizeToolName(name)
-    .replace(/^(tool_|function_|fn_)+/, "")
-    .replace(/(_tool|_function|_fn|_api|_call)+$/, "");
-}
+
 
 function resolveAllowedToolMeta(
   rawName: string,
@@ -319,20 +319,7 @@ function extractAllowedTools(tools: UnifiedToolDefinition[]): Map<string, Allowe
   return out;
 }
 
-function normalizeToolName(name: string): string {
-  return name
-    .trim()
-    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-    .replace(/[\s\-./]+/g, "_")
-    .replace(/[^A-Za-z0-9_]/g, "_")
-    .replace(/_+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .toLowerCase();
-}
 
-function normalizeArgumentKey(name: string): string {
-  return normalizeToolName(name);
-}
 
 function buildArgumentKeyMap(parameters: unknown): Map<string, string> {
   const out = new Map<string, string>();
