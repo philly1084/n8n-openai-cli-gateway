@@ -29,6 +29,12 @@ Model execution is delegated to configurable CLI providers (Gemini via OpenCode 
 ## Project layout
 
 - `src/` API server, provider system, auth/login job manager.
+  - `routes/` OpenAI-compatible and admin API endpoints.
+  - `providers/` Provider interface, CLI implementation, and registry.
+  - `jobs/` Background login job execution.
+  - `stats/` Model health tracking and failure classification.
+  - `scripts/` CLI tools and bridges (codex-appserver-bridge, gateway-cli).
+  - `utils/` Command execution, ID generation, prompt building, template replacement.
 - `config/providers.example.yaml` provider command templates.
 - `kubernetes/` deployment/config examples.
 - `Dockerfile` production container build.
@@ -51,7 +57,7 @@ Each provider defines:
 
 - `models` exposed to n8n.
 - `responseCommand` to run model inference.
-- optional `auth.loginCommand` and `auth.statusCommand`.
+- optional `auth.loginCommand`, `auth.statusCommand`, and `auth.rateLimitCommand`.
 - optional per-model `fallbackModels` list of model ids to try when a provider command fails.
 
 Supported template variables in commands:
@@ -153,7 +159,83 @@ curl http://localhost:8080/admin/stats/models/gpt-5-codex \
   -H "x-admin-key: replace-me-admin"
 ```
 
-## 4) Point n8n at this gateway
+Check rate limits for all providers:
+
+```bash
+curl http://localhost:8080/admin/rate-limits \
+  -H "x-admin-key: replace-me-admin"
+```
+
+Check rate limits for specific provider:
+
+```bash
+curl http://localhost:8080/admin/rate-limits/gemini-cli \
+  -H "x-admin-key: replace-me-admin"
+```
+
+## 4) Gateway CLI Tool
+
+A CLI tool is included for querying the gateway from the command line:
+
+```bash
+# Check health
+npx tsx dist/scripts/gateway-cli.js health
+
+# List providers (shows which support rate limiting)
+npx tsx dist/scripts/gateway-cli.js providers -k <admin-key>
+
+# Check all rate limits
+npx tsx dist/scripts/gateway-cli.js rate-limits -k <admin-key>
+
+# Check specific provider rate limits
+npx tsx dist/scripts/gateway-cli.js rate-limits -k <admin-key> -p gemini-cli
+
+# Output as JSON
+npx tsx dist/scripts/gateway-cli.js rate-limits -k <admin-key> -f json
+```
+
+Environment variables for CLI:
+- `GATEWAY_URL` - Gateway URL (default: http://localhost:8080)
+- `ADMIN_API_KEY` - Admin API key
+
+## 5) Environment Variables
+
+### Required
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `N8N_API_KEY` or `N8N_API_KEYS` | API key(s) for n8n access (comma-separated for multiple) | `sk-n8n-xxx` |
+| `ADMIN_API_KEY` | API key for admin endpoints | `sk-admin-xxx` |
+| `PROVIDERS_CONFIG_PATH` | Path to providers.yaml | `config/providers.yaml` |
+
+### Optional
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HOST` | `0.0.0.0` | Server bind address |
+| `PORT` | `8080` | Server port |
+| `LOG_LEVEL` | `info` | Fastify log level (trace/debug/info/warn/error/fatal) |
+| `MAX_JOB_LOG_LINES` | `300` | Max log lines to retain per login job |
+| `SHUTDOWN_TIMEOUT_MS` | `30000` | Graceful shutdown timeout (milliseconds) |
+| `RATE_LIMIT_MAX` | `100` | Max requests per rate limit window |
+| `RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window (milliseconds) |
+| `MAX_REQUEST_BODY_SIZE` | `10485760` | Max request body size in bytes (10MB) |
+
+## 6) Request Tracing
+
+The gateway generates a unique `x-request-id` for every request. This ID is:
+- Returned in the response header
+- Included in error responses
+- Logged with request details (at debug level)
+
+Use this for tracing requests through logs:
+
+```bash
+curl -H "x-api-key: <key>" http://localhost:8080/healthz -v
+# < x-request-id: req_abc123...
+```
+
+## 7) Point n8n at this gateway
 
 In n8n OpenAI credentials:
 

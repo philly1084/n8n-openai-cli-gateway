@@ -23,9 +23,10 @@ src/
 ├── server.ts             # Fastify server setup, route registration, error handling
 ├── config.ts             # Environment-based configuration and providers.yaml parsing
 ├── types.ts              # TypeScript type definitions for all domain objects
+├── validation.ts         # Zod schemas for request validation
 ├── routes/
 │   ├── openai.ts         # OpenAI-compatible API endpoints (/v1/*, /openai/v1/*)
-│   └── admin.ts          # Admin endpoints for provider management, login jobs, stats
+│   └── admin.ts          # Admin endpoints for provider management, login jobs, stats, rate limits
 ├── providers/
 │   ├── provider.ts       # Provider interface definition
 │   ├── cli-provider.ts   # CLI-based provider implementation with output parsing
@@ -35,12 +36,16 @@ src/
 ├── stats/
 │   └── model-stats.ts    # Model health tracking, failure classification, cooldown logic
 ├── scripts/
-│   └── codex-appserver-bridge.ts  # JSON-RPC bridge for Codex app-server mode
+│   ├── codex-appserver-bridge.ts  # JSON-RPC bridge for Codex app-server mode
+│   └── gateway-cli.ts    # CLI tool for querying gateway health and rate limits
 └── utils/
     ├── command.ts        # Command execution with template variable substitution
     ├── ids.ts            # ID generation utilities
+    ├── lru-map.ts        # LRU cache implementation for rate limiting
     ├── prompt.ts         # Message-to-prompt conversion and text extraction
-    └── template.ts       # Mustache-style template string replacement
+    ├── shell.ts          # Shell escaping utilities for security
+    ├── template.ts       # Mustache-style template string replacement
+    └── tools.ts          # Tool name normalization utilities
 
 config/
 └── providers.example.yaml  # Example provider configuration template
@@ -92,6 +97,10 @@ npm start
 | `PORT` | `8080` | Server port |
 | `LOG_LEVEL` | `info` | Fastify log level (trace/debug/info/warn/error/fatal) |
 | `MAX_JOB_LOG_LINES` | `300` | Max log lines to retain per login job |
+| `SHUTDOWN_TIMEOUT_MS` | `30000` | Graceful shutdown timeout (milliseconds) |
+| `RATE_LIMIT_MAX` | `100` | Max requests per rate limit window |
+| `RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window (milliseconds) |
+| `MAX_REQUEST_BODY_SIZE` | `10485760` | Max request body size in bytes (10MB) |
 
 ### Provider Configuration (providers.yaml)
 
@@ -111,6 +120,11 @@ Providers are configured via YAML. Each provider defines:
 - `{{request_file}}` - Path to temp request JSON
 - `{{request_id}}` - Unique request ID
 - `{{provider_id}}` - Provider ID
+
+**Auth Commands:**
+- `auth.loginCommand` - OAuth/login flow command
+- `auth.statusCommand` - Check authentication status
+- `auth.rateLimitCommand` - Check provider rate limits/quota (optional)
 
 **Output Modes:**
 - `text`: Raw stdout with optional JSON contract detection
@@ -148,6 +162,8 @@ All endpoints are also available under `/openai/v1/*` for in-cluster compatibili
 | `GET /admin/jobs/:id` | Get login job details and logs |
 | `GET /admin/stats/models` | Get model health/fallback statistics |
 | `GET /admin/stats/models/:id` | Get single model statistics |
+| `GET /admin/rate-limits` | Get rate limits for all providers |
+| `GET /admin/rate-limits/:providerId` | Get rate limits for specific provider |
 
 ### Health Check
 
@@ -195,7 +211,7 @@ This project does not include automated test suites. Testing is performed via:
 
 1. **API Key Separation**: n8n API keys and admin API keys are completely separate. Never expose admin endpoints to n8n.
 
-2. **Command Injection Prevention**: Command arguments are templated but not shell-escaped. Ensure provider configuration files are writable only by administrators.
+2. **Command Injection Prevention**: The gateway shell-escapes user-controlled variables (like `{{prompt}}`) when used in shell contexts. However, provider configuration files should still be writable only by administrators.
 
 3. **Credential Persistence**: In Kubernetes, `HOME` is mounted to a PVC at `/var/lib/gateway-home`. Provider CLIs store credentials here.
 
