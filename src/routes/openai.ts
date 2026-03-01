@@ -39,6 +39,13 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
   app.post("/chat/completions", async (request, reply) => {
     const validationResult = validateBody(request.body, chatCompletionsRequestSchema);
     if (!validationResult.success) {
+      request.log.warn(
+        { 
+          error: validationResult.error,
+          body: typeof request.body === "object" ? JSON.stringify(request.body).slice(0, 2000) : String(request.body)
+        },
+        "Chat completions validation failed"
+      );
       return sendOpenAiError(reply, 400, validationResult.error, "invalid_request_error");
     }
     return await handleChatCompletionsRequest(validationResult.data, reply, options.registry);
@@ -63,6 +70,14 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
   app.post("/responses", async (request, reply) => {
     const validationResult = validateBody(request.body, responsesRequestSchema);
     if (!validationResult.success) {
+      // Log the failing request body for debugging
+      request.log.warn(
+        { 
+          error: validationResult.error,
+          body: typeof request.body === "object" ? JSON.stringify(request.body).slice(0, 2000) : String(request.body)
+        },
+        "Responses API validation failed"
+      );
       return sendOpenAiError(reply, 400, validationResult.error, "invalid_request_error");
     }
 
@@ -456,6 +471,10 @@ function normalizeChatMessages(raw: unknown[]): ChatMessage[] {
 function normalizeResponsesInput(raw: unknown): ChatMessage[] {
   if (typeof raw === "string") {
     return [{ role: "user", content: raw }];
+  }
+
+  if (raw === null || raw === undefined) {
+    return [];
   }
 
   if (Array.isArray(raw)) {
