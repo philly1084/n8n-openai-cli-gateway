@@ -39,6 +39,7 @@ const providersFileSchema = z.object({
           .object({
             loginCommand: commandSchema.optional(),
             statusCommand: commandSchema.optional(),
+            rateLimitCommand: commandSchema.optional(),
           })
           .optional(),
       }),

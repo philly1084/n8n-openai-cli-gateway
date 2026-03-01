@@ -4,14 +4,21 @@ import { adminRoutes } from "./routes/admin";
 import { openAiRoutes } from "./routes/openai";
 import { JobManager } from "./jobs/job-manager";
 import { ProviderRegistry } from "./providers/registry";
+import { LruMap } from "./utils/lru-map";
+import { makeId } from "./utils/ids";
 
-// Simple in-memory rate limit store
+// Rate limit configuration constants
+const RATE_LIMIT_STORE_MAX_SIZE = 10000;
+const RATE_LIMIT_CLEANUP_INTERVAL_MS = 60000;
+const REQUEST_TIMEOUT_MS = 300000; // 5 minutes
+
+// LRU-based rate limit store to prevent memory leaks
 interface RateLimitEntry {
   count: number;
   resetTime: number;
 }
 
-const rateLimitStore = new Map<string, RateLimitEntry>();
+const rateLimitStore = new LruMap<string, RateLimitEntry>(RATE_LIMIT_STORE_MAX_SIZE);
 
 function getRateLimitKey(request: { headers: Record<string, unknown> }): string {
   // Use API key as the rate limit identifier
@@ -64,7 +71,7 @@ setInterval(() => {
       rateLimitStore.delete(key);
     }
   }
-}, 60000); // Clean up every minute
+}, RATE_LIMIT_CLEANUP_INTERVAL_MS);
 
 export function buildServer(config: AppConfig, registry: ProviderRegistry) {
   const app = Fastify({
@@ -73,9 +80,20 @@ export function buildServer(config: AppConfig, registry: ProviderRegistry) {
     },
     // Request body size limit
     bodyLimit: config.maxRequestBodySize,
+    // Connection timeout
+    connectionTimeout: REQUEST_TIMEOUT_MS,
+    // Keep alive timeout
+    keepAliveTimeout: REQUEST_TIMEOUT_MS,
   });
 
   const jobManager = new JobManager(config.maxJobLogLines);
+
+  // Generate request ID for tracing
+  app.addHook("onRequest", async (request, reply) => {
+    const requestId = makeId("req");
+    request.headers["x-request-id"] = requestId;
+    reply.header("x-request-id", requestId);
+  });
 
   // Rate limiting hook for OpenAI routes
   app.addHook("preHandler", async (request, reply) => {
@@ -99,9 +117,10 @@ export function buildServer(config: AppConfig, registry: ProviderRegistry) {
     }
   });
 
-  app.get("/healthz", async () => ({
+  app.get("/healthz", async (request) => ({
     ok: true,
     ts: new Date().toISOString(),
+    requestId: request.headers["x-request-id"],
   }));
 
   app.register(openAiRoutes, {
@@ -124,7 +143,8 @@ export function buildServer(config: AppConfig, registry: ProviderRegistry) {
   });
 
   app.setErrorHandler((error, request, reply) => {
-    request.log.error(error);
+    const requestId = request.headers["x-request-id"];
+    request.log.error({ error, requestId }, "Request error");
     if (reply.sent) {
       return;
     }
@@ -139,6 +159,7 @@ export function buildServer(config: AppConfig, registry: ProviderRegistry) {
           message: "Request body too large.",
           type: "invalid_request_error",
           code: 413,
+          requestId,
         },
       });
     }
@@ -146,6 +167,7 @@ export function buildServer(config: AppConfig, registry: ProviderRegistry) {
     reply.status(500).send({
       error: {
         message: "Internal server error.",
+        requestId,
       },
     });
   });
@@ -165,15 +187,4 @@ export function buildServer(config: AppConfig, registry: ProviderRegistry) {
       app.log.info("Graceful shutdown complete.");
     },
   };
-}
-
-function requestLogger(error: unknown): void {
-  // Keep this as a plain stderr fallback in case logger setup fails.
-  // Fastify logger still receives structured output for route-level errors.
-  if (error instanceof Error) {
-    process.stderr.write(`${error.stack || error.message}\n`);
-    return;
-  }
-
-  process.stderr.write(`${String(error)}\n`);
 }

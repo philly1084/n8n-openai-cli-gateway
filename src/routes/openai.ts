@@ -92,7 +92,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
     }
 
     const inputMessages = normalizeResponsesInput(body.input);
-    const instructions = body.instructions?.trim() ?? "";
+    const instructions = sanitizeInstructions(body.instructions);
 
     const messages: ChatMessage[] = [];
     if (instructions) {
@@ -769,4 +769,29 @@ function tryParseJson(value: string): unknown | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Sanitizes the instructions field to prevent injection attacks.
+ * - Trims whitespace
+ * - Limits length to 10000 characters
+ * - Removes null bytes
+ */
+function sanitizeInstructions(value: unknown): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+  
+  const trimmed = value.trim();
+  
+  // Remove null bytes
+  const noNulls = trimmed.replace(/\x00/g, "");
+  
+  // Limit length to prevent abuse
+  const maxLength = 10000;
+  if (noNulls.length > maxLength) {
+    return noNulls.slice(0, maxLength);
+  }
+  
+  return noNulls;
 }

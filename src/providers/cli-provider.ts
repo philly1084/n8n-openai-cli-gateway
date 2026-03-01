@@ -73,10 +73,7 @@ export class CliProvider implements Provider {
     };
 
     try {
-      const resolved = resolveCommand(this.config.responseCommand, vars, {
-        escapeShell: true,
-        logger: console,
-      });
+      const resolved = resolveCommand(this.config.responseCommand, vars);
       const stdinPayload =
         this.config.responseCommand.input === "request_json_stdin"
           ? JSON.stringify(requestPayload)
