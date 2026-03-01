@@ -26,6 +26,7 @@ export const adminRoutes: FastifyPluginAsync<AdminRoutesOptions> = async (app, o
       options.registry.listProviders().map(async (provider) => {
         const statusConfigured = Boolean(provider.config.auth?.statusCommand);
         const loginConfigured = Boolean(provider.config.auth?.loginCommand);
+        const rateLimitConfigured = Boolean(provider.config.auth?.rateLimitCommand);
 
         let authStatus:
           | {
@@ -47,6 +48,7 @@ export const adminRoutes: FastifyPluginAsync<AdminRoutesOptions> = async (app, o
           auth: {
             loginConfigured,
             statusConfigured,
+            rateLimitConfigured,
             status: authStatus,
           },
         };
@@ -131,6 +133,64 @@ export const adminRoutes: FastifyPluginAsync<AdminRoutesOptions> = async (app, o
       });
     }
     return snapshot;
+  });
+
+  // Rate limits endpoints
+  app.get("/rate-limits", async () => {
+    const providers = options.registry.listProviders();
+    const results = await Promise.all(
+      providers.map(async (provider) => {
+        try {
+          return await provider.checkRateLimits();
+        } catch (error) {
+          return {
+            providerId: provider.id,
+            providerDescription: provider.description,
+            status: "unknown" as const,
+            limits: [{
+              providerId: provider.id,
+              limitType: "unknown" as const,
+              checkedAt: new Date().toISOString(),
+              ok: false,
+              error: error instanceof Error ? error.message : String(error),
+            }],
+            lastCheckedAt: new Date().toISOString(),
+          };
+        }
+      })
+    );
+
+    return {
+      data: results,
+      summary: {
+        total: results.length,
+        healthy: results.filter(r => r.status === "healthy").length,
+        degraded: results.filter(r => r.status === "degraded").length,
+        rateLimited: results.filter(r => r.status === "rate_limited").length,
+        authErrors: results.filter(r => r.status === "auth_error").length,
+        unknown: results.filter(r => r.status === "unknown").length,
+      },
+    };
+  });
+
+  app.get("/rate-limits/:providerId", async (request, reply) => {
+    const params = request.params as { providerId?: string };
+    const providerId = params.providerId?.trim() || "";
+    const provider = options.registry.getProvider(providerId);
+    if (!provider) {
+      return reply.status(404).send({
+        error: `Unknown provider: ${providerId}`,
+      });
+    }
+
+    try {
+      const limits = await provider.checkRateLimits();
+      return limits;
+    } catch (error) {
+      return reply.status(500).send({
+        error: `Failed to check rate limits: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
   });
 };
 

@@ -56,6 +56,8 @@ export interface CommandSpec {
 export interface AuthConfig {
   loginCommand?: CommandSpec;
   statusCommand?: CommandSpec;
+  /** Command to check rate limits/quota for this provider */
+  rateLimitCommand?: CommandSpec;
 }
 
 export interface ProviderModelConfig {
@@ -116,4 +118,41 @@ export interface LoginJobSummary {
   exitCode?: number | null;
   urls: string[];
   logs: string[];
+}
+
+// Rate limit tracking types
+export interface RateLimitInfo {
+  /** Provider ID */
+  providerId: string;
+  /** Model ID (if model-specific) */
+  modelId?: string;
+  /** Type of limit */
+  limitType: "requests" | "tokens" | "credits" | "billing" | "unknown";
+  /** Current usage (if available) */
+  currentUsage?: number;
+  /** Maximum allowed (if available) */
+  maxAllowed?: number;
+  /** Remaining quota (if available) */
+  remaining?: number;
+  /** When the limit resets (ISO timestamp) */
+  resetAt?: string;
+  /** Time when this data was fetched */
+  checkedAt: string;
+  /** Whether the check was successful */
+  ok: boolean;
+  /** Error message if check failed */
+  error?: string;
+  /** Raw output from the provider command */
+  raw?: unknown;
+}
+
+export interface ProviderRateLimits {
+  providerId: string;
+  providerDescription?: string;
+  /** Overall provider status */
+  status: "healthy" | "degraded" | "rate_limited" | "auth_error" | "unknown";
+  /** Rate limit info for this provider */
+  limits: RateLimitInfo[];
+  /** When all limits were last checked */
+  lastCheckedAt?: string;
 }

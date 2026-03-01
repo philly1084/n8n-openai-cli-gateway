@@ -3,6 +3,7 @@ import type {
   CliProviderConfig,
   LoginJobSummary,
   ProviderModelConfig,
+  ProviderRateLimits,
   ProviderResult,
   UnifiedRequest,
 } from "../types";
@@ -17,4 +18,6 @@ export interface Provider {
   run(request: UnifiedRequest): Promise<ProviderResult>;
   startLoginJob(jobManager: JobManager): Promise<LoginJobSummary>;
   checkAuthStatus(): Promise<AuthStatusResult>;
+  /** Check rate limits/quota for this provider */
+  checkRateLimits(): Promise<ProviderRateLimits>;
 }

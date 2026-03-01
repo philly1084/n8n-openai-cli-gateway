@@ -6,8 +6,10 @@ import type {
   AuthStatusResult,
   CliProviderConfig,
   LoginJobSummary,
+  ProviderRateLimits,
   ProviderResult,
   ProviderToolCall,
+  RateLimitInfo,
   UnifiedRequest,
   UnifiedToolDefinition,
 } from "../types";
@@ -135,6 +137,187 @@ export class CliProvider implements Provider {
       exitCode: output.exitCode,
       stdout: output.stdout,
       stderr: output.stderr,
+    };
+  }
+
+  async checkRateLimits(): Promise<ProviderRateLimits> {
+    const command = this.config.auth?.rateLimitCommand;
+    const now = new Date().toISOString();
+
+    // If no rate limit command configured, return unknown status
+    if (!command) {
+      return {
+        providerId: this.id,
+        providerDescription: this.description,
+        status: "unknown",
+        limits: [],
+        lastCheckedAt: now,
+      };
+    }
+
+    try {
+      const resolved = resolveCommand(command, {
+        provider_id: this.id,
+      });
+      const output = await runCommand(resolved);
+
+      if (output.timedOut) {
+        return {
+          providerId: this.id,
+          providerDescription: this.description,
+          status: "unknown",
+          limits: [{
+            providerId: this.id,
+            limitType: "unknown",
+            checkedAt: now,
+            ok: false,
+            error: `Rate limit check timed out after ${resolved.timeoutMs}ms`,
+          }],
+          lastCheckedAt: now,
+        };
+      }
+
+      if (output.exitCode !== 0) {
+        return {
+          providerId: this.id,
+          providerDescription: this.description,
+          status: "auth_error",
+          limits: [{
+            providerId: this.id,
+            limitType: "unknown",
+            checkedAt: now,
+            ok: false,
+            error: `Rate limit check failed with exit code ${output.exitCode}: ${output.stderr}`,
+          }],
+          lastCheckedAt: now,
+        };
+      }
+
+      // Try to parse the output as rate limit info
+      const limits = this.parseRateLimitOutput(output.stdout, now);
+      const hasLimited = limits.some(l => l.remaining !== undefined && l.remaining <= 0);
+      const hasErrors = limits.some(l => !l.ok);
+
+      let status: ProviderRateLimits["status"] = "healthy";
+      if (hasErrors) {
+        status = "unknown";
+      } else if (hasLimited) {
+        status = "rate_limited";
+      } else if (limits.some(l => l.remaining !== undefined && l.remaining < 100)) {
+        status = "degraded";
+      }
+
+      return {
+        providerId: this.id,
+        providerDescription: this.description,
+        status,
+        limits,
+        lastCheckedAt: now,
+      };
+    } catch (error) {
+      return {
+        providerId: this.id,
+        providerDescription: this.description,
+        status: "unknown",
+        limits: [{
+          providerId: this.id,
+          limitType: "unknown",
+          checkedAt: now,
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        }],
+        lastCheckedAt: now,
+      };
+    }
+  }
+
+  private parseRateLimitOutput(stdout: string, checkedAt: string): RateLimitInfo[] {
+    const trimmed = stdout.trim();
+    if (!trimmed) {
+      return [{
+        providerId: this.id,
+        limitType: "unknown",
+        checkedAt,
+        ok: true,
+        raw: { stdout: "" },
+      }];
+    }
+
+    // Try to parse as JSON
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      // Not JSON, treat as plain text
+      return [{
+        providerId: this.id,
+        limitType: "unknown",
+        checkedAt,
+        ok: true,
+        raw: { stdout: trimmed },
+      }];
+    }
+
+    // Handle array of limits
+    if (Array.isArray(parsed)) {
+      return parsed.map(item => this.normalizeRateLimitItem(item, checkedAt));
+    }
+
+    // Handle single limit object
+    if (parsed && typeof parsed === "object") {
+      // Check if it has a "limits" array property
+      const obj = parsed as Record<string, unknown>;
+      if (Array.isArray(obj.limits)) {
+        return obj.limits.map(item => this.normalizeRateLimitItem(item, checkedAt));
+      }
+      return [this.normalizeRateLimitItem(parsed, checkedAt)];
+    }
+
+    return [{
+      providerId: this.id,
+      limitType: "unknown",
+      checkedAt,
+      ok: true,
+      raw: parsed,
+    }];
+  }
+
+  private normalizeRateLimitItem(item: unknown, checkedAt: string): RateLimitInfo {
+    if (!item || typeof item !== "object") {
+      return {
+        providerId: this.id,
+        limitType: "unknown",
+        checkedAt,
+        ok: true,
+        raw: item,
+      };
+    }
+
+    const obj = item as Record<string, unknown>;
+
+    // Determine limit type
+    let limitType: RateLimitInfo["limitType"] = "unknown";
+    const typeStr = typeof obj.limitType === "string" ? obj.limitType.toLowerCase() : "";
+    if (typeStr.includes("request")) {
+      limitType = "requests";
+    } else if (typeStr.includes("token")) {
+      limitType = "tokens";
+    } else if (typeStr.includes("credit") || typeStr.includes("billing")) {
+      limitType = "credits";
+    }
+
+    return {
+      providerId: this.id,
+      modelId: typeof obj.modelId === "string" ? obj.modelId : undefined,
+      limitType,
+      currentUsage: typeof obj.currentUsage === "number" ? obj.currentUsage : undefined,
+      maxAllowed: typeof obj.maxAllowed === "number" ? obj.maxAllowed : undefined,
+      remaining: typeof obj.remaining === "number" ? obj.remaining : undefined,
+      resetAt: typeof obj.resetAt === "string" ? obj.resetAt : undefined,
+      checkedAt,
+      ok: obj.ok !== false, // default to true if not specified
+      error: typeof obj.error === "string" ? obj.error : undefined,
+      raw: item,
     };
   }
 

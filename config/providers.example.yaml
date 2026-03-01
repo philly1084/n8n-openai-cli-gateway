@@ -36,6 +36,15 @@ providers:
           - -c
           - opencode auth list | grep -qi google
         timeoutMs: 30000
+      # Example: Rate limit check command
+      # This should output JSON with rate limit information
+      # rateLimitCommand:
+      #   executable: opencode
+      #   args:
+      #     - account
+      #     - limits
+      #     - --json
+      #   timeoutMs: 30000
 
   - id: antigravity-cli
     type: cli
@@ -103,3 +112,15 @@ providers:
           - whoami
           - --json
         timeoutMs: 30000
+      # Example: OpenAI rate limit check
+      # This would call the OpenAI API to check usage/limits
+      # rateLimitCommand:
+      #   executable: sh
+      #   args:
+      #     - -c
+      #     - |
+      #       curl -s https://api.openai.com/v1/dashboard/billing/credit_grants \
+      #         -H "Authorization: Bearer $OPENAI_API_KEY" \
+      #         -H "Content-Type: application/json" | \
+      #         jq '{limitType: "credits", remaining: .total_available, maxAllowed: .total_granted}'
+      #   timeoutMs: 30000
