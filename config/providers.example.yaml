@@ -422,3 +422,191 @@ providers:
               "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY" | grep -q "200" && \
               echo '{"ok":true}' || echo '{"ok":false,"error":"Invalid API key"}'
         timeoutMs: 10000
+
+  # ============================================================================
+  # FREE AUDIO SERVICES (Speech-to-Text & Text-to-Speech)
+  # ============================================================================
+
+  - id: groq-whisper
+    type: cli
+    description: Fast speech-to-text via Groq (Whisper API) - generous free tier
+    models:
+      - id: groq-whisper-large-v3
+        providerModel: whisper-large-v3
+      - id: groq-whisper-v3-turbo
+        providerModel: whisper-v3-turbo
+    responseCommand:
+      executable: sh
+      args:
+        - -c
+        - |
+          set -e
+          # Expects audio file path in prompt
+          AUDIO_FILE="{{prompt}}"
+          if [ ! -f "$AUDIO_FILE" ]; then
+            echo '{"text":"Error: Audio file not found"}'
+            exit 1
+          fi
+          
+          curl -s https://api.groq.com/openai/v1/audio/transcriptions \
+            -H "Authorization: Bearer $GROQ_API_KEY" \
+            -F file="@$AUDIO_FILE" \
+            -F model="{{provider_model}}" \
+            -F response_format=json
+      input: prompt_stdin
+      output: text_contract_final_line
+      timeoutMs: 120000
+    auth:
+      statusCommand:
+        executable: sh
+        args:
+          - -c
+          - |
+            if [ -z "$GROQ_API_KEY" ]; then
+              echo '{"ok":false,"error":"GROQ_API_KEY not set"}'
+              exit 1
+            fi
+            curl -s -o /dev/null -w "%{http_code}" \
+              https://api.groq.com/openai/v1/models \
+              -H "Authorization: Bearer $GROQ_API_KEY" | grep -q "200" && \
+              echo '{"ok":true}' || echo '{"ok":false,"error":"Invalid API key"}'
+        timeoutMs: 10000
+
+  - id: huggingface-tts
+    type: cli
+    description: Free text-to-speech via Hugging Face (speecht5, bark, etc)
+    models:
+      - id: hf-speecht5-tts
+        providerModel: microsoft/speecht5_tts
+      - id: hf-bark
+        providerModel: suno/bark
+      - id: hf-fastspeech2
+        providerModel: facebook/fastspeech2-en-ljspeech
+    responseCommand:
+      executable: sh
+      args:
+        - -c
+        - |
+          set -e
+          TMP_DIR=$(mktemp -d)
+          trap "rm -rf $TMP_DIR" EXIT
+          
+          # Call Hugging Face Inference API for TTS
+          curl -s -X POST "https://api-inference.huggingface.co/models/{{provider_model}}" \
+            -H "Authorization: Bearer $HF_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"inputs\": \"{{prompt}}\"}" \
+            -o "$TMP_DIR/audio.wav"
+          
+          # Check if we got valid audio
+          if file "$TMP_DIR/audio.wav" | grep -q "audio\|WAVE\|RIF"; then
+            B64=$(base64 -w 0 "$TMP_DIR/audio.wav" 2>/dev/null || base64 "$TMP_DIR/audio.wav" | tr -d '\n')
+            echo "{\"audio\":\"${B64}\",\"format\":\"wav\"}"
+          else
+            # May be loading or error - output as text
+            cat "$TMP_DIR/audio.wav"
+            exit 1
+          fi
+      input: prompt_stdin
+      output: json_contract
+      timeoutMs: 180000
+    auth:
+      statusCommand:
+        executable: sh
+        args:
+          - -c
+          - |
+            if [ -z "$HF_API_TOKEN" ]; then
+              echo '{"ok":false,"error":"HF_API_TOKEN not set"}'
+              exit 1
+            fi
+            curl -s -o /dev/null -w "%{http_code}" \
+              https://api-inference.huggingface.co/models/gpt2 \
+              -H "Authorization: Bearer $HF_API_TOKEN" | grep -q "200" && \
+              echo '{"ok":true}' || echo '{"ok":false,"error":"Check token"}'
+        timeoutMs: 15000
+
+  - id: piper-tts-local
+    type: cli
+    description: Local text-to-speech via Piper (privacy-friendly, runs offline)
+    models:
+      - id: piper-en-us
+        providerModel: en_US-lessac-medium
+      - id: piper-en-gb
+        providerModel: en_GB-alan-medium
+      - id: piper-de-de
+        providerModel: de_DE-thorsten-medium
+    responseCommand:
+      executable: sh
+      args:
+        - -c
+        - |
+          set -e
+          TMP_DIR=$(mktemp -d)
+          trap "rm -rf $TMP_DIR" EXIT
+          
+          MODEL_FILE="$HOME/.local/share/piper/{{provider_model}}.onnx"
+          
+          # Check if model exists, if not suggest download
+          if [ ! -f "$MODEL_FILE" ]; then
+            echo "{\"error\":\"Model not found. Install with: piper-download --model {{provider_model}}\"}"
+            exit 1
+          fi
+          
+          # Generate audio
+          echo "{{prompt}}" | piper --model "$MODEL_FILE" --output_file "$TMP_DIR/audio.wav"
+          
+          # Convert to base64
+          B64=$(base64 -w 0 "$TMP_DIR/audio.wav" 2>/dev/null || base64 "$TMP_DIR/audio.wav" | tr -d '\n')
+          echo "{\"audio\":\"${B64}\",\"format\":\"wav\"}"
+      input: prompt_stdin
+      output: json_contract
+      timeoutMs: 60000
+
+  - id: gemini-audio
+    type: cli
+    description: Gemini Flash audio understanding (multimodal audio input)
+    models:
+      - id: gemini-audio-flash
+        providerModel: gemini-1.5-flash-latest
+    responseCommand:
+      executable: sh
+      args:
+        - -c
+        - |
+          set -e
+          # Expects base64-encoded audio in prompt with format "data:audio/mp3;base64,..."
+          AUDIO_DATA="{{prompt}}"
+          
+          # Extract mime type and base64 data
+          MIME_TYPE=$(echo "$AUDIO_DATA" | sed 's/data:\([^;]*\);base64,.*/\1/')
+          B64_DATA=$(echo "$AUDIO_DATA" | sed 's/data:[^;]*;base64,//')
+          
+          curl -s "https://generativelanguage.googleapis.com/v1beta/models/{{provider_model}}:generateContent" \
+            -H "Content-Type: application/json" \
+            -H "x-goog-api-key: $GEMINI_API_KEY" \
+            -d "{
+              \"contents\": [{
+                \"parts\": [
+                  {\"inline_data\": {\"mime_type\": \"$MIME_TYPE\", \"data\": \"$B64_DATA\"}},
+                  {\"text\": \"Transcribe this audio\"}
+                ]
+              }]
+            }" | jq -r '.candidates[0].content.parts[0].text // "Error processing audio"'
+      input: prompt_stdin
+      output: text_plain
+      timeoutMs: 120000
+    auth:
+      statusCommand:
+        executable: sh
+        args:
+          - -c
+          - |
+            if [ -z "$GEMINI_API_KEY" ]; then
+              echo '{"ok":false,"error":"GEMINI_API_KEY not set"}'
+              exit 1
+            fi
+            curl -s -o /dev/null -w "%{http_code}" \
+              "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY" | grep -q "200" && \
+              echo '{"ok":true}' || echo '{"ok":false,"error":"Invalid API key"}'
+        timeoutMs: 10000

@@ -80,6 +80,40 @@ export const imageGenerationsRequestSchema = z.object({
   user: z.string().optional(),
 });
 
+// Audio speech (TTS) request schema
+export const audioSpeechRequestSchema = z.object({
+  model: z.string().min(1, "model is required"),
+  input: z.string().min(1, "input is required"),
+  voice: z.string().optional(),
+  response_format: z.enum(["mp3", "opus", "aac", "flac", "wav", "pcm"]).optional(),
+  speed: z.number().min(0.25).max(4.0).optional(),
+  user: z.string().optional(),
+});
+
+// Audio transcriptions (STT) request schema
+export const audioTranscriptionsRequestSchema = z.object({
+  model: z.string().min(1, "model is required"),
+  file: z.string().min(1, "file path is required"),
+  language: z.string().optional(),
+  prompt: z.string().optional(),
+  response_format: z.enum(["json", "text", "srt", "verbose_json", "vtt"]).optional(),
+  temperature: z.number().min(0).max(1).optional(),
+  user: z.string().optional(),
+});
+
+// Audio translations request schema
+export const audioTranslationsRequestSchema = z.object({
+  model: z.string().min(1, "model is required"),
+  file: z.string().min(1, "file path is required"),
+  prompt: z.string().optional(),
+  response_format: z.enum(["json", "text", "srt", "verbose_json", "vtt"]).optional(),
+  temperature: z.number().min(0).max(1).optional(),
+  user: z.string().optional(),
+});
+
 export type ChatCompletionsRequest = z.infer<typeof chatCompletionsRequestSchema>;
 export type ResponsesRequest = z.infer<typeof responsesRequestSchema>;
 export type ImageGenerationsRequest = z.infer<typeof imageGenerationsRequestSchema>;
+export type AudioSpeechRequest = z.infer<typeof audioSpeechRequestSchema>;
+export type AudioTranscriptionsRequest = z.infer<typeof audioTranscriptionsRequestSchema>;
+export type AudioTranslationsRequest = z.infer<typeof audioTranslationsRequestSchema>;

@@ -8,6 +8,8 @@ import {
   chatCompletionsRequestSchema,
   responsesRequestSchema,
   imageGenerationsRequestSchema,
+  audioSpeechRequestSchema,
+  audioTranscriptionsRequestSchema,
 } from "../validation";
 
 interface OpenAiRoutesOptions {
@@ -215,6 +217,115 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
       return {
         created: Math.floor(Date.now() / 1000),
         data: images.slice(0, n),
+      };
+    } catch (error) {
+      return handleModelError(reply, error);
+    }
+  });
+
+  // Audio Speech (TTS) endpoint
+  app.post("/audio/speech", async (request, reply) => {
+    const validationResult = validateBody(request.body, audioSpeechRequestSchema);
+    if (!validationResult.success) {
+      return sendOpenAiError(reply, 400, validationResult.error, "invalid_request_error");
+    }
+
+    const body = validationResult.data;
+
+    try {
+      const result = await options.registry.runModel(body.model, {
+        requestId: makeId("req"),
+        messages: [{ role: "user", content: body.input }],
+        tools: [],
+        metadata: body as Record<string, unknown>,
+      });
+
+      const audioData = parseAudioResponse(result.outputText);
+      if (!audioData) {
+        return sendOpenAiError(
+          reply,
+          500,
+          "Provider returned no parseable audio data.",
+          "provider_error",
+        );
+      }
+
+      // Return audio data as binary or JSON depending on format
+      if (audioData.format === "json") {
+        return reply.type("application/json").send({
+          audio: audioData.audio,
+          format: audioData.format_type || "wav",
+        });
+      }
+
+      const contentType = getAudioContentType(audioData.format_type || "wav");
+      return reply
+        .type(contentType)
+        .header("Content-Disposition", `inline; filename="speech.${audioData.format_type || "wav"}"`)
+        .send(Buffer.from(audioData.audio, "base64"));
+    } catch (error) {
+      return handleModelError(reply, error);
+    }
+  });
+
+  // Audio Transcriptions (STT) endpoint
+  app.post("/audio/transcriptions", async (request, reply) => {
+    const validationResult = validateBody(request.body, audioTranscriptionsRequestSchema);
+    if (!validationResult.success) {
+      return sendOpenAiError(reply, 400, validationResult.error, "invalid_request_error");
+    }
+
+    const body = validationResult.data;
+
+    try {
+      const result = await options.registry.runModel(body.model, {
+        requestId: makeId("req"),
+        messages: [{ role: "user", content: body.file }],
+        tools: [],
+        metadata: body as Record<string, unknown>,
+      });
+
+      const transcription = extractTranscriptionText(result.outputText);
+      const format = body.response_format || "json";
+
+      if (format === "text") {
+        return reply.type("text/plain").send(transcription);
+      }
+
+      return {
+        text: transcription,
+      };
+    } catch (error) {
+      return handleModelError(reply, error);
+    }
+  });
+
+  // Audio Translations endpoint
+  app.post("/audio/translations", async (request, reply) => {
+    const validationResult = validateBody(request.body, audioTranscriptionsRequestSchema);
+    if (!validationResult.success) {
+      return sendOpenAiError(reply, 400, validationResult.error, "invalid_request_error");
+    }
+
+    const body = validationResult.data;
+
+    try {
+      const result = await options.registry.runModel(body.model, {
+        requestId: makeId("req"),
+        messages: [{ role: "user", content: body.file }],
+        tools: [],
+        metadata: { ...body, task: "translate" } as Record<string, unknown>,
+      });
+
+      const transcription = extractTranscriptionText(result.outputText);
+      const format = body.response_format || "json";
+
+      if (format === "text") {
+        return reply.type("text/plain").send(transcription);
+      }
+
+      return {
+        text: transcription,
       };
     } catch (error) {
       return handleModelError(reply, error);
@@ -794,4 +905,80 @@ function sanitizeInstructions(value: unknown): string {
   }
   
   return noNulls;
+}
+
+// Audio response parsing types
+interface AudioResponse {
+  audio: string;
+  format: "base64" | "json";
+  format_type?: string;
+}
+
+function parseAudioResponse(text: string): AudioResponse | null {
+  const trimmed = text.trim();
+  
+  // Try to parse as JSON first
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (typeof parsed.audio === "string") {
+      return {
+        audio: parsed.audio,
+        format: "base64",
+        format_type: parsed.format || "wav",
+      };
+    }
+  } catch {
+    // Not valid JSON, try other formats
+  }
+
+  // Check if it's a data URL
+  const dataUrlMatch = /^data:audio\/([a-zA-Z0-9.+-]+);base64,(.+)$/i.exec(trimmed);
+  if (dataUrlMatch && dataUrlMatch[1] && dataUrlMatch[2]) {
+    return {
+      audio: dataUrlMatch[2],
+      format: "base64",
+      format_type: dataUrlMatch[1],
+    };
+  }
+
+  // Check if it's raw base64 (at least 100 chars to avoid false positives)
+  if (/^[A-Za-z0-9+/]{100,}={0,2}$/.test(trimmed.replace(/\s/g, ""))) {
+    return {
+      audio: trimmed.replace(/\s/g, ""),
+      format: "base64",
+      format_type: "wav",
+    };
+  }
+
+  return null;
+}
+
+function getAudioContentType(format: string): string {
+  const mimeTypes: Record<string, string> = {
+    mp3: "audio/mpeg",
+    opus: "audio/opus",
+    aac: "audio/aac",
+    flac: "audio/flac",
+    wav: "audio/wav",
+    pcm: "audio/pcm",
+    ogg: "audio/ogg",
+    webm: "audio/webm",
+  };
+  return mimeTypes[format.toLowerCase()] || "audio/wav";
+}
+
+function extractTranscriptionText(text: string): string {
+  const trimmed = text.trim();
+  
+  // Try to parse as JSON first
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (typeof parsed.text === "string") {
+      return parsed.text;
+    }
+  } catch {
+    // Not JSON, return as-is
+  }
+  
+  return trimmed;
 }
