@@ -124,3 +124,137 @@ providers:
       #         -H "Content-Type: application/json" | \
       #         jq '{limitType: "credits", remaining: .total_available, maxAllowed: .total_granted}'
       #   timeoutMs: 30000
+
+  # ============================================================================
+  # FREE AI SERVICES
+  # ============================================================================
+
+  - id: ollama-local
+    type: cli
+    description: Local LLMs via Ollama (completely free, runs locally)
+    models:
+      - id: llama3.2
+        providerModel: llama3.2
+        fallbackModels:
+          - mistral
+      - id: mistral
+        providerModel: mistral
+        fallbackModels:
+          - codellama
+      - id: codellama
+        providerModel: codellama
+        fallbackModels:
+          - llama3.2
+      - id: phi4
+        providerModel: phi4
+      - id: qwen2.5
+        providerModel: qwen2.5
+    responseCommand:
+      executable: ollama
+      args:
+        - run
+        - "{{provider_model}}"
+      input: prompt_stdin
+      output: text_plain
+      timeoutMs: 300000
+    # No auth needed for local Ollama
+
+  - id: groq-api
+    type: cli
+    description: Groq API - very fast inference with generous free tier
+    models:
+      - id: llama-3.3-70b
+        providerModel: llama-3.3-70b-versatile
+        fallbackModels:
+          - mixtral-8x7b
+      - id: mixtral-8x7b
+        providerModel: mixtral-8x7b-32768
+        fallbackModels:
+          - gemma2-9b
+      - id: gemma2-9b
+        providerModel: gemma2-9b-it
+      - id: llama-3.1-8b
+        providerModel: llama-3.1-8b-instant
+    responseCommand:
+      executable: curl
+      args:
+        - -s
+        - https://api.groq.com/openai/v1/chat/completions
+        - -H
+        - "Authorization: Bearer $GROQ_API_KEY"
+        - -H
+        - "Content-Type: application/json"
+        - -d
+        - |
+          {
+            "model": "{{provider_model}}",
+            "messages": [{"role": "user", "content": "{{prompt}}"}],
+            "temperature": 0.7
+          }
+      input: prompt_stdin
+      output: text_contract_final_line
+      timeoutMs: 60000
+    auth:
+      statusCommand:
+        executable: sh
+        args:
+          - -c
+          - |
+            if [ -z "$GROQ_API_KEY" ]; then
+              echo '{"ok":false,"error":"GROQ_API_KEY not set"}'
+              exit 1
+            fi
+            curl -s -o /dev/null -w "%{http_code}" \
+              https://api.groq.com/openai/v1/models \
+              -H "Authorization: Bearer $GROQ_API_KEY" | grep -q "200" && \
+              echo '{"ok":true}' || echo '{"ok":false,"error":"Invalid API key"}'
+        timeoutMs: 10000
+
+  - id: deepseek-api
+    type: cli
+    description: DeepSeek API - excellent for coding tasks with free tier
+    models:
+      - id: deepseek-chat
+        providerModel: deepseek-chat
+        fallbackModels:
+          - deepseek-coder
+      - id: deepseek-coder
+        providerModel: deepseek-coder
+        fallbackModels:
+          - deepseek-chat
+      - id: deepseek-reasoner
+        providerModel: deepseek-reasoner
+    responseCommand:
+      executable: curl
+      args:
+        - -s
+        - https://api.deepseek.com/chat/completions
+        - -H
+        - "Authorization: Bearer $DEEPSEEK_API_KEY"
+        - -H
+        - "Content-Type: application/json"
+        - -d
+        - |
+          {
+            "model": "{{provider_model}}",
+            "messages": [{"role": "user", "content": "{{prompt}}"}],
+            "temperature": 0.7
+          }
+      input: prompt_stdin
+      output: text_contract_final_line
+      timeoutMs: 120000
+    auth:
+      statusCommand:
+        executable: sh
+        args:
+          - -c
+          - |
+            if [ -z "$DEEPSEEK_API_KEY" ]; then
+              echo '{"ok":false,"error":"DEEPSEEK_API_KEY not set"}'
+              exit 1
+            fi
+            curl -s -o /dev/null -w "%{http_code}" \
+              https://api.deepseek.com/models \
+              -H "Authorization: Bearer $DEEPSEEK_API_KEY" | grep -q "200" && \
+              echo '{"ok":true}' || echo '{"ok":false,"error":"Invalid API key"}'
+        timeoutMs: 10000
