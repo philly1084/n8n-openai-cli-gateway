@@ -73,27 +73,36 @@ export class CliProvider implements Provider {
     };
 
     // When the prompt is too large to fit in command-line args (OS ARG_MAX
-    // is typically ~128KB), automatically redirect {{prompt}} references in
-    // args to use the prompt file instead. This prevents E2BIG / exit 126
-    // "Argument list too long" errors with long conversations.
+    // is typically ~128KB), rewrite args templates to read from the prompt
+    // file instead. We modify the *template strings* (not the vars) so that
+    // {{prompt_file}} is substituted instead of {{prompt}}, avoiding the
+    // shell-escaping that applyTemplate applies to {{prompt}}.
     const MAX_ARG_PROMPT_BYTES = 100_000; // ~100KB, well under typical ARG_MAX
     const argsUsePrompt = this.config.responseCommand.args.some(
       (arg) => arg.includes("{{prompt}}"),
     );
+
+    let commandSpec = this.config.responseCommand;
     if (argsUsePrompt && Buffer.byteLength(prompt, "utf8") > MAX_ARG_PROMPT_BYTES) {
-      // For shell commands (sh -c "..."), use $(cat file) to read inline.
-      // For direct commands, substitute the file path so the CLI can read it.
       const isShellCommand =
         this.config.responseCommand.executable === "sh" ||
         this.config.responseCommand.executable === "bash" ||
         this.config.responseCommand.executable === "zsh";
-      vars.prompt = isShellCommand
-        ? `$(cat '${promptFile.replace(/'/g, "'\"'\"'")}')`
-        : promptFile;
+      // Rewrite the arg templates: replace {{prompt}} with file-based reading
+      const rewrittenArgs = this.config.responseCommand.args.map((arg) => {
+        if (!arg.includes("{{prompt}}")) return arg;
+        if (isShellCommand) {
+          // In shell scripts, use command substitution to read the file
+          return arg.replace(/\{\{\s*prompt\s*\}\}/g, "$(cat '{{prompt_file}}')");
+        }
+        // For direct executables, pass the file path instead
+        return arg.replace(/\{\{\s*prompt\s*\}\}/g, "{{prompt_file}}");
+      });
+      commandSpec = { ...this.config.responseCommand, args: rewrittenArgs };
     }
 
     try {
-      const resolved = resolveCommand(this.config.responseCommand, vars);
+      const resolved = resolveCommand(commandSpec, vars);
       const stdinPayload =
         this.config.responseCommand.input === "request_json_stdin"
           ? JSON.stringify(requestPayload)
