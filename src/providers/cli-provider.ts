@@ -62,7 +62,7 @@ export class CliProvider implements Provider {
     await writeFile(promptFile, prompt, "utf8");
     await writeFile(requestFile, JSON.stringify(requestPayload, null, 2), "utf8");
 
-    const vars = {
+    const vars: Record<string, string> = {
       request_id: request.requestId,
       provider_id: this.id,
       model: request.model,
@@ -71,6 +71,26 @@ export class CliProvider implements Provider {
       prompt_file: promptFile,
       request_file: requestFile,
     };
+
+    // When the prompt is too large to fit in command-line args (OS ARG_MAX
+    // is typically ~128KB), automatically redirect {{prompt}} references in
+    // args to use the prompt file instead. This prevents E2BIG / exit 126
+    // "Argument list too long" errors with long conversations.
+    const MAX_ARG_PROMPT_BYTES = 100_000; // ~100KB, well under typical ARG_MAX
+    const argsUsePrompt = this.config.responseCommand.args.some(
+      (arg) => arg.includes("{{prompt}}"),
+    );
+    if (argsUsePrompt && Buffer.byteLength(prompt, "utf8") > MAX_ARG_PROMPT_BYTES) {
+      // For shell commands (sh -c "..."), use $(cat file) to read inline.
+      // For direct commands, substitute the file path so the CLI can read it.
+      const isShellCommand =
+        this.config.responseCommand.executable === "sh" ||
+        this.config.responseCommand.executable === "bash" ||
+        this.config.responseCommand.executable === "zsh";
+      vars.prompt = isShellCommand
+        ? `$(cat '${promptFile.replace(/'/g, "'\"'\"'")}')`
+        : promptFile;
+    }
 
     try {
       const resolved = resolveCommand(this.config.responseCommand, vars);
@@ -697,9 +717,9 @@ function normalizeContract(value: unknown): JsonContract {
     tool_calls: Array.isArray(source.tool_calls) ? source.tool_calls : undefined,
     finish_reason:
       source.finish_reason === "stop" ||
-      source.finish_reason === "tool_calls" ||
-      source.finish_reason === "length" ||
-      source.finish_reason === "error"
+        source.finish_reason === "tool_calls" ||
+        source.finish_reason === "length" ||
+        source.finish_reason === "error"
         ? source.finish_reason
         : undefined,
   };
