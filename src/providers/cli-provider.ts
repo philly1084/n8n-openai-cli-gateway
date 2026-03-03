@@ -818,7 +818,7 @@ function sanitizeArgumentKeys(value: unknown, depth = 0): unknown {
   return value;
 }
 
-function asToolCallArguments(value: unknown): string | null {
+function asToolCallArguments(value: unknown): string {
   if (value === null || value === undefined) {
     return "{}";
   }
@@ -853,20 +853,22 @@ function asToolCallArguments(value: unknown): string | null {
           return JSON.stringify(sanitizeArgumentKeys(JSON.parse(repaired)));
         } catch {
           // If we still can't parse it, it's malformed beyond simple repair.
-          // We return null so the tool call can be dropped instead of breaking downstream.
-          return null;
+          // We MUST return the raw string so n8n can catch the JSON parse error
+          // and feed it back to the LLM. If we drop the tool call entirely,
+          // the agent loop silently exits!
+          return trimmed;
         }
       }
     }
 
     // If it's a string, didn't start with { or [ and couldn't be parsed, it's invalid.
-    return null;
+    return trimmed;
   }
 
   try {
     return JSON.stringify(sanitizeArgumentKeys(value));
   } catch {
-    return null;
+    return "{}";
   }
 }
 
@@ -1013,9 +1015,6 @@ function normalizeToolCallsShallow(
       {};
 
     const normalizedArgs = asToolCallArguments(argsRaw);
-    if (normalizedArgs === null) {
-      continue; // Skip this tool call as arguments are invalid/unrepairable JSON
-    }
 
     out.push({
       id:
