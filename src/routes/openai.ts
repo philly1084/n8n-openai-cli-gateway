@@ -85,13 +85,8 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
 
     const body = validationResult.data;
 
-    if (body.stream) {
-      return sendOpenAiError(
-        reply,
-        400,
-        "stream=true is not implemented in this gateway yet.",
-      );
-    }
+    // We do support a basic pseudo-stream now
+    const isStream = Boolean(body.stream);
 
     const inputMessages = normalizeResponsesInput(body.input);
     const instructions = sanitizeInstructions(body.instructions);
@@ -160,6 +155,27 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
           name: call.name,
           arguments: call.arguments,
         });
+      }
+
+      if (isStream) {
+        reply.raw.setHeader("Content-Type", "text/event-stream");
+        reply.raw.setHeader("Cache-Control", "no-cache");
+        reply.raw.setHeader("Connection", "keep-alive");
+
+        const chunkData = {
+          id: makeId("resp"),
+          object: "response.chunk",
+          created_at: Math.floor(Date.now() / 1000),
+          status: "completed",
+          model: body.model,
+          output_text: result.outputText,
+          output,
+        };
+
+        reply.raw.write(`data: ${JSON.stringify(chunkData)}\n\n`);
+        reply.raw.write("data: [DONE]\n\n");
+        reply.raw.end();
+        return reply;
       }
 
       return {
@@ -363,13 +379,7 @@ async function handleChatCompletionsRequest(
   reply: FastifyReply,
   registry: ProviderRegistry,
 ) {
-  if (body.stream) {
-    return sendOpenAiError(
-      reply,
-      400,
-      "stream=true is not implemented in this gateway yet.",
-    );
-  }
+  const isStream = Boolean(body.stream);
 
   const messages = normalizeChatMessages(body.messages);
   if (messages.length === 0) {
@@ -408,6 +418,45 @@ async function handleChatCompletionsRequest(
           "Returning chat completion tool call"
         );
       }
+    }
+
+    if (isStream) {
+      reply.raw.setHeader("Content-Type", "text/event-stream");
+      reply.raw.setHeader("Cache-Control", "no-cache");
+      reply.raw.setHeader("Connection", "keep-alive");
+
+      const respId = makeId("chatcmpl");
+      const created = Math.floor(Date.now() / 1000);
+
+      const chunkData = {
+        id: respId,
+        object: "chat.completion.chunk",
+        created,
+        model: body.model,
+        choices: [
+          {
+            index: 0,
+            delta: {
+              role: "assistant",
+              content: result.outputText || null,
+              tool_calls: result.toolCalls.map((call) => ({
+                id: call.id,
+                type: "function",
+                function: {
+                  name: call.name,
+                  arguments: call.arguments,
+                },
+              })),
+            },
+            finish_reason: result.toolCalls.length > 0 ? "tool_calls" : result.finishReason,
+          },
+        ],
+      };
+
+      reply.raw.write(`data: ${JSON.stringify(chunkData)}\n\n`);
+      reply.raw.write("data: [DONE]\n\n");
+      reply.raw.end();
+      return reply;
     }
 
     return {
