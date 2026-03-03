@@ -785,6 +785,9 @@ function normalizeToolCalls(rawToolCalls: unknown[] | undefined): ProviderToolCa
     }
 
     const args = asToolCallArguments(argsRaw);
+    if (args === null) {
+      continue; // Skip invalid tool call arguments
+    }
 
     calls.push({
       id: idCandidate ?? `call_${calls.length + 1}`,
@@ -815,22 +818,55 @@ function sanitizeArgumentKeys(value: unknown, depth = 0): unknown {
   return value;
 }
 
-function asToolCallArguments(value: unknown): string {
+function asToolCallArguments(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return "{}";
+  }
+
   if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (trimmed && (trimmed.startsWith("{") || trimmed.startsWith("["))) {
+    let trimmed = value.trim();
+    if (!trimmed) {
+      return "{}";
+    }
+
+    // Sometimes LLMs return markdown-wrapped JSON for arguments
+    if (trimmed.startsWith("```json")) {
+      trimmed = trimmed.replace(/^```json\s*/, "").replace(/\s*```$/, "").trim();
+    } else if (trimmed.startsWith("```")) {
+      trimmed = trimmed.replace(/^```\s*/, "").replace(/\s*```$/, "").trim();
+    }
+
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
       try {
         return JSON.stringify(sanitizeArgumentKeys(JSON.parse(trimmed)));
       } catch {
-        return value;
+        // Attempt lightweight JSON repair
+        try {
+          let repaired = trimmed;
+          // 1. Remove trailing commas before closing braces/brackets
+          repaired = repaired.replace(/,\s*([}\]])/g, "$1");
+          // 2. Escape literal newlines within the string (JSON requires \n)
+          // Note: This is rudimentary. A full JSON parser would be better, but 
+          // this catches the most common formatting errors from text-based LLMs.
+          repaired = repaired.replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
+
+          return JSON.stringify(sanitizeArgumentKeys(JSON.parse(repaired)));
+        } catch {
+          // If we still can't parse it, it's malformed beyond simple repair.
+          // We return null so the tool call can be dropped instead of breaking downstream.
+          return null;
+        }
       }
     }
-    return value;
+
+    // If it's a string, didn't start with { or [ and couldn't be parsed, it's invalid.
+    return null;
   }
+
   try {
-    return JSON.stringify(sanitizeArgumentKeys(value ?? {}));
+    return JSON.stringify(sanitizeArgumentKeys(value));
   } catch {
-    return "{}";
+    return null;
   }
 }
 
@@ -975,6 +1011,12 @@ function normalizeToolCallsShallow(
       (fn ? fn.arguments : undefined) ??
       (fn ? fn.args : undefined) ??
       {};
+
+    const normalizedArgs = asToolCallArguments(argsRaw);
+    if (normalizedArgs === null) {
+      continue; // Skip this tool call as arguments are invalid/unrepairable JSON
+    }
+
     out.push({
       id:
         (typeof obj.id === "string" && obj.id) ||
@@ -983,7 +1025,7 @@ function normalizeToolCallsShallow(
         (typeof obj.toolId === "string" && obj.toolId) ||
         undefined,
       name,
-      arguments: asToolCallArguments(argsRaw),
+      arguments: normalizedArgs,
     });
   }
 
