@@ -24,7 +24,9 @@ export interface CliExecJob {
 }
 
 interface CliExecJobInternal extends CliExecJob {
-  maxOutputLines: number;
+  maxOutputBytes: number;
+  stdoutLineCount: number;
+  stderrLineCount: number;
 }
 
 const MAX_OUTPUT_LINES = 1000;
@@ -124,7 +126,7 @@ export class CliExecManager {
 
     const id = makeId("cli");
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const maxOutputLines = options.maxOutputLines ?? MAX_OUTPUT_LINES;
+    const maxOutputBytes = (options.maxOutputLines ?? MAX_OUTPUT_LINES) * 200; // ~200 bytes per line
 
     const record: CliExecJobInternal = {
       id,
@@ -136,16 +138,20 @@ export class CliExecManager {
       startedAt: new Date().toISOString(),
       stdout: "",
       stderr: "",
-      maxOutputLines,
+      maxOutputBytes,
+      stdoutLineCount: 0,
+      stderrLineCount: 0,
     };
 
     this.jobs.set(id, record);
 
     // Start execution in background
     this.runCommand(record, timeoutMs).catch((error) => {
-      record.status = "failed";
-      record.stderr += `\n[system] Execution error: ${error.message}`;
-      record.finishedAt = new Date().toISOString();
+      if (record.status === "running") {
+        record.status = "failed";
+        record.stderr += `\n[system] Execution error: ${error instanceof Error ? error.message : String(error)}`;
+        record.finishedAt = new Date().toISOString();
+      }
     });
 
     return this.toPublic(record);
@@ -191,7 +197,7 @@ export class CliExecManager {
 
   private async runCommand(record: CliExecJobInternal, timeoutMs: number): Promise<void> {
     const startedAt = Date.now();
-    
+
     const child = spawn(record.command, record.args, {
       env: {
         ...process.env,
@@ -203,13 +209,16 @@ export class CliExecManager {
     });
 
     let finished = false;
+    let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
 
     const timeout = setTimeout(() => {
       if (!finished) {
         finished = true;
         record.status = "timed_out";
+        record.finishedAt = new Date().toISOString();
+        record.durationMs = Date.now() - startedAt;
         child.kill("SIGTERM");
-        setTimeout(() => child.kill("SIGKILL"), 5000);
+        sigkillTimer = setTimeout(() => child.kill("SIGKILL"), 5000);
       }
     }, timeoutMs);
 
@@ -229,6 +238,7 @@ export class CliExecManager {
         if (finished) return;
         finished = true;
         clearTimeout(timeout);
+        if (sigkillTimer) clearTimeout(sigkillTimer);
         record.status = "failed";
         record.exitCode = null;
         record.stderr += `\n[system] Failed to start: ${err.message}`;
@@ -238,9 +248,15 @@ export class CliExecManager {
       });
 
       child.on("close", (exitCode) => {
-        if (finished) return;
+        if (finished) {
+          // Already handled by timeout — clean up SIGKILL timer
+          if (sigkillTimer) clearTimeout(sigkillTimer);
+          resolve();
+          return;
+        }
         finished = true;
         clearTimeout(timeout);
+        if (sigkillTimer) clearTimeout(sigkillTimer);
         record.exitCode = exitCode;
         record.status = exitCode === 0 ? "completed" : "failed";
         record.finishedAt = new Date().toISOString();
@@ -251,26 +267,21 @@ export class CliExecManager {
   }
 
   private appendOutput(record: CliExecJobInternal, stream: "stdout" | "stderr", chunk: string): void {
-    const lines = chunk.split("\n");
-    for (const line of lines) {
-      if (stream === "stdout") {
-        record.stdout += line + "\n";
-      } else {
-        record.stderr += line + "\n";
+    // Cap total output size to prevent OOM
+    if (stream === "stdout") {
+      if (record.stdout.length < record.maxOutputBytes) {
+        record.stdout += chunk;
+        record.stdoutLineCount += (chunk.match(/\n/g) || []).length;
+      } else if (!record.stdout.endsWith("\n[...output truncated]\n")) {
+        record.stdout += "\n[...output truncated]\n";
       }
-    }
-
-    // Trim output if too long
-    const stdoutLines = record.stdout.split("\n");
-    if (stdoutLines.length > record.maxOutputLines) {
-      record.stdout = stdoutLines.slice(-record.maxOutputLines).join("\n");
-      record.stdout = `[...trimmed]\n` + record.stdout;
-    }
-
-    const stderrLines = record.stderr.split("\n");
-    if (stderrLines.length > record.maxOutputLines) {
-      record.stderr = stderrLines.slice(-record.maxOutputLines).join("\n");
-      record.stderr = `[...trimmed]\n` + record.stderr;
+    } else {
+      if (record.stderr.length < record.maxOutputBytes) {
+        record.stderr += chunk;
+        record.stderrLineCount += (chunk.match(/\n/g) || []).length;
+      } else if (!record.stderr.endsWith("\n[...output truncated]\n")) {
+        record.stderr += "\n[...output truncated]\n";
+      }
     }
   }
 
@@ -292,8 +303,8 @@ export class CliExecManager {
   }
 }
 
-// Cleanup old jobs every 10 minutes
-setInterval(() => {
+// Cleanup old jobs periodically. Use unref() so timer doesn't block shutdown.
+const cleanupInterval = setInterval(() => {
   const manager = globalCliExecManager;
   if (manager) {
     const cleaned = manager.cleanup(3600000); // Clean jobs older than 1 hour
@@ -302,6 +313,7 @@ setInterval(() => {
     }
   }
 }, 600000);
+cleanupInterval.unref();
 
 let globalCliExecManager: CliExecManager | null = null;
 

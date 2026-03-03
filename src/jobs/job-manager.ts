@@ -8,6 +8,7 @@ interface LoginJobRecord extends LoginJobSummary {
 }
 
 const URL_REGEX = /https?:\/\/[^\s]+/gi;
+const MAX_JOBS = 500;
 
 export class JobManager {
   private readonly jobs = new Map<string, LoginJobRecord>();
@@ -45,12 +46,15 @@ export class JobManager {
       stdio: "pipe",
     });
 
+    this.pruneOldJobs();
+
     let finished = false;
+    let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
 
     const timeout = setTimeout(() => {
       this.pushLog(record, "[system] command timed out");
       child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 2000);
+      sigkillTimer = setTimeout(() => child.kill("SIGKILL"), 2000);
     }, resolved.timeoutMs);
 
     child.stdout.setEncoding("utf8");
@@ -70,6 +74,7 @@ export class JobManager {
       }
       finished = true;
       clearTimeout(timeout);
+      if (sigkillTimer) clearTimeout(sigkillTimer);
       record.status = "failed";
       record.finishedAt = new Date().toISOString();
       record.exitCode = null;
@@ -82,6 +87,7 @@ export class JobManager {
       }
       finished = true;
       clearTimeout(timeout);
+      if (sigkillTimer) clearTimeout(sigkillTimer);
       record.finishedAt = new Date().toISOString();
       record.exitCode = exitCode;
       record.status = exitCode === 0 ? "completed" : "failed";
@@ -141,6 +147,18 @@ export class JobManager {
       if (!record.urls.includes(url)) {
         record.urls.push(url);
       }
+    }
+  }
+
+  private pruneOldJobs(): void {
+    if (this.jobs.size <= MAX_JOBS) return;
+    const sorted = [...this.jobs.entries()]
+      .filter(([, j]) => j.status !== "running")
+      .sort(([, a], [, b]) => (a.startedAt < b.startedAt ? -1 : 1));
+    const toRemove = Math.min(sorted.length, this.jobs.size - MAX_JOBS);
+    for (let i = 0; i < toRemove; i++) {
+      const entry = sorted[i];
+      if (entry) this.jobs.delete(entry[0]);
     }
   }
 }

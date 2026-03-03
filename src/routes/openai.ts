@@ -42,7 +42,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
     const validationResult = validateBody(request.body, chatCompletionsRequestSchema);
     if (!validationResult.success) {
       request.log.warn(
-        { 
+        {
           error: validationResult.error,
           body: typeof request.body === "object" ? JSON.stringify(request.body).slice(0, 2000) : String(request.body)
         },
@@ -74,7 +74,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
     if (!validationResult.success) {
       // Log the failing request body for debugging
       request.log.warn(
-        { 
+        {
           error: validationResult.error,
           body: typeof request.body === "object" ? JSON.stringify(request.body).slice(0, 2000) : String(request.body)
         },
@@ -602,7 +602,9 @@ function normalizeChatMessages(raw: unknown[]): ChatMessage[] {
   return messages;
 }
 
-function normalizeResponsesInput(raw: unknown): ChatMessage[] {
+function normalizeResponsesInput(raw: unknown, depth = 0): ChatMessage[] {
+  if (depth > 10) return [];
+
   if (typeof raw === "string") {
     return [{ role: "user", content: raw }];
   }
@@ -614,7 +616,7 @@ function normalizeResponsesInput(raw: unknown): ChatMessage[] {
   if (Array.isArray(raw)) {
     const out: ChatMessage[] = [];
     for (const item of raw) {
-      out.push(...normalizeResponsesInput(item));
+      out.push(...normalizeResponsesInput(item, depth + 1));
     }
     return out;
   }
@@ -892,18 +894,18 @@ function sanitizeInstructions(value: unknown): string {
   if (typeof value !== "string") {
     return "";
   }
-  
+
   const trimmed = value.trim();
-  
+
   // Remove null bytes
   const noNulls = trimmed.replace(/\x00/g, "");
-  
+
   // Limit length to prevent abuse
   const maxLength = 10000;
   if (noNulls.length > maxLength) {
     return noNulls.slice(0, maxLength);
   }
-  
+
   return noNulls;
 }
 
@@ -916,7 +918,7 @@ interface AudioResponse {
 
 function parseAudioResponse(text: string): AudioResponse | null {
   const trimmed = text.trim();
-  
+
   // Try to parse as JSON first
   try {
     const parsed = JSON.parse(trimmed);
@@ -969,7 +971,7 @@ function getAudioContentType(format: string): string {
 
 function extractTranscriptionText(text: string): string {
   const trimmed = text.trim();
-  
+
   // Try to parse as JSON first
   try {
     const parsed = JSON.parse(trimmed);
@@ -979,6 +981,6 @@ function extractTranscriptionText(text: string): string {
   } catch {
     // Not JSON, return as-is
   }
-  
+
   return trimmed;
 }

@@ -144,6 +144,50 @@ class MetricsRegistry {
 // Global registry instance
 export const metrics = new MetricsRegistry();
 
+// Known route prefixes for metrics normalization.
+// Any request that doesn't match is bucketed as "/other" to prevent cardinality explosion.
+const KNOWN_ROUTE_PREFIXES = [
+  "/v1/models",
+  "/v1/chat/completions",
+  "/v1/responses",
+  "/v1/images/generations",
+  "/v1/audio/speech",
+  "/v1/audio/transcriptions",
+  "/v1/audio/translations",
+  "/v1/messages",
+  "/v1/message",
+  "/openai/v1/models",
+  "/openai/v1/chat/completions",
+  "/openai/v1/responses",
+  "/openai/v1/images/generations",
+  "/openai/v1/audio/speech",
+  "/openai/v1/audio/transcriptions",
+  "/openai/v1/audio/translations",
+  "/openai/v1/messages",
+  "/openai/v1/message",
+  "/healthz",
+  "/metrics",
+  "/admin/providers",
+  "/admin/jobs",
+  "/admin/stats/models",
+  "/admin/rate-limits",
+  "/admin/cli/exec",
+  "/admin/cli/git/clone",
+  "/admin/cli/git/commit",
+  "/admin/cli/git/push",
+  "/admin/cli/docker/build",
+  "/admin/cli/kubectl/apply",
+  "/admin/cli/jobs",
+];
+
+function normalizeRoute(path: string): string {
+  for (const prefix of KNOWN_ROUTE_PREFIXES) {
+    if (path === prefix) return prefix;
+    if (path.startsWith(prefix + "/")) return prefix + "/:id";
+  }
+  return "/other";
+}
+
 /**
  * Middleware to track request metrics.
  */
@@ -153,7 +197,7 @@ export function trackRequest(
   statusCode: number,
   durationMs: number,
 ): void {
-  const route = path.replace(/\/[0-9a-f-]+/g, "/:id"); // Normalize IDs
+  const route = normalizeRoute(path);
   metrics.inc("gateway_requests_total", { method, route, status: String(statusCode) });
   metrics.inc("gateway_requests_duration_seconds", { method, route }, durationMs / 1000);
 }

@@ -31,11 +31,11 @@ export const adminRoutes: FastifyPluginAsync<AdminRoutesOptions> = async (app, o
 
         let authStatus:
           | {
-              ok: boolean;
-              exitCode: number | null;
-              stdout: string;
-              stderr: string;
-            }
+            ok: boolean;
+            exitCode: number | null;
+            stdout: string;
+            stderr: string;
+          }
           | undefined;
 
         if (checkAuth && statusConfigured) {
@@ -207,8 +207,8 @@ export const adminRoutes: FastifyPluginAsync<AdminRoutesOptions> = async (app, o
     const command = typeof body.command === "string" ? body.command : "";
     const args = Array.isArray(body.args) ? body.args.filter((a): a is string => typeof a === "string") : [];
     const cwd = typeof body.cwd === "string" ? body.cwd : undefined;
-    const env = typeof body.env === "object" && body.env !== null 
-      ? Object.fromEntries(Object.entries(body.env).filter(([, v]) => typeof v === "string")) 
+    const env = typeof body.env === "object" && body.env !== null
+      ? Object.fromEntries(Object.entries(body.env).filter(([, v]) => typeof v === "string"))
       : undefined;
     const timeoutMs = typeof body.timeoutMs === "number" ? body.timeoutMs : undefined;
 
@@ -284,7 +284,7 @@ export const adminRoutes: FastifyPluginAsync<AdminRoutesOptions> = async (app, o
       if (add) {
         await cliExecManager.execute("git", ["add", "."], { cwd });
       }
-      
+
       const job = await cliExecManager.execute("git", ["commit", "-m", message], { cwd });
       return {
         job,
@@ -299,7 +299,7 @@ export const adminRoutes: FastifyPluginAsync<AdminRoutesOptions> = async (app, o
   // Git push helper
   app.post("/cli/git/push", async (request, reply) => {
     const body = request.body as Record<string, unknown> | undefined;
-    
+
     const remote = typeof body?.remote === "string" ? body.remote : "origin";
     const branch = typeof body?.branch === "string" ? body.branch : undefined;
     const cwd = typeof body?.cwd === "string" ? body.cwd : undefined;
@@ -345,18 +345,32 @@ export const adminRoutes: FastifyPluginAsync<AdminRoutesOptions> = async (app, o
     args.push(context);
 
     try {
-      const job = await cliExecManager.execute("docker", args, { cwd });
-      
-      // If push requested, chain a push job
+      const buildJob = await cliExecManager.execute("docker", args, { cwd });
+
       if (push) {
-        // Note: In production, you'd want to wait for build to complete
-        // This is a simplified version
-        await cliExecManager.execute("docker", ["push", tag], { cwd });
+        // Wait for build to complete before pushing
+        const pushAfterBuild = async () => {
+          // Poll until build completes
+          const pollIntervalMs = 2000;
+          const maxWaitMs = 600000; // 10 minutes
+          const startedAt = Date.now();
+          while (Date.now() - startedAt < maxWaitMs) {
+            const current = cliExecManager.getJob(buildJob.id);
+            if (!current || current.status !== "running") break;
+            await new Promise(r => setTimeout(r, pollIntervalMs));
+          }
+          const finalBuild = cliExecManager.getJob(buildJob.id);
+          if (finalBuild?.status === "completed") {
+            await cliExecManager.execute("docker", ["push", tag], { cwd });
+          }
+        };
+        // Fire and forget the push-after-build — client can poll cli/jobs
+        pushAfterBuild().catch(() => { /* errors visible via job status */ });
       }
-      
+
       return {
-        job,
-        message: `Docker build started for ${tag}`,
+        job: buildJob,
+        message: `Docker build started for ${tag}${push ? " (push will follow after build completes)" : ""}`,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to start docker build";

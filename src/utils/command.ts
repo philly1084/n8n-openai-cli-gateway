@@ -56,6 +56,8 @@ export async function runCommand(
   command: ResolvedCommand,
   stdinData?: string,
 ): Promise<CommandOutput> {
+  const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10MB cap per stream
+
   return await new Promise<CommandOutput>((resolve, reject) => {
     const child = spawn(command.executable, command.args, {
       env: {
@@ -70,22 +72,27 @@ export async function runCommand(
     let stderr = "";
     let finished = false;
     let timedOut = false;
+    let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
 
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 2000);
+      sigkillTimer = setTimeout(() => child.kill("SIGKILL"), 2000);
     }, command.timeoutMs);
 
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
 
     child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
+      if (stdout.length < MAX_OUTPUT_BYTES) {
+        stdout += chunk;
+      }
     });
 
     child.stderr.on("data", (chunk: string) => {
-      stderr += chunk;
+      if (stderr.length < MAX_OUTPUT_BYTES) {
+        stderr += chunk;
+      }
     });
 
     child.on("error", (err) => {
@@ -94,6 +101,7 @@ export async function runCommand(
       }
       finished = true;
       clearTimeout(timer);
+      if (sigkillTimer) clearTimeout(sigkillTimer);
       reject(err);
     });
 
@@ -104,6 +112,7 @@ export async function runCommand(
 
       finished = true;
       clearTimeout(timer);
+      if (sigkillTimer) clearTimeout(sigkillTimer);
       resolve({
         stdout,
         stderr,
@@ -112,6 +121,9 @@ export async function runCommand(
         timedOut,
       });
     });
+
+    // Ignore EPIPE errors when child process exits before reading all of stdin
+    child.stdin.on("error", () => { /* ignore EPIPE */ });
 
     if (stdinData !== undefined) {
       child.stdin.write(stdinData);
