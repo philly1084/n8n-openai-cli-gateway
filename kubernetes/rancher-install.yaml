@@ -60,9 +60,9 @@ data:
           - id: gemini-3-pro-image-preview
             providerModel: gemini-3-pro-image-preview
           - id: gemini-3.1-pro-preview
-            providerModel: gemini-3.1-pro-preview
+            providerModel: gemini-3-pro-preview
           - id: gemini-3.1-flash-preview
-            providerModel: gemini-3.1-flash-preview
+            providerModel: gemini-3-flash-preview
           - id: gemini-3-pro-preview
             providerModel: gemini-3-pro-preview
           - id: gemini-3-flash-preview
@@ -235,9 +235,9 @@ data:
           - id: gemini-3-pro-image-preview-tools
             providerModel: gemini-3-pro-image-preview
           - id: gemini-3.1-pro-preview-tools
-            providerModel: gemini-3.1-pro-preview
+            providerModel: gemini-3-pro-preview
           - id: gemini-3.1-flash-preview-tools
-            providerModel: gemini-3.1-flash-preview
+            providerModel: gemini-3-flash-preview
           - id: gemini-3-pro-preview-tools
             providerModel: gemini-3-pro-preview
           - id: gemini-3-flash-preview-tools
@@ -931,6 +931,8 @@ data:
         models:
           - id: gpt-5
             providerModel: gpt-5
+          - id: gpt-5.4
+            providerModel: gpt-5.4
           - id: gpt-5-codex
             providerModel: gpt-5-codex
           - id: gpt-5-codex-mini
@@ -1441,7 +1443,7 @@ spec:
             - name: CODEX_APPSERVER_START_TIMEOUT_MS
               value: "45000"
             - name: CODEX_APPSERVER_CHATGPT_FALLBACK_MODEL
-              value: "gpt-5.3-codex"
+              value: "gpt-5.4"
             - name: N8N_API_KEY
               valueFrom:
                 secretKeyRef:

@@ -703,7 +703,7 @@ function parseChatGptFallbackModel(): string {
   ) {
     return process.env.CODEX_APPSERVER_CHATGPT_FALLBACK_MODEL.trim();
   }
-  return "gpt-5.2-codex";
+  return "gpt-5.4";
 }
 
 function isChatGptCodexLatestUnsupportedError(error: unknown): boolean {

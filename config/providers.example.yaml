@@ -85,6 +85,11 @@ providers:
       - id: codex-latest
         providerModel: codex-latest
         fallbackModels:
+          - gpt-5.4
+          - gemini-2.5-pro
+      - id: gpt-5.4
+        providerModel: gpt-5.4
+        fallbackModels:
           - gemini-2.5-pro
       - id: gpt-4.1
         providerModel: gpt-4.1
