@@ -53,20 +53,24 @@ data:
         type: cli
         description: Gemini CLI adapter (text-only baseline)
         models:
+          - id: gemini-3.1-pro-preview
+            providerModel: gemini-3.1-pro-preview
+            fallbackModels:
+              - gemini-3-flash-preview
+          - id: gemini-3-flash-preview
+            providerModel: gemini-3-flash-preview
+            fallbackModels:
+              - gemini-3.1-pro-preview
+          - id: gemini-3.1-flash-lite-preview
+            providerModel: gemini-3.1-flash-lite-preview
+            fallbackModels:
+              - gemini-3-flash-preview
+          - id: gemini-3.1-flash-image-preview
+            providerModel: gemini-3.1-flash-image-preview
           - id: gemini-2.5-flash-image
             providerModel: gemini-2.5-flash-image
             fallbackModels:
-              - gemini-3-pro-image-preview
-          - id: gemini-3-pro-image-preview
-            providerModel: gemini-3-pro-image-preview
-          - id: gemini-3.1-pro-preview
-            providerModel: gemini-3-pro-preview
-          - id: gemini-3.1-flash-preview
-            providerModel: gemini-3-flash-preview
-          - id: gemini-3-pro-preview
-            providerModel: gemini-3-pro-preview
-          - id: gemini-3-flash-preview
-            providerModel: gemini-3-flash-preview
+              - gemini-3.1-flash-image-preview
           - id: gemini-2.5-pro
             providerModel: gemini-2.5-pro
           - id: gemini-2.5-flash
@@ -110,12 +114,12 @@ data:
         type: cli
         description: Gemini CLI + Nano Banana image generation adapter
         models:
+          - id: gemini-3.1-flash-image-nb
+            providerModel: gemini-3.1-flash-image-preview
+            fallbackModels:
+              - gemini-2.5-flash-image-nb
           - id: gemini-2.5-flash-image-nb
             providerModel: gemini-2.5-flash-image
-            fallbackModels:
-              - gemini-3-pro-image-preview-nb
-          - id: gemini-3-pro-image-preview-nb
-            providerModel: gemini-3-pro-image-preview
         responseCommand:
           executable: sh
           args:
@@ -230,18 +234,16 @@ data:
         type: cli
         description: Gemini CLI adapter (strict final-line tool contract)
         models:
-          - id: gemini-2.5-flash-image-tools
-            providerModel: gemini-2.5-flash-image
-          - id: gemini-3-pro-image-preview-tools
-            providerModel: gemini-3-pro-image-preview
           - id: gemini-3.1-pro-preview-tools
-            providerModel: gemini-3-pro-preview
-          - id: gemini-3.1-flash-preview-tools
-            providerModel: gemini-3-flash-preview
-          - id: gemini-3-pro-preview-tools
-            providerModel: gemini-3-pro-preview
+            providerModel: gemini-3.1-pro-preview
           - id: gemini-3-flash-preview-tools
             providerModel: gemini-3-flash-preview
+          - id: gemini-3.1-flash-lite-preview-tools
+            providerModel: gemini-3.1-flash-lite-preview
+          - id: gemini-3.1-flash-image-preview-tools
+            providerModel: gemini-3.1-flash-image-preview
+          - id: gemini-2.5-flash-image-tools
+            providerModel: gemini-2.5-flash-image
           - id: gemini-2.5-pro-tools
             providerModel: gemini-2.5-pro
           - id: gemini-2.5-flash-tools
@@ -929,10 +931,27 @@ data:
         type: cli
         description: OpenAI (Codex CLI) adapter
         models:
-          - id: gpt-5
-            providerModel: gpt-5
           - id: gpt-5.4
             providerModel: gpt-5.4
+            fallbackModels:
+              - gpt-5.4-pro
+              - gemini-3.1-pro-preview
+          - id: gpt-5.4-pro
+            providerModel: gpt-5.4-pro
+            fallbackModels:
+              - gpt-5.4
+          - id: gpt-5.3-instant
+            providerModel: gpt-5.3-instant
+            fallbackModels:
+              - gpt-5.4
+          - id: gpt-5.3-codex
+            providerModel: gpt-5.3-codex
+          - id: gpt-5.2
+            providerModel: gpt-5.2
+          - id: gpt-5.2-codex
+            providerModel: gpt-5.2-codex
+          - id: gpt-5
+            providerModel: gpt-5
           - id: gpt-5-codex
             providerModel: gpt-5-codex
           - id: gpt-5-codex-mini
@@ -945,12 +964,6 @@ data:
             providerModel: gpt-5.1-codex-max
           - id: gpt-5.1-codex-mini
             providerModel: gpt-5.1-codex-mini
-          - id: gpt-5.2
-            providerModel: gpt-5.2
-          - id: gpt-5.2-codex
-            providerModel: gpt-5.2-codex
-          - id: gpt-5.3-codex
-            providerModel: gpt-5.3-codex
         responseCommand:
           executable: node
           args:

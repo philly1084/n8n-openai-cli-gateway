@@ -9,6 +9,10 @@ data:
         type: cli
         description: Gemini via OpenCode + Google OAuth plugin
         models:
+          - id: gemini-3.1-pro-preview
+            providerModel: google/gemini-3.1-pro-preview
+          - id: gemini-3-flash-preview
+            providerModel: google/gemini-3-flash-preview
           - id: gemini-2.5-pro
             providerModel: google/gemini-2.5-pro
         responseCommand:

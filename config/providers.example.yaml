@@ -3,14 +3,28 @@ providers:
     type: cli
     description: Gemini via OpenCode + Google OAuth plugin
     models:
+      - id: gemini-3.1-pro-preview
+        providerModel: google/gemini-3.1-pro-preview
+        fallbackModels:
+          - gemini-3-flash-preview
+          - gpt-5.4
+      - id: gemini-3-flash-preview
+        providerModel: google/gemini-3-flash-preview
+        fallbackModels:
+          - gemini-3.1-pro-preview
+          - gpt-5.4
+      - id: gemini-3.1-flash-lite-preview
+        providerModel: google/gemini-3.1-flash-lite-preview
+        fallbackModels:
+          - gemini-3-flash-preview
       - id: gemini-2.5-pro
         providerModel: google/gemini-2.5-pro
         fallbackModels:
-          - gpt-4.1
+          - gemini-3.1-pro-preview
       - id: gemini-2.5-flash
         providerModel: google/gemini-2.5-flash
         fallbackModels:
-          - gpt-4.1
+          - gemini-3-flash-preview
     responseCommand:
       executable: opencode
       args:
@@ -86,15 +100,25 @@ providers:
         providerModel: codex-latest
         fallbackModels:
           - gpt-5.4
-          - gemini-2.5-pro
+          - gemini-3.1-pro-preview
       - id: gpt-5.4
         providerModel: gpt-5.4
         fallbackModels:
-          - gemini-2.5-pro
+          - gpt-5.4-pro
+          - gemini-3.1-pro-preview
+      - id: gpt-5.4-pro
+        providerModel: gpt-5.4-pro
+        fallbackModels:
+          - gpt-5.4
+          - gemini-3.1-pro-preview
+      - id: gpt-5.3-instant
+        providerModel: gpt-5.3-instant
+        fallbackModels:
+          - gpt-5.4
       - id: gpt-4.1
         providerModel: gpt-4.1
         fallbackModels:
-          - gemini-2.5-flash
+          - gpt-5.3-instant
     responseCommand:
       executable: node
       args:
@@ -389,12 +413,14 @@ providers:
     type: cli
     description: Gemini Flash via Google AI Studio (generous free tier)
     models:
-      - id: gemini-1.5-flash
-        providerModel: gemini-1.5-flash-latest
-      - id: gemini-1.5-flash-8b
-        providerModel: gemini-1.5-flash-8b-latest
-      - id: gemini-1.5-pro
-        providerModel: gemini-1.5-pro-latest
+      - id: gemini-3-flash-preview
+        providerModel: gemini-3-flash-preview
+      - id: gemini-3.1-flash-lite-preview
+        providerModel: gemini-3.1-flash-lite-preview
+      - id: gemini-2.5-flash
+        providerModel: gemini-2.5-flash
+      - id: gemini-2.5-flash-lite
+        providerModel: gemini-2.5-flash-lite
     responseCommand:
       executable: curl
       args:
@@ -573,7 +599,7 @@ providers:
     description: Gemini Flash audio understanding (multimodal audio input)
     models:
       - id: gemini-audio-flash
-        providerModel: gemini-1.5-flash-latest
+        providerModel: gemini-2.5-flash
     responseCommand:
       executable: sh
       args:
