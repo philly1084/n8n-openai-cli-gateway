@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { LruMap } from "../utils/lru-map";
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { ProviderRegistry } from "../providers/registry";
@@ -11,6 +13,16 @@ import {
   audioSpeechRequestSchema,
   audioTranscriptionsRequestSchema,
 } from "../validation";
+
+// Cache tool definitions for sessions. n8n occasionally drops them on subsequent turns.
+const multiTurnToolsCache = new LruMap<string, UnifiedToolDefinition[]>(100);
+
+export function getSessionSignature(messages: ChatMessage[]): string {
+  const firstSystem = messages.find((m) => m.role === "system")?.content || "";
+  const firstUser = messages.find((m) => m.role === "user")?.content || "";
+  const content = `${typeof firstSystem === "string" ? firstSystem : JSON.stringify(firstSystem)}|${typeof firstUser === "string" ? firstUser : JSON.stringify(firstUser)}`;
+  return createHash("sha256").update(content).digest("hex");
+}
 
 interface OpenAiRoutesOptions {
   registry: ProviderRegistry;
@@ -115,6 +127,21 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
         "No tools normalized from /responses request payload.",
       );
     }
+
+    const sessionSig = getSessionSignature(messages);
+    if (tools.length > 0) {
+      multiTurnToolsCache.set(sessionSig, tools);
+    } else if (messages.length > 2) {
+      const cachedTools = multiTurnToolsCache.get(sessionSig);
+      if (cachedTools && cachedTools.length > 0) {
+        tools.push(...cachedTools);
+        app.log.debug(
+          { model: body.model, sessionSig, cachedToolsCount: cachedTools.length },
+          "Restored multi-turn tools from cache for /responses request.",
+        );
+      }
+    }
+
     // Debug: trace when tools are missing on multi-turn responses requests
     if (tools.length === 0) {
       const hasToolResults = inputMessages.some(m => m.role === "tool" || m.tool_call_id);
@@ -412,6 +439,20 @@ async function handleChatCompletionsRequest(
       "No tools normalized from chat request payload.",
     );
   }
+  const sessionSig = getSessionSignature(messages);
+  if (tools.length > 0) {
+    multiTurnToolsCache.set(sessionSig, tools);
+  } else if (messages.length > 2) {
+    const cachedTools = multiTurnToolsCache.get(sessionSig);
+    if (cachedTools && cachedTools.length > 0) {
+      tools.push(...cachedTools);
+      reply.log.debug(
+        { model: body.model, sessionSig, cachedToolsCount: cachedTools.length },
+        "Restored multi-turn tools from cache for /chat/completions request.",
+      );
+    }
+  }
+
   // Debug: trace when tools are missing on multi-turn requests that contain
   // tool results, which is often the signal that n8n is not re-sending tools.
   if (tools.length === 0) {
