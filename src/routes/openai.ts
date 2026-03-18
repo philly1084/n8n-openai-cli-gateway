@@ -115,6 +115,21 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
         "No tools normalized from /responses request payload.",
       );
     }
+    // Debug: trace when tools are missing on multi-turn responses requests
+    if (tools.length === 0) {
+      const hasToolResults = inputMessages.some(m => m.role === "tool" || m.tool_call_id);
+      if (hasToolResults || inputMessages.some(m => m.role === "assistant")) {
+        app.log.debug(
+          {
+            model: body.model,
+            messageCount: inputMessages.length + messages.length,
+            hasToolResults,
+            rawToolsLength: rawTools.length,
+          },
+          "Multi-turn /responses request has no tools defined — tool calls from provider will pass through un-normalized.",
+        );
+      }
+    }
 
     try {
       const result = await options.registry.runModel(body.model, {
@@ -396,6 +411,24 @@ async function handleChatCompletionsRequest(
       },
       "No tools normalized from chat request payload.",
     );
+  }
+  // Debug: trace when tools are missing on multi-turn requests that contain
+  // tool results, which is often the signal that n8n is not re-sending tools.
+  if (tools.length === 0) {
+    const hasToolMessages = messages.some(m => m.role === "tool" || m.tool_call_id);
+    const hasAssistantMessages = messages.some(m => m.role === "assistant");
+    if (hasToolMessages || hasAssistantMessages) {
+      reply.log.debug(
+        {
+          model: body.model,
+          messageCount: messages.length,
+          hasToolMessages,
+          hasAssistantMessages,
+          rawToolsLength: rawTools.length,
+        },
+        "Multi-turn chat request has no tools defined - tool calls from provider will pass through un-normalized.",
+      );
+    }
   }
 
   try {

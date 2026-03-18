@@ -448,12 +448,13 @@ function normalizeResultToolCalls(
     return result;
   }
 
+  // When no tool definitions were provided by the caller, pass through
+  // whatever tool calls the provider returned. Previously this branch
+  // silently dropped ALL tool calls and rewrote finish_reason to "stop",
+  // which caused agents to lose tool-calling ability on subsequent turns
+  // when n8n didn't re-send the tools array.
   if (allowedTools.size === 0) {
-    return {
-      ...result,
-      toolCalls: [],
-      finishReason: result.finishReason === "tool_calls" ? "stop" : result.finishReason,
-    };
+    return result;
   }
 
   const mappedToolCalls: ProviderToolCall[] = [];
