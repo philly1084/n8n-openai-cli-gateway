@@ -5,7 +5,7 @@ const chatRoleSchema = z.enum(["system", "user", "assistant", "tool"]);
 
 const chatMessageSchema = z.object({
   role: chatRoleSchema,
-  content: z.unknown(),
+  content: z.unknown().optional(),
   name: z.string().optional(),
   tool_call_id: z.string().optional(),
   tool_calls: z.unknown().optional(),
@@ -23,12 +23,13 @@ const toolDefinitionSchema = z.object({
       description: z.string().optional(),
       parameters: z.unknown().optional(),
     })
+    .passthrough()
     .optional(),
   // Allow other properties that the normalization logic handles
   name: z.string().optional(),
   description: z.string().optional(),
   parameters: z.unknown().optional(),
-});
+}).passthrough();
 
 // Chat completions request schema
 export const chatCompletionsRequestSchema = z.object({
@@ -43,7 +44,7 @@ export const chatCompletionsRequestSchema = z.object({
   presence_penalty: z.number().optional(),
   frequency_penalty: z.number().optional(),
   user: z.string().optional(),
-});
+}).passthrough();
 
 // Responses API input item schema - very permissive for n8n compatibility
 // Accepts strings, objects, or null/undefined items
@@ -57,7 +58,7 @@ const responseInputItemSchema = z.union([
 // Responses API request schema
 export const responsesRequestSchema = z.object({
   model: z.string().min(1, "model is required"),
-  input: z.union([z.string(), z.array(responseInputItemSchema)]).optional(),
+  input: z.union([z.string(), responseInputItemSchema, z.array(responseInputItemSchema)]).optional(),
   instructions: z.string().optional(),
   tools: z.array(toolDefinitionSchema).optional(),
   functions: z.array(z.unknown()).optional(),
@@ -67,7 +68,7 @@ export const responsesRequestSchema = z.object({
   top_p: z.number().optional(),
   user: z.string().optional(),
   tool_choice: z.unknown().optional(),
-});
+}).passthrough();
 
 // Image generations request schema
 export const imageGenerationsRequestSchema = z.object({

@@ -3,8 +3,14 @@ import type { ChatMessage } from "../types";
 export function buildPrompt(messages: ChatMessage[]): string {
   return messages
     .map((message) => {
-      const role = message.role.toUpperCase();
-      return `${role}:\n${message.content}`.trim();
+      const headerParts = [message.role.toUpperCase()];
+      if (message.name) {
+        headerParts.push(`name=${message.name}`);
+      }
+      if (message.tool_call_id) {
+        headerParts.push(`tool_call_id=${message.tool_call_id}`);
+      }
+      return `${headerParts.join(" ")}:\n${message.content}`.trim();
     })
     .join("\n\n");
 }

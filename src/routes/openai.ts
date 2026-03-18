@@ -104,7 +104,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
       return sendOpenAiError(reply, 400, "input or instructions must be provided.");
     }
 
-    const rawTools = body.tools ?? [];
+    const rawTools = body.tools ?? body.functions ?? [];
     const tools = normalizeTools(rawTools);
     if (tools.length === 0 && rawTools.length > 0) {
       app.log.warn(
@@ -386,7 +386,7 @@ async function handleChatCompletionsRequest(
     return sendOpenAiError(reply, 400, "messages must include at least one item.");
   }
 
-  const rawTools = body.tools ?? [];
+  const rawTools = body.tools ?? body.functions ?? [];
   const tools = normalizeTools(rawTools);
   if (tools.length === 0 && rawTools.length > 0) {
     reply.log.warn(
@@ -639,7 +639,10 @@ function normalizeChatMessages(raw: unknown[]): ChatMessage[] {
       continue;
     }
 
-    const content = extractTextContent(record.content);
+    const content = mergeMessageContent(
+      extractTextContent(record.content),
+      extractToolCallContext(record.tool_calls ?? record.tool_call ?? record.function_call),
+    );
     messages.push({
       role,
       content,
@@ -702,6 +705,31 @@ function normalizeResponsesInput(raw: unknown, depth = 0): ChatMessage[] {
     ];
   }
 
+  if (record.type === "function_call") {
+    const callId =
+      typeof record.call_id === "string"
+        ? record.call_id
+        : typeof record.tool_call_id === "string"
+          ? record.tool_call_id
+          : typeof record.id === "string"
+            ? record.id
+            : undefined;
+    const toolCallText = extractToolCallContext({
+      id: callId,
+      name: record.name,
+      arguments: record.arguments ?? record.input,
+    });
+    if (!toolCallText) {
+      return [];
+    }
+    return [
+      {
+        role: "assistant",
+        content: toolCallText,
+      },
+    ];
+  }
+
   // Handle tool role directly (n8n sometimes sends this)
   if (role === "tool" || record.type === "tool_result") {
     const callId =
@@ -725,12 +753,18 @@ function normalizeResponsesInput(raw: unknown, depth = 0): ChatMessage[] {
   }
 
   if (record.type === "message") {
-    const content = extractTextContent(record.content);
+    const content = mergeMessageContent(
+      extractTextContent(record.content),
+      extractToolCallContext(record.tool_calls ?? record.tool_call ?? record.function_call),
+    );
     return [{ role, content }];
   }
 
   if ("content" in record) {
-    const content = extractTextContent(record.content);
+    const content = mergeMessageContent(
+      extractTextContent(record.content),
+      extractToolCallContext(record.tool_calls ?? record.tool_call ?? record.function_call),
+    );
     return [{ role, content }];
   }
 
@@ -752,6 +786,85 @@ function asRole(value: unknown): ChatMessage["role"] | undefined {
   }
 
   return undefined;
+}
+
+function mergeMessageContent(content: string, extra: string): string {
+  const base = content.trim();
+  const appended = extra.trim();
+  if (!base) {
+    return appended;
+  }
+  if (!appended) {
+    return base;
+  }
+  return `${base}\n\n${appended}`;
+}
+
+function extractToolCallContext(value: unknown): string {
+  const normalized = normalizeToolCallContext(value);
+  if (normalized.length === 0) {
+    return "";
+  }
+  return `TOOL_CALLS:\n${JSON.stringify(normalized)}`;
+}
+
+function normalizeToolCallContext(
+  value: unknown,
+): Array<{ id?: string; name: string; arguments: string }> {
+  const items = Array.isArray(value) ? value : value ? [value] : [];
+  const out: Array<{ id?: string; name: string; arguments: string }> = [];
+
+  for (const item of items) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+
+    const record = item as Record<string, unknown>;
+    const fn =
+      record.function && typeof record.function === "object"
+        ? (record.function as Record<string, unknown>)
+        : undefined;
+
+    const name =
+      firstNonEmptyString(
+        record.name,
+        record.tool_name,
+        record.toolName,
+        fn?.name,
+      ) ?? "";
+    if (!name) {
+      continue;
+    }
+
+    const id = firstNonEmptyString(record.id, record.call_id, record.tool_call_id);
+    const argsRaw =
+      firstDefined(
+        record.arguments,
+        record.args,
+        record.parameters,
+        record.input,
+        fn?.arguments,
+        fn?.args,
+      ) ?? {};
+    out.push({
+      id,
+      name,
+      arguments: stringifyToolContextArguments(argsRaw),
+    });
+  }
+
+  return out;
+}
+
+function stringifyToolContextArguments(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  try {
+    return JSON.stringify(value ?? {});
+  } catch {
+    return "{}";
+  }
 }
 
 function isAuthorized(request: FastifyRequest, allowedKeys: Set<string>): boolean {
