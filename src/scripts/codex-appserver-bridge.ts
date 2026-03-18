@@ -304,19 +304,22 @@ function extractDynamicTools(request: GatewayRequest): DynamicToolSpec[] {
 }
 
 function buildPrompt(request: GatewayRequest): string {
-  if (typeof request.prompt === "string" && request.prompt.trim()) {
-    return request.prompt;
-  }
+  const promptText =
+    typeof request.prompt === "string" && request.prompt.trim()
+      ? request.prompt.trim()
+      : "";
 
   const rawMessages = Array.isArray(request.messages) ? request.messages : [];
   const messages = rawMessages as GatewayMessage[];
-  const messageText = messages
-    .map((msg) => {
-      const role =
-        typeof msg.role === "string" && msg.role.trim() ? msg.role : "user";
-      return `${role.toUpperCase()}:\n${normalizeValue(msg.content)}`;
-    })
-    .join("\n\n");
+  const messageText =
+    promptText ||
+    messages
+      .map((msg) => {
+        const role =
+          typeof msg.role === "string" && msg.role.trim() ? msg.role : "user";
+        return `${role.toUpperCase()}:\n${normalizeValue(msg.content)}`;
+      })
+      .join("\n\n");
 
   const tools = Array.isArray(request.tools) ? request.tools : [];
   if (tools.length === 0) {
