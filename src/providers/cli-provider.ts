@@ -358,7 +358,11 @@ export class CliProvider implements Provider {
     }
 
     if (mode === "text_contract_final_line") {
-      const contract = tryParseJsonContractFromFinalLine(stdout);
+      let contract = tryParseJsonContractFromFinalLine(stdout);
+      if (!contract) {
+        // Fallback for models (like Gemini) that disobey instructions and wrap JSON in markdown blocks
+        contract = tryParseJsonContractFromText(stdout);
+      }
       if (contract && (contract.output_text || contract.text || contract.content || contract.tool_calls?.length)) {
         const toolCalls = normalizeToolCalls(contract.tool_calls);
         return {
