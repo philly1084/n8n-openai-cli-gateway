@@ -82,7 +82,7 @@ kind: Deployment
 metadata:
   name: n8n-openai-cli-gateway
   namespace: n8n-openai-gateway
-spec:
+  spec:
   template:
     spec:
       containers:
