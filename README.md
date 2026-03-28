@@ -121,6 +121,17 @@ Use the OpenAI-compatible provider type when you want Groq models to be pulled a
       providerModel: groq/compound
       fallbackModels:
         - openai/gpt-oss-20b
+        - llama-3.3-70b-versatile
+    - id: groq/compound-mini
+      providerModel: groq/compound-mini
+    - id: openai/gpt-oss-120b
+      providerModel: openai/gpt-oss-120b
+    - id: openai/gpt-oss-20b
+      providerModel: openai/gpt-oss-20b
+    - id: llama-3.3-70b-versatile
+      providerModel: llama-3.3-70b-versatile
+    - id: llama-3.1-8b-instant
+      providerModel: llama-3.1-8b-instant
 ```
 
 By default, discovery filters out obvious non-chat models such as Whisper, TTS, transcription, and guardrail entries. Restarting the gateway refreshes the discovered list.
@@ -496,3 +507,29 @@ After deploy:
 - Auth header:
   - `Authorization: Bearer <n8nApiKey>`
   - or `x-api-key: <n8nApiKey>`
+
+### Add Groq to the Rancher bundle
+
+If you already use the bundled Rancher manifest, generate a merged copy with Groq added:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/merge-rancher-groq.ps1 `
+  -InputPath kubernetes/rancher-install.yaml `
+  -OutputPath kubernetes/rancher-install-groq.yaml `
+  -GroqApiKey "replace-with-your-groq-api-key"
+```
+
+That writes `kubernetes/rancher-install-groq.yaml` with:
+
+- `groqApiKey` added to the gateway secret
+- `GROQ_API_KEY` added to the gateway deployment
+- a Groq provider block added to the embedded `providers.yaml`
+
+The generated Groq models match the current Groq docs production/system IDs:
+
+- `groq/compound`
+- `groq/compound-mini`
+- `openai/gpt-oss-120b`
+- `openai/gpt-oss-20b`
+- `llama-3.3-70b-versatile`
+- `llama-3.1-8b-instant`

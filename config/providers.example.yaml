@@ -198,8 +198,12 @@ providers:
       enabled: true
       # Override the default chat filter if you want specific models only.
       # include:
-      #   - llama-*
+      #   - groq/compound*
+      #   - llama-3.1-8b-instant
+      #   - llama-3.3-70b-versatile
       #   - openai/gpt-oss-*
+      #   - meta-llama/llama-4-scout-17b-16e-instruct
+      #   - qwen/qwen3-32b
       # exclude:
       #   - "*guard*"
     models:
@@ -209,8 +213,23 @@ providers:
         providerModel: groq/compound
         fallbackModels:
           - openai/gpt-oss-20b
+          - llama-3.3-70b-versatile
+      - id: groq/compound-mini
+        providerModel: groq/compound-mini
+        fallbackModels:
+          - openai/gpt-oss-20b
+      - id: openai/gpt-oss-120b
+        providerModel: openai/gpt-oss-120b
+        fallbackModels:
+          - openai/gpt-oss-20b
       - id: openai/gpt-oss-20b
         providerModel: openai/gpt-oss-20b
+        fallbackModels:
+          - llama-3.1-8b-instant
+      - id: llama-3.3-70b-versatile
+        providerModel: llama-3.3-70b-versatile
+      - id: llama-3.1-8b-instant
+        providerModel: llama-3.1-8b-instant
 
   - id: deepseek-api
     type: cli

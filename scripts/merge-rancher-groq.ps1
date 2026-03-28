@@ -1,20 +1,29 @@
-apiVersion: v1
-kind: Secret
-metadata:
-  name: n8n-openai-cli-gateway-groq
-  namespace: n8n-openai-gateway
-type: Opaque
-stringData:
-  groqApiKey: "replace-with-your-groq-api-key"
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: n8n-openai-cli-gateway-groq-config
-  namespace: n8n-openai-gateway
-data:
-  providers-groq.yaml: |
-    providers:
+param(
+  [string]$InputPath = "kubernetes/rancher-install.yaml",
+  [string]$OutputPath = "kubernetes/rancher-install-groq.yaml",
+  [string]$GroqApiKey = "replace-with-groq-api-key"
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+if (-not (Test-Path -LiteralPath $InputPath)) {
+  throw "Input file not found: $InputPath"
+}
+
+$content = Get-Content -LiteralPath $InputPath -Raw
+
+$groqSecretLine = "  groqApiKey: `"$GroqApiKey`""
+$groqEnvBlock = @"
+            - name: GROQ_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: n8n-openai-cli-gateway-secrets
+                  key: groqApiKey
+"@
+
+$groqProviderBlock = @"
+
       - id: groq-api
         type: cli
         description: Groq API via curl using Groq production chat models
@@ -76,30 +85,34 @@ data:
                   -H "Authorization: Bearer $GROQ_API_KEY" >/dev/null
                 echo '{"ok":true}'
             timeoutMs: 15000
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: n8n-openai-cli-gateway
-  namespace: n8n-openai-gateway
-spec:
-  template:
-    spec:
-      containers:
-        - name: gateway
-          env:
-            - name: GROQ_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: n8n-openai-cli-gateway-groq
-                  key: groqApiKey
-            - name: PROVIDERS_CONFIG_PATH
-              value: /app/config/providers-groq.yaml
-          volumeMounts:
-            - name: groq-providers-config
-              mountPath: /app/config/providers-groq.yaml
-              subPath: providers-groq.yaml
-      volumes:
-        - name: groq-providers-config
-          configMap:
-            name: n8n-openai-cli-gateway-groq-config
+"@
+
+if ($content -notmatch '(?m)^\s*groqApiKey:\s*') {
+  $content = [regex]::Replace(
+    $content,
+    '(?m)^(\s*adminApiKey:\s*".*?"\s*$)',
+    "`$1`r`n$groqSecretLine",
+    1
+  )
+}
+
+if ($content -notmatch '(?m)^\s*- name:\s*GROQ_API_KEY\s*$') {
+  $content = [regex]::Replace(
+    $content,
+    '(?ms)(\s*- name:\s*NANOBANANA_GOOGLE_API_KEY\s*\r?\n\s*valueFrom:\s*\r?\n\s*secretKeyRef:\s*\r?\n\s*name:\s*n8n-openai-cli-gateway-secrets\s*\r?\n\s*key:\s*geminiApiKey\s*)',
+    "`$1`r`n$groqEnvBlock",
+    1
+  )
+}
+
+if ($content -notmatch '(?m)^\s*- id:\s*groq-api\s*$') {
+  $content = [regex]::Replace(
+    $content,
+    '(?ms)(providers\.yaml:\s*\|\s*\r?\n.*?)(\r?\n---\r?\napiVersion:\s*v1\s*\r?\nkind:\s*PersistentVolumeClaim)',
+    { param($m) $m.Groups[1].Value.TrimEnd("`r", "`n") + "`r`n" + $groqProviderBlock + $m.Groups[2].Value },
+    1
+  )
+}
+
+Set-Content -LiteralPath $OutputPath -Value $content -NoNewline
+Write-Host "Wrote merged Groq Rancher manifest to $OutputPath"
