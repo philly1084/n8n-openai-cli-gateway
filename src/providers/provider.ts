@@ -1,7 +1,7 @@
 import type {
   AuthStatusResult,
-  CliProviderConfig,
   LoginJobSummary,
+  ProviderConfig,
   ProviderModelConfig,
   ProviderRateLimits,
   ProviderResult,
@@ -12,7 +12,7 @@ import type { JobManager } from "../jobs/job-manager";
 export interface Provider {
   readonly id: string;
   readonly description?: string;
-  readonly config: CliProviderConfig;
+  readonly config: ProviderConfig;
   readonly models: ProviderModelConfig[];
 
   run(request: UnifiedRequest): Promise<ProviderResult>;

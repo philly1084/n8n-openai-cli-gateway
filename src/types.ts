@@ -70,6 +70,12 @@ export interface ProviderModelConfig {
   fallbackModels?: string[];
 }
 
+export interface ModelDiscoveryConfig {
+  enabled?: boolean;
+  include?: string[];
+  exclude?: string[];
+}
+
 export interface CliProviderConfig {
   id: string;
   type: "cli";
@@ -82,8 +88,21 @@ export interface CliProviderConfig {
   auth?: AuthConfig;
 }
 
+export interface OpenAiCompatibleProviderConfig {
+  id: string;
+  type: "openai";
+  description?: string;
+  baseUrl: string;
+  apiKeyEnv: string;
+  timeoutMs?: number;
+  models?: ProviderModelConfig[];
+  discovery?: ModelDiscoveryConfig;
+}
+
+export type ProviderConfig = CliProviderConfig | OpenAiCompatibleProviderConfig;
+
 export interface ProvidersFile {
-  providers: CliProviderConfig[];
+  providers: ProviderConfig[];
 }
 
 export interface AppConfig {

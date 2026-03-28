@@ -17,7 +17,7 @@ OpenAI-compatible gateway for n8n that exposes:
 
 Also exposed under `/openai/v1/*` for in-cluster compatibility URLs.
 
-Model execution is delegated to configurable CLI providers (Gemini via OpenCode OAuth plugin, Antigravity CLI, Codex CLI, or any other command-line model runner). The gateway keeps n8n on one API key while provider logins are handled on the backend.
+Model execution is delegated to configurable providers, including CLI runners (Gemini via OpenCode OAuth plugin, Antigravity CLI, Codex CLI) and OpenAI-compatible remote APIs such as Groq. The gateway keeps n8n on one API key while provider auth is handled on the backend.
 
 ## Why this fits your setup
 
@@ -60,6 +60,8 @@ Each provider defines:
 - optional `auth.loginCommand`, `auth.statusCommand`, and `auth.rateLimitCommand`.
 - optional per-model `fallbackModels` list of model ids to try when a provider command fails.
 
+The gateway also supports `type: openai` providers for OpenAI-compatible remote APIs such as Groq. Those providers can auto-discover models from `/models` at startup and register them automatically.
+
 Supported template variables in commands:
 
 - `{{model}}` requested model id from API
@@ -100,6 +102,28 @@ Optional environment variables:
 - `CODEX_APPSERVER_MODEL_PROVIDER` (default `openai`)
 - `CODEX_APPSERVER_TIMEOUT_MS` (default `240000`)
 - `OPENAI_REASONING_EFFORT` default reasoning effort when requests omit it
+
+### Groq API with model discovery
+
+Use the OpenAI-compatible provider type when you want Groq models to be pulled automatically from the upstream `/models` endpoint:
+
+```yaml
+- id: groq-api
+  type: openai
+  description: Groq API - auto-discovers chat-usable models at startup
+  baseUrl: https://api.groq.com/openai/v1
+  apiKeyEnv: GROQ_API_KEY
+  timeoutMs: 60000
+  discovery:
+    enabled: true
+  models:
+    - id: groq/compound
+      providerModel: groq/compound
+      fallbackModels:
+        - openai/gpt-oss-20b
+```
+
+By default, discovery filters out obvious non-chat models such as Whisper, TTS, transcription, and guardrail entries. Restarting the gateway refreshes the discovered list.
 
 ## 2) Run locally
 
@@ -223,6 +247,7 @@ Environment variables for CLI:
 | `RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window (milliseconds) |
 | `MAX_REQUEST_BODY_SIZE` | `10485760` | Max request body size in bytes (10MB) |
 | `OPENAI_REASONING_EFFORT` | provider default | Default reasoning effort for chat/responses requests |
+| `GROQ_API_KEY` | unset | API key for Groq `type: openai` providers |
 
 ### Reasoning flags
 

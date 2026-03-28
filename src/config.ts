@@ -13,38 +13,53 @@ const commandSchema = z.object({
   timeoutMs: z.number().int().positive().default(180000),
 });
 
+const providerModelSchema = z.object({
+  id: z.string().min(1),
+  providerModel: z.string().optional(),
+  description: z.string().optional(),
+  fallbackModels: z.array(z.string().min(1)).optional(),
+});
+
+const discoverySchema = z.object({
+  enabled: z.boolean().optional(),
+  include: z.array(z.string().min(1)).optional(),
+  exclude: z.array(z.string().min(1)).optional(),
+});
+
+const cliProviderSchema = z.object({
+  id: z.string().min(1),
+  type: z.literal("cli"),
+  description: z.string().optional(),
+  models: z.array(providerModelSchema).min(1),
+  responseCommand: commandSchema.extend({
+    output: z
+      .enum(["text", "text_plain", "text_contract_final_line", "json_contract"])
+      .default("text"),
+    input: z.enum(["prompt_stdin", "request_json_stdin"]).default("prompt_stdin"),
+  }),
+  auth: z
+    .object({
+      loginCommand: commandSchema.optional(),
+      statusCommand: commandSchema.optional(),
+      rateLimitCommand: commandSchema.optional(),
+    })
+    .optional(),
+});
+
+const openAiProviderSchema = z.object({
+  id: z.string().min(1),
+  type: z.literal("openai"),
+  description: z.string().optional(),
+  baseUrl: z.string().min(1),
+  apiKeyEnv: z.string().min(1),
+  timeoutMs: z.number().int().positive().default(240000),
+  models: z.array(providerModelSchema).default([]),
+  discovery: discoverySchema.optional(),
+});
+
 const providersFileSchema = z.object({
   providers: z
-    .array(
-      z.object({
-        id: z.string().min(1),
-        type: z.literal("cli"),
-        description: z.string().optional(),
-        models: z
-          .array(
-            z.object({
-              id: z.string().min(1),
-              providerModel: z.string().optional(),
-              description: z.string().optional(),
-              fallbackModels: z.array(z.string().min(1)).optional(),
-            }),
-          )
-          .min(1),
-        responseCommand: commandSchema.extend({
-          output: z
-            .enum(["text", "text_plain", "text_contract_final_line", "json_contract"])
-            .default("text"),
-          input: z.enum(["prompt_stdin", "request_json_stdin"]).default("prompt_stdin"),
-        }),
-        auth: z
-          .object({
-            loginCommand: commandSchema.optional(),
-            statusCommand: commandSchema.optional(),
-            rateLimitCommand: commandSchema.optional(),
-          })
-          .optional(),
-      }),
-    )
+    .array(z.discriminatedUnion("type", [cliProviderSchema, openAiProviderSchema]))
     .min(1),
 });
 

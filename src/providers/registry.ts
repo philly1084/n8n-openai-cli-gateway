@@ -1,10 +1,11 @@
-import type { CliProviderConfig, ProviderResult, UnifiedRequest } from "../types";
+import type { ProviderConfig, ProviderResult, UnifiedRequest } from "../types";
 import type {
   ModelStatsModelSnapshot,
   ModelStatsSnapshot,
 } from "../stats/model-stats";
 import { ModelStatsTracker } from "../stats/model-stats";
 import { CliProvider } from "./cli-provider";
+import { OpenAiCompatibleProvider } from "./openai-compatible-provider";
 import type { Provider } from "./provider";
 import { trackProvider, trackFallback } from "../metrics";
 
@@ -21,26 +22,32 @@ export class ProviderRegistry {
   private readonly models = new Map<string, ModelBinding>();
   private readonly modelStats = new ModelStatsTracker();
 
-  constructor(configs: CliProviderConfig[]) {
+  private constructor() {}
+
+  static async create(configs: ProviderConfig[]): Promise<ProviderRegistry> {
+    const registry = new ProviderRegistry();
     for (const config of configs) {
-      const provider = new CliProvider(config);
-      if (this.providers.has(provider.id)) {
+      const provider =
+        config.type === "cli"
+          ? new CliProvider(config)
+          : await OpenAiCompatibleProvider.create(config);
+      if (registry.providers.has(provider.id)) {
         throw new Error(`Duplicate provider id: ${provider.id}`);
       }
-      this.providers.set(provider.id, provider);
+      registry.providers.set(provider.id, provider);
 
       for (const model of provider.models) {
-        if (this.models.has(model.id)) {
+        if (registry.models.has(model.id)) {
           throw new Error(`Duplicate model id: ${model.id}`);
         }
-        this.models.set(model.id, {
+        registry.models.set(model.id, {
           modelId: model.id,
           providerModel: model.providerModel || model.id,
           provider,
           description: model.description,
           fallbackModelIds: model.fallbackModels || [],
         });
-        this.modelStats.registerModel({
+        registry.modelStats.registerModel({
           modelId: model.id,
           providerId: provider.id,
           providerModel: model.providerModel || model.id,
@@ -50,9 +57,11 @@ export class ProviderRegistry {
       }
     }
 
-    if (this.providers.size === 0) {
+    if (registry.providers.size === 0) {
       throw new Error("No providers configured.");
     }
+
+    return registry;
   }
 
   listModels(): Array<{

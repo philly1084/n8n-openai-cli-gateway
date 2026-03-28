@@ -5,7 +5,7 @@ import { buildServer } from "./server";
 async function main(): Promise<void> {
   const config = loadAppConfig();
   const providersFile = loadProvidersFile(config.providersPath);
-  const registry = new ProviderRegistry(providersFile.providers);
+  const registry = await ProviderRegistry.create(providersFile.providers);
   const { app, close } = buildServer(config, registry);
 
   // Track active connections for graceful shutdown

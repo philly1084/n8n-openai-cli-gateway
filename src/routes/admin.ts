@@ -25,9 +25,12 @@ export const adminRoutes: FastifyPluginAsync<AdminRoutesOptions> = async (app, o
 
     const data = await Promise.all(
       options.registry.listProviders().map(async (provider) => {
-        const statusConfigured = Boolean(provider.config.auth?.statusCommand);
-        const loginConfigured = Boolean(provider.config.auth?.loginCommand);
-        const rateLimitConfigured = Boolean(provider.config.auth?.rateLimitCommand);
+        const statusConfigured =
+          provider.config.type === "cli" ? Boolean(provider.config.auth?.statusCommand) : true;
+        const loginConfigured =
+          provider.config.type === "cli" ? Boolean(provider.config.auth?.loginCommand) : false;
+        const rateLimitConfigured =
+          provider.config.type === "cli" ? Boolean(provider.config.auth?.rateLimitCommand) : false;
 
         let authStatus:
           | {

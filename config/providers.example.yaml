@@ -189,55 +189,28 @@ providers:
     # No auth needed for local Ollama
 
   - id: groq-api
-    type: cli
-    description: Groq API - very fast inference with generous free tier
+    type: openai
+    description: Groq API - auto-discovers chat-usable models at startup
+    baseUrl: https://api.groq.com/openai/v1
+    apiKeyEnv: GROQ_API_KEY
+    timeoutMs: 60000
+    discovery:
+      enabled: true
+      # Override the default chat filter if you want specific models only.
+      # include:
+      #   - llama-*
+      #   - openai/gpt-oss-*
+      # exclude:
+      #   - "*guard*"
     models:
-      - id: llama-3.3-70b
-        providerModel: llama-3.3-70b-versatile
+      # Optional overrides for fallback chains or custom aliases.
+      # If providerModel matches a discovered Groq model, this entry wins.
+      - id: groq/compound
+        providerModel: groq/compound
         fallbackModels:
-          - mixtral-8x7b
-      - id: mixtral-8x7b
-        providerModel: mixtral-8x7b-32768
-        fallbackModels:
-          - gemma2-9b
-      - id: gemma2-9b
-        providerModel: gemma2-9b-it
-      - id: llama-3.1-8b
-        providerModel: llama-3.1-8b-instant
-    responseCommand:
-      executable: curl
-      args:
-        - -s
-        - https://api.groq.com/openai/v1/chat/completions
-        - -H
-        - "Authorization: Bearer $GROQ_API_KEY"
-        - -H
-        - "Content-Type: application/json"
-        - -d
-        - |
-          {
-            "model": "{{provider_model}}",
-            "messages": [{"role": "user", "content": "{{prompt}}"}],
-            "temperature": 0.7
-          }
-      input: prompt_stdin
-      output: text_contract_final_line
-      timeoutMs: 60000
-    auth:
-      statusCommand:
-        executable: sh
-        args:
-          - -c
-          - |
-            if [ -z "$GROQ_API_KEY" ]; then
-              echo '{"ok":false,"error":"GROQ_API_KEY not set"}'
-              exit 1
-            fi
-            curl -s -o /dev/null -w "%{http_code}" \
-              https://api.groq.com/openai/v1/models \
-              -H "Authorization: Bearer $GROQ_API_KEY" | grep -q "200" && \
-              echo '{"ok":true}' || echo '{"ok":false,"error":"Invalid API key"}'
-        timeoutMs: 10000
+          - openai/gpt-oss-20b
+      - id: openai/gpt-oss-20b
+        providerModel: openai/gpt-oss-20b
 
   - id: deepseek-api
     type: cli
