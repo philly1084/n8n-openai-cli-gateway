@@ -510,7 +510,19 @@ After deploy:
 
 ### Add Groq to the Rancher bundle
 
-If you already use the bundled Rancher manifest, generate a merged copy with Groq added:
+If you already use the bundled Rancher manifest, generate a merged copy with Groq added.
+
+Ubuntu/Linux:
+
+```bash
+chmod +x scripts/merge-rancher-groq.sh
+./scripts/merge-rancher-groq.sh \
+  --input kubernetes/rancher-install.yaml \
+  --output kubernetes/rancher-install-groq.yaml \
+  --groq-api-key "replace-with-your-groq-api-key"
+```
+
+PowerShell:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/merge-rancher-groq.ps1 `
@@ -533,3 +545,5 @@ The generated Groq models match the current Groq docs production/system IDs:
 - `openai/gpt-oss-20b`
 - `llama-3.3-70b-versatile`
 - `llama-3.1-8b-instant`
+
+Do not import `kubernetes/groq-rancher-overlay.yaml` directly into Rancher as a standalone manifest. Rancher applies imported YAML as full Kubernetes resources, and that file is only suitable as a patch-style overlay, not a complete deployment object.
