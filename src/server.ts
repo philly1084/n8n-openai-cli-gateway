@@ -169,12 +169,14 @@ export function buildServer(config: AppConfig, registry: ProviderRegistry) {
     prefix: "/v1",
     registry,
     n8nApiKeys: config.n8nApiKeys,
+    defaultReasoningEffort: config.defaultReasoningEffort,
   });
 
   app.register(openAiRoutes, {
     prefix: "/openai/v1",
     registry,
     n8nApiKeys: config.n8nApiKeys,
+    defaultReasoningEffort: config.defaultReasoningEffort,
   });
 
   app.register(adminRoutes, {

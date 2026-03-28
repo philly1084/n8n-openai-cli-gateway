@@ -56,6 +56,7 @@ async function main(): Promise<void> {
       rateLimitWindowMs: config.rateLimitWindowMs,
       maxRequestBodySize: config.maxRequestBodySize,
       shutdownTimeoutMs: config.shutdownTimeoutMs,
+      defaultReasoningEffort: config.defaultReasoningEffort,
     },
     "gateway listening",
   );

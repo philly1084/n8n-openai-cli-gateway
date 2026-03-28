@@ -1,4 +1,6 @@
 export type ChatRole = "system" | "user" | "assistant" | "tool";
+export const REASONING_EFFORT_VALUES = ["low", "medium", "high", "xhigh"] as const;
+export type ReasoningEffort = (typeof REASONING_EFFORT_VALUES)[number];
 
 export interface ChatMessage {
   role: ChatRole;
@@ -22,6 +24,7 @@ export interface UnifiedRequest {
   providerModel: string;
   messages: ChatMessage[];
   tools: UnifiedToolDefinition[];
+  reasoningEffort?: ReasoningEffort;
   metadata?: Record<string, unknown>;
 }
 
@@ -98,6 +101,8 @@ export interface AppConfig {
   rateLimitWindowMs: number;
   // Request body size limit in bytes
   maxRequestBodySize: number;
+  // Default reasoning effort when callers omit it
+  defaultReasoningEffort?: ReasoningEffort;
 }
 
 export interface AuthStatusResult {

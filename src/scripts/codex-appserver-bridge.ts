@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import process from "node:process";
 import { normalizeToolName } from "../utils/tools";
+import { resolveReasoningEffort } from "../utils/reasoning";
 
 interface GatewayMessage {
   role?: unknown;
@@ -12,6 +13,7 @@ interface GatewayRequest {
   prompt?: unknown;
   messages?: unknown;
   tools?: unknown;
+  reasoningEffort?: unknown;
   metadata?: unknown;
 }
 
@@ -758,6 +760,7 @@ async function run(): Promise<void> {
   const allowedToolNames = extractAllowedToolNames(request);
   const dynamicTools = extractDynamicTools(request);
   const prompt = buildPrompt(request);
+  const reasoningEffort = resolveReasoningEffort(request);
 
   const appServer = spawn("codex", ["app-server", "--listen", "stdio://"], {
     stdio: ["pipe", "pipe", "pipe"],
@@ -812,6 +815,7 @@ async function run(): Promise<void> {
         {
           model: selectedModel,
           modelProvider,
+          reasoningEffort,
           approvalPolicy: "never",
           sandbox: "read-only",
           experimentalRawEvents: true,
@@ -835,6 +839,7 @@ async function run(): Promise<void> {
           {
             model: selectedModel,
             modelProvider,
+            reasoningEffort,
             approvalPolicy: "never",
             sandbox: "read-only",
             experimentalRawEvents: true,
@@ -866,6 +871,7 @@ async function run(): Promise<void> {
         threadId,
         input: [{ type: "text", text: prompt }],
         model: selectedModel,
+        reasoningEffort,
       },
       startupRequestTimeoutMs,
     )) as Record<string, unknown>;

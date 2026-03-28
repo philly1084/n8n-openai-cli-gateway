@@ -101,6 +101,7 @@ npm start
 | `RATE_LIMIT_MAX` | `100` | Max requests per rate limit window |
 | `RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window (milliseconds) |
 | `MAX_REQUEST_BODY_SIZE` | `10485760` | Max request body size in bytes (10MB) |
+| `OPENAI_REASONING_EFFORT` | provider default | Default reasoning effort for chat/responses requests |
 
 ### Provider Configuration (providers.yaml)
 
@@ -115,11 +116,17 @@ Providers are configured via YAML. Each provider defines:
 **Template Variables in Commands:**
 - `{{model}}` - Requested model ID from API
 - `{{provider_model}}` - Provider-specific model ID
+- `{{reasoning_effort}}` - Normalized reasoning effort (`low`, `medium`, `high`, `xhigh`) when provided
 - `{{prompt}}` - Flattened prompt text
 - `{{prompt_file}}` - Path to temp prompt file
 - `{{request_file}}` - Path to temp request JSON
 - `{{request_id}}` - Unique request ID
 - `{{provider_id}}` - Provider ID
+
+**Reasoning Flags:**
+- `reasoning_effort` and `reasoningEffort` are accepted on chat/responses requests
+- `reasoning: { effort: "medium" }` is also accepted on `/v1/responses`
+- Supported values: `low`, `medium`, `high`, `xhigh`
 
 **Auth Commands:**
 - `auth.loginCommand` - OAuth/login flow command

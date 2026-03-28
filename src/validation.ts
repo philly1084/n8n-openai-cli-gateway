@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { REASONING_EFFORT_VALUES } from "./types";
 
 // Chat message validation
 const chatRoleSchema = z.enum(["system", "user", "assistant", "tool"]);
@@ -31,6 +32,12 @@ const toolDefinitionSchema = z.object({
   parameters: z.unknown().optional(),
 }).passthrough();
 
+const reasoningEffortSchema = z.enum(REASONING_EFFORT_VALUES);
+
+const reasoningConfigSchema = z.object({
+  effort: reasoningEffortSchema.optional(),
+}).passthrough();
+
 // Chat completions request schema
 export const chatCompletionsRequestSchema = z.object({
   model: z.string().min(1, "model is required"),
@@ -44,6 +51,9 @@ export const chatCompletionsRequestSchema = z.object({
   presence_penalty: z.number().optional(),
   frequency_penalty: z.number().optional(),
   user: z.string().optional(),
+  reasoning_effort: reasoningEffortSchema.optional(),
+  reasoningEffort: reasoningEffortSchema.optional(),
+  reasoning: reasoningConfigSchema.optional(),
 }).passthrough();
 
 // Responses API input item schema - very permissive for n8n compatibility
@@ -68,6 +78,9 @@ export const responsesRequestSchema = z.object({
   top_p: z.number().optional(),
   user: z.string().optional(),
   tool_choice: z.unknown().optional(),
+  reasoning_effort: reasoningEffortSchema.optional(),
+  reasoningEffort: reasoningEffortSchema.optional(),
+  reasoning: reasoningConfigSchema.optional(),
 }).passthrough();
 
 // Image generations request schema

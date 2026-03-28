@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
-import type { AppConfig, ProvidersFile } from "./types";
+import { REASONING_EFFORT_VALUES, type AppConfig, type ProvidersFile } from "./types";
+import { parseReasoningEffort } from "./utils/reasoning";
 
 const commandSchema = z.object({
   executable: z.string().min(1),
@@ -46,6 +47,8 @@ const providersFileSchema = z.object({
     )
     .min(1),
 });
+
+const reasoningEffortSchema = z.enum(REASONING_EFFORT_VALUES);
 
 function parseApiKeys(): Set<string> {
   const keys = new Set<string>();
@@ -124,6 +127,17 @@ export function loadAppConfig(): AppConfig {
     throw new Error(`Invalid MAX_REQUEST_BODY_SIZE: ${maxRequestBodySizeRaw}`);
   }
 
+  const defaultReasoningEffortRaw = process.env.OPENAI_REASONING_EFFORT?.trim();
+  const defaultReasoningEffort = defaultReasoningEffortRaw
+    ? parseReasoningEffort(defaultReasoningEffortRaw)
+    : undefined;
+  if (defaultReasoningEffortRaw && !defaultReasoningEffort) {
+    const allowed = reasoningEffortSchema.options.join(", ");
+    throw new Error(
+      `Invalid OPENAI_REASONING_EFFORT: ${defaultReasoningEffortRaw}. Expected one of: ${allowed}`,
+    );
+  }
+
   return {
     host,
     port,
@@ -136,6 +150,7 @@ export function loadAppConfig(): AppConfig {
     rateLimitMax,
     rateLimitWindowMs,
     maxRequestBodySize,
+    defaultReasoningEffort,
   };
 }
 

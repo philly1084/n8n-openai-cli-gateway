@@ -88,4 +88,28 @@ describe("request schema compatibility", () => {
 
     assert.strictEqual(parsed.messages[0]?.role, "assistant");
   });
+
+  it("accepts reasoning effort aliases on chat completions requests", () => {
+    const parsed = chatCompletionsRequestSchema.parse({
+      model: "gpt-test",
+      messages: [{ role: "user", content: "hi" }],
+      reasoning_effort: "high",
+      reasoningEffort: "medium",
+    });
+
+    assert.strictEqual(parsed.reasoning_effort, "high");
+    assert.strictEqual(parsed.reasoningEffort, "medium");
+  });
+
+  it("accepts nested reasoning config on responses requests", () => {
+    const parsed = responsesRequestSchema.parse({
+      model: "gpt-test",
+      input: "hi",
+      reasoning: {
+        effort: "xhigh",
+      },
+    });
+
+    assert.deepStrictEqual(parsed.reasoning, { effort: "xhigh" });
+  });
 });

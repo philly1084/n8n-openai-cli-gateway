@@ -3,9 +3,10 @@ import { LruMap } from "../utils/lru-map";
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { ProviderRegistry } from "../providers/registry";
-import type { ChatMessage, UnifiedToolDefinition } from "../types";
+import type { ChatMessage, ReasoningEffort, UnifiedToolDefinition } from "../types";
 import { makeId } from "../utils/ids";
 import { extractTextContent } from "../utils/prompt";
+import { resolveReasoningEffort } from "../utils/reasoning";
 import {
   chatCompletionsRequestSchema,
   responsesRequestSchema,
@@ -27,6 +28,7 @@ export function getSessionSignature(messages: ChatMessage[]): string {
 interface OpenAiRoutesOptions {
   registry: ProviderRegistry;
   n8nApiKeys: Set<string>;
+  defaultReasoningEffort?: ReasoningEffort;
 }
 
 export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
@@ -62,7 +64,12 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
       );
       return sendOpenAiError(reply, 400, validationResult.error, "invalid_request_error");
     }
-    return await handleChatCompletionsRequest(validationResult.data, reply, options.registry);
+    return await handleChatCompletionsRequest(
+      validationResult.data,
+      reply,
+      options.registry,
+      options.defaultReasoningEffort,
+    );
   });
 
   app.post("/messages", async (request, reply) => {
@@ -70,7 +77,12 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
     if (!validationResult.success) {
       return sendOpenAiError(reply, 400, validationResult.error, "invalid_request_error");
     }
-    return await handleChatCompletionsRequest(validationResult.data, reply, options.registry);
+    return await handleChatCompletionsRequest(
+      validationResult.data,
+      reply,
+      options.registry,
+      options.defaultReasoningEffort,
+    );
   });
 
   app.post("/message", async (request, reply) => {
@@ -78,7 +90,12 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
     if (!validationResult.success) {
       return sendOpenAiError(reply, 400, validationResult.error, "invalid_request_error");
     }
-    return await handleChatCompletionsRequest(validationResult.data, reply, options.registry);
+    return await handleChatCompletionsRequest(
+      validationResult.data,
+      reply,
+      options.registry,
+      options.defaultReasoningEffort,
+    );
   });
 
   app.post("/responses", async (request, reply) => {
@@ -159,10 +176,12 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
     }
 
     try {
+      const reasoningEffort = resolveReasoningEffort(body, options.defaultReasoningEffort);
       const result = await options.registry.runModel(body.model, {
         requestId: makeId("req"),
         messages,
         tools,
+        reasoningEffort,
         metadata: body as Record<string, unknown>,
       });
 
@@ -420,6 +439,7 @@ async function handleChatCompletionsRequest(
   body: z.infer<typeof chatCompletionsRequestSchema>,
   reply: FastifyReply,
   registry: ProviderRegistry,
+  defaultReasoningEffort?: ReasoningEffort,
 ) {
   const isStream = Boolean(body.stream);
 
@@ -473,10 +493,12 @@ async function handleChatCompletionsRequest(
   }
 
   try {
+    const reasoningEffort = resolveReasoningEffort(body, defaultReasoningEffort);
     const result = await registry.runModel(body.model, {
       requestId: makeId("req"),
       messages,
       tools,
+      reasoningEffort,
       metadata: body as Record<string, unknown>,
     });
 

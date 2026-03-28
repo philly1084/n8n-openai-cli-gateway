@@ -64,6 +64,7 @@ Supported template variables in commands:
 
 - `{{model}}` requested model id from API
 - `{{provider_model}}` provider-specific model id
+- `{{reasoning_effort}}` normalized reasoning effort (`low`, `medium`, `high`, `xhigh`) when provided
 - `{{prompt}}` flattened prompt text
 - `{{prompt_file}}` path to temp prompt file
 - `{{request_file}}` path to temp request JSON
@@ -98,6 +99,7 @@ Optional environment variables:
 
 - `CODEX_APPSERVER_MODEL_PROVIDER` (default `openai`)
 - `CODEX_APPSERVER_TIMEOUT_MS` (default `240000`)
+- `OPENAI_REASONING_EFFORT` default reasoning effort when requests omit it
 
 ## 2) Run locally
 
@@ -220,6 +222,17 @@ Environment variables for CLI:
 | `RATE_LIMIT_MAX` | `100` | Max requests per rate limit window |
 | `RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window (milliseconds) |
 | `MAX_REQUEST_BODY_SIZE` | `10485760` | Max request body size in bytes (10MB) |
+| `OPENAI_REASONING_EFFORT` | provider default | Default reasoning effort for chat/responses requests |
+
+### Reasoning flags
+
+The gateway accepts these request forms:
+
+- `reasoning_effort: "medium"`
+- `reasoningEffort: "medium"`
+- `reasoning: { "effort": "medium" }`
+
+Supported values are `low`, `medium`, `high`, and `xhigh`. For `/v1/chat/completions`, use `reasoning_effort` or `reasoningEffort`. For `/v1/responses`, all three forms are accepted.
 
 ## 6) Request Tracing
 

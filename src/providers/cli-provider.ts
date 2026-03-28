@@ -67,6 +67,8 @@ export class CliProvider implements Provider {
       provider_id: this.id,
       model: request.model,
       provider_model: modelConfig.providerModel || request.providerModel,
+      reasoning_effort: request.reasoningEffort || "",
+      reasoningEffort: request.reasoningEffort || "",
       prompt,
       prompt_file: promptFile,
       request_file: requestFile,
