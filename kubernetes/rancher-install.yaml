@@ -14,8 +14,8 @@ type: Opaque
 stringData:
   n8nApiKey: "replace-with-long-random-n8n-key"
   adminApiKey: "replace-with-long-random-admin-key"
-  geminiApiKey: "replace-with-gemini-api-key-for-nanobanana-extension"
   groqApiKey: "replace-with-groq-api-key"
+  deepseekApiKey: "replace-with-deepseek-api-key"
 ---
 apiVersion: v1
 kind: Secret
@@ -50,9 +50,110 @@ metadata:
 data:
   providers.yaml: |
     providers:
-      - id: groq-api
+      - id: gemini-cli
         type: cli
-        description: Groq API via curl using Groq production chat models
+        description: Gemini via OpenCode + Google OAuth plugin
+        models:
+          - id: gemini-3.1-pro-preview
+            providerModel: google/gemini-3.1-pro-preview
+            fallbackModels:
+              - gemini-3-flash-preview
+              - gpt-5.4
+          - id: gemini-3-flash-preview
+            providerModel: google/gemini-3-flash-preview
+            fallbackModels:
+              - gemini-3.1-pro-preview
+              - gpt-5.4
+          - id: gemini-3.1-flash-lite-preview
+            providerModel: google/gemini-3.1-flash-lite-preview
+            fallbackModels:
+              - gemini-3-flash-preview
+          - id: gemini-2.5-pro
+            providerModel: google/gemini-2.5-pro
+            fallbackModels:
+              - gemini-3.1-pro-preview
+          - id: gemini-2.5-flash
+            providerModel: google/gemini-2.5-flash
+            fallbackModels:
+              - gemini-3-flash-preview
+        responseCommand:
+          executable: opencode
+          args:
+            - run
+            - --model
+            - "{{provider_model}}"
+            - --format
+            - default
+            - "{{prompt}}"
+          input: prompt_stdin
+          output: text
+          timeoutMs: 240000
+        auth:
+          loginCommand:
+            executable: opencode
+            args:
+              - auth
+              - login
+            timeoutMs: 900000
+
+      - id: codex-cli
+        type: cli
+        description: OpenAI Codex app-server bridge adapter
+        models:
+          - id: codex-latest
+            providerModel: codex-latest
+            fallbackModels:
+              - gpt-5.4
+              - gemini-3.1-pro-preview
+          - id: gpt-5.4
+            providerModel: gpt-5.4
+            fallbackModels:
+              - gpt-5.4-pro
+              - gemini-3.1-pro-preview
+          - id: gpt-5.4-pro
+            providerModel: gpt-5.4-pro
+            fallbackModels:
+              - gpt-5.4
+              - gemini-3.1-pro-preview
+          - id: gpt-5.3-instant
+            providerModel: gpt-5.3-instant
+            fallbackModels:
+              - gpt-5.4
+          - id: gpt-4.1
+            providerModel: gpt-4.1
+            fallbackModels:
+              - gpt-5.3-instant
+        responseCommand:
+          executable: node
+          args:
+            - dist/scripts/codex-appserver-bridge.js
+            - --model
+            - "{{provider_model}}"
+          input: request_json_stdin
+          output: json_contract
+          timeoutMs: 240000
+        auth:
+          loginCommand:
+            executable: codex
+            args:
+              - login
+              - --no-browser
+            timeoutMs: 900000
+          statusCommand:
+            executable: codex
+            args:
+              - whoami
+              - --json
+            timeoutMs: 30000
+
+      - id: groq-api
+        type: openai
+        description: Groq API - auto-discovers chat-usable models at startup
+        baseUrl: https://api.groq.com/openai/v1
+        apiKeyEnv: GROQ_API_KEY
+        timeoutMs: 60000
+        discovery:
+          enabled: true
         models:
           - id: groq/compound
             providerModel: groq/compound
@@ -67,1217 +168,48 @@ data:
             providerModel: openai/gpt-oss-120b
             fallbackModels:
               - openai/gpt-oss-20b
-              - llama-3.3-70b-versatile
           - id: openai/gpt-oss-20b
             providerModel: openai/gpt-oss-20b
             fallbackModels:
               - llama-3.1-8b-instant
           - id: llama-3.3-70b-versatile
             providerModel: llama-3.3-70b-versatile
-            fallbackModels:
-              - openai/gpt-oss-20b
-              - llama-3.1-8b-instant
           - id: llama-3.1-8b-instant
             providerModel: llama-3.1-8b-instant
-        responseCommand:
-          executable: sh
-          args:
-            - -lc
-            - |
-              REQUEST_JSON="$(cat)"
-              PAYLOAD="$(
-                printf "%s" "$REQUEST_JSON" | node -e 'let d="";const maxChars=Number(process.env.GROQ_MAX_PROMPT_CHARS||120000);process.stdin.on("data",c=>d+=c).on("end",()=>{const norm=v=>typeof v==="string"?v:JSON.stringify(v??"");try{const req=JSON.parse(d);const rawMsgs=Array.isArray(req.messages)?req.messages:[];const allowedRoles=new Set(["system","user","assistant","tool"]);const msgs=rawMsgs.map(m=>{const role=allowedRoles.has(String(m&&m.role||""))?String(m.role):"user";const content=norm(m&&Object.prototype.hasOwnProperty.call(m,"content")?m.content:"").trim();if(!content)return null;const out={role,content};if(role==="tool"&&m&&typeof m==="object"&&typeof m.tool_call_id==="string"&&m.tool_call_id){out.tool_call_id=m.tool_call_id;}if(role==="assistant"&&m&&typeof m==="object"&&Array.isArray(m.tool_calls)&&m.tool_calls.length>0){out.tool_calls=m.tool_calls;}return out;}).filter(Boolean);let total=0;const kept=[];for(let i=msgs.length-1;i>=0;i--){const msg=msgs[i];const cost=msg.content.length+msg.role.length+32;if(kept.length>0&&total+cost>maxChars) continue;kept.unshift(msg);total+=cost;}const firstSystem=msgs.find(m=>m.role==="system");if(firstSystem&&!kept.some(m=>m.role==="system")&&(total+firstSystem.content.length+32)<=maxChars){kept.unshift(firstSystem);total+=firstSystem.content.length+32;}if(kept.length===0){const fallback=(typeof req.prompt==="string"?req.prompt:norm(req.prompt)).trim();kept.push({role:"user",content:fallback.slice(-maxChars)||"Hello"});}process.stdout.write(JSON.stringify({model:"{{provider_model}}",messages:kept,stream:false}));}catch{process.stdout.write(JSON.stringify({model:"{{provider_model}}",messages:[{role:"user",content:"Hello"}],stream:false}));}});'
-              )"
-              printf "%s" "$PAYLOAD" | curl -fsS https://api.groq.com/openai/v1/chat/completions \
-                -H "Authorization: Bearer $GROQ_API_KEY" \
-                -H "Content-Type: application/json" \
-                --data-binary @- | \
-                node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const out={output_text:"",tool_calls:[],finish_reason:"stop"};try{const res=JSON.parse(d);const choice=Array.isArray(res.choices)&&res.choices[0]&&typeof res.choices[0]==="object"?res.choices[0]:{};const msg=choice.message&&typeof choice.message==="object"?choice.message:{};const extractText=(content)=>{if(typeof content==="string") return content.trim();if(Array.isArray(content)){return content.map(part=>{if(typeof part==="string") return part;if(part&&typeof part==="object"){if(typeof part.text==="string") return part.text;if(typeof part.content==="string") return part.content;}return "";}).filter(Boolean).join("\n").trim();}if(content&&typeof content==="object"){if(typeof content.text==="string") return content.text.trim();if(typeof content.content==="string") return content.content.trim();}return "";};const content=extractText(msg.content);const toolCalls=Array.isArray(msg.tool_calls)?msg.tool_calls.map((call,i)=>{if(!call||typeof call!=="object") return null;const fn=call.function&&typeof call.function==="object"?call.function:{};const name=typeof fn.name==="string"?fn.name.trim():"";if(!name) return null;const args=typeof fn.arguments==="string"?fn.arguments:JSON.stringify(fn.arguments??{});return {id:typeof call.id==="string"&&call.id?call.id:`call_${i+1}`,name,arguments:args};}).filter(Boolean):[];const finish=typeof choice.finish_reason==="string"&&choice.finish_reason?choice.finish_reason:(toolCalls.length>0?"tool_calls":"stop");out.output_text=content;out.tool_calls=toolCalls;out.finish_reason=finish;}catch(e){out.output_text=d.trim();}process.stdout.write(JSON.stringify(out));});'
-          input: request_json_stdin
-          output: json_contract
-          timeoutMs: 120000
-        auth:
-          statusCommand:
-            executable: sh
-            args:
-              - -lc
-              - |
-                test -n "${GROQ_API_KEY:-}" || { echo '{"ok":false,"error":"GROQ_API_KEY not set"}'; exit 1; }
-                curl -fsS https://api.groq.com/openai/v1/models \
-                  -H "Authorization: Bearer $GROQ_API_KEY" >/dev/null
-                echo '{"ok":true}'
-            timeoutMs: 15000
 
-      - id: gemini-cli
+      - id: deepseek-api
         type: cli
-        description: Gemini CLI adapter (text-only baseline)
+        description: DeepSeek API
         models:
-          - id: gemini-3.1-pro-preview
-            providerModel: gemini-3.1-pro-preview
+          - id: deepseek-chat
+            providerModel: deepseek-chat
             fallbackModels:
-              - gemini-3-flash-preview
-          - id: gemini-3-flash-preview
-            providerModel: gemini-3-flash-preview
+              - deepseek-coder
+          - id: deepseek-coder
+            providerModel: deepseek-coder
             fallbackModels:
-              - gemini-3.1-pro-preview
-          - id: gemini-3.1-flash-lite-preview
-            providerModel: gemini-3.1-flash-lite-preview
-            fallbackModels:
-              - gemini-3-flash-preview
-          - id: gemini-3.1-flash-image-preview
-            providerModel: gemini-3.1-flash-image-preview
-          - id: gemini-2.5-flash-image
-            providerModel: gemini-2.5-flash-image
-            fallbackModels:
-              - gemini-3.1-flash-image-preview
-          - id: gemini-2.5-pro
-            providerModel: gemini-2.5-pro
-          - id: gemini-2.5-flash
-            providerModel: gemini-2.5-flash
-          - id: gemini-2.5-flash-lite
-            providerModel: gemini-2.5-flash-lite
+              - deepseek-chat
+          - id: deepseek-reasoner
+            providerModel: deepseek-reasoner
         responseCommand:
-          executable: sh
+          executable: curl
           args:
-            - -lc
+            - -s
+            - https://api.deepseek.com/chat/completions
+            - -H
+            - "Authorization: Bearer $DEEPSEEK_API_KEY"
+            - -H
+            - "Content-Type: application/json"
+            - -d
             - |
-              REQUEST_JSON="$(cat)"
-              PROMPT="$(
-                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const req=JSON.parse(d);const msgs=Array.isArray(req.messages)?req.messages:[];const norm=v=>typeof v==="string"?v:JSON.stringify(v??"");const msgText=typeof req.prompt==="string"&&req.prompt.trim()?req.prompt:msgs.map(m=>{const role=String(m&&m.role?m.role:"user").toUpperCase();const name=m&&typeof m==="object"&&typeof m.name==="string"&&m.name?" ("+m.name+")":"";const tcid=m&&typeof m==="object"&&typeof m.tool_call_id==="string"&&m.tool_call_id?" [tool_call_id="+m.tool_call_id+"]":"";const content=norm(m&&Object.prototype.hasOwnProperty.call(m,"content")?m.content:"");return role+name+tcid+":\n"+content;}).join("\n\n");process.stdout.write(msgText);}catch{process.stdout.write("");}});'
-              )"
-              gemini --model "{{provider_model}}" --prompt "$PROMPT"
-          input: request_json_stdin
-          output: text_plain
-          timeoutMs: 240000
-        auth:
-          loginCommand:
-            executable: sh
-            args:
-              - -c
-              - |
-                echo "Gemini CLI login is interactive in this version."
-                echo "Run in a TTY shell: gemini"
-                echo "Then run: /auth and choose Login with Google."
-                exit 1
-            timeoutMs: 10000
-          statusCommand:
-            executable: sh
-            args:
-              - -c
-              - |
-                test -f "$HOME/.gemini/oauth_creds.json" \
-                  && echo '{"ok":true,"source":"oauth_creds.json"}' \
-                  || (echo '{"ok":false,"error":"missing ~/.gemini/oauth_creds.json"}' && exit 1)
-            timeoutMs: 30000
-      - id: gemini-cli-nanobanana-image
-        type: cli
-        description: Gemini CLI + Nano Banana image generation adapter
-        models:
-          - id: gemini-3.1-flash-image-nb
-            providerModel: gemini-3.1-flash-image-preview
-            fallbackModels:
-              - gemini-2.5-flash-image-nb
-          - id: gemini-2.5-flash-image-nb
-            providerModel: gemini-2.5-flash-image
-        responseCommand:
-          executable: sh
-          args:
-            - -lc
-            - |
-              set -eu
-              REQUEST_JSON="$(cat)"
-              HOME="${HOME:-/var/lib/gateway-home}"
-              export HOME
-              export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-              export NANOBANANA_MODEL="{{provider_model}}"
-
-              if ! command -v gemini >/dev/null 2>&1; then
-                echo "gemini CLI not found in PATH." >&2
-                exit 1
-              fi
-
-              EXT_LIST="$(gemini extensions list 2>&1 || true)"
-              if ! printf "%s" "$EXT_LIST" | grep -Eqi "nanobanana|nano[[:space:]]*banana"; then
-                echo "nanobanana extension not found; attempting install..." >&2
-                printf "y\n" | gemini extensions install nanobanana >/tmp/nanobanana-install.log 2>&1 || true
-              fi
-              EXT_LIST="$(gemini extensions list 2>&1 || true)"
-              if ! printf "%s" "$EXT_LIST" | grep -Eqi "nanobanana|nano[[:space:]]*banana"; then
-                printf "y\n" | gemini extensions install https://github.com/gemini-cli-extensions/nanobanana >/tmp/nanobanana-install.log 2>&1 || true
-              fi
-              EXT_LIST="$(gemini extensions list 2>&1 || true)"
-              if ! printf "%s" "$EXT_LIST" | grep -Eqi "nanobanana|nano[[:space:]]*banana"; then
-                if grep -Eqi "already installed" /tmp/nanobanana-install.log 2>/dev/null; then
-                  EXT_LIST="nanobanana (detected via install log: already installed)"
-                else
-                  echo "nanobanana extension is not installed after automatic install attempts." >&2
-                  cat /tmp/nanobanana-install.log >&2 || true
-                  echo "extensions list output:" >&2
-                  printf "%s\n" "$EXT_LIST" >&2
-                  exit 1
-                fi
-              fi
-
-              if ! printf "%s" "$EXT_LIST" | grep -Eqi "nanobanana|nano[[:space:]]*banana"; then
-                echo "nanobanana extension is not installed after automatic install attempts." >&2
-                cat /tmp/nanobanana-install.log >&2 || true
-                exit 1
-              fi
-
-              mkdir -p "$HOME/.gemini/policies"
-              cat > "$HOME/.gemini/policies/90-nanobanana-allow.toml" <<'EOF'
-              [[rule]]
-              toolName = "generate_image"
-              decision = "allow"
-              priority = 200
-
-              [[rule]]
-              toolName = "nanobanana__generate_image"
-              decision = "allow"
-              priority = 200
-
-              [[rule]]
-              toolName = "nanobanana__*"
-              decision = "allow"
-              priority = 190
-              EOF
-
-              NB_PROMPT="$(
-                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const req=JSON.parse(d);const msgs=Array.isArray(req.messages)?req.messages:[];let userPrompt="";for(let i=msgs.length-1;i>=0;i--){const m=msgs[i];if(m&&typeof m==="object"&&String(m.role||"")==="user"){userPrompt=typeof m.content==="string"?m.content:JSON.stringify(m.content??"");break;}}const md=req&&typeof req.metadata==="object"&&req.metadata?req.metadata:{};const promptFromMeta=typeof md.prompt==="string"?md.prompt:"";const size=typeof md.size==="string"&&md.size.trim()?md.size.trim():"";const prompt=(promptFromMeta||userPrompt||"Generate an image").trim();const sizeLine=size?`Requested output size: ${size}.`:"";const out=["Use the Nano Banana extension to generate exactly one image for this request.",sizeLine,`Prompt: ${prompt}`,"Do not return markdown image links. Keep text brief."].filter(Boolean).join("\n");process.stdout.write(out);}catch{process.stdout.write("Generate exactly one image using the Nano Banana extension.");}});'
-              )"
-
-              RUN_DIR="$(mktemp -d "$HOME/nanobanana-run-XXXXXX")"
-              mkdir -p "$RUN_DIR/nanobanana-output" "$HOME/nanobanana-output"
-              cd "$RUN_DIR"
-
-              gemini --model "gemini-2.5-pro" --prompt "$NB_PROMPT" >/tmp/gemini-nb-out.txt
-
-              IMAGE_PATH="$(
-                find "$RUN_DIR/nanobanana-output" "$HOME/nanobanana-output" 2>/dev/null -type f \( -name "*.png" -o -name "*.jpg" -o -name "*.jpeg" -o -name "*.webp" \) \
-                  | xargs -r ls -1t 2>/dev/null \
-                  | head -n 1
-              )"
-
-              if [ -z "$IMAGE_PATH" ]; then
-                echo "Nano Banana did not produce an image file. gemini output:" >&2
-                cat /tmp/gemini-nb-out.txt >&2 || true
-                exit 1
-              fi
-
-              B64_IMAGE="$(base64 "$IMAGE_PATH" | tr -d '\n')"
-              printf "%s" "$B64_IMAGE" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const b64=String(d||"").trim();process.stdout.write(JSON.stringify({data:[{b64_json:b64}]}));});'
-          input: request_json_stdin
-          output: text_plain
-          timeoutMs: 240000
-        auth:
-          loginCommand:
-            executable: sh
-            args:
-              - -c
-              - |
-                echo "Gemini CLI login is interactive in this version."
-                echo "Run in a TTY shell: gemini"
-                echo "Then run: /auth and choose Login with Google."
-                exit 1
-            timeoutMs: 10000
-          statusCommand:
-            executable: sh
-            args:
-              - -c
-              - |
-                test -f "$HOME/.gemini/oauth_creds.json" \
-                  && echo '{"ok":true,"source":"oauth_creds.json"}' \
-                  || (echo '{"ok":false,"error":"missing ~/.gemini/oauth_creds.json"}' && exit 1)
-            timeoutMs: 30000
-      - id: gemini-cli-tools
-        type: cli
-        description: Gemini CLI adapter (strict final-line tool contract)
-        models:
-          - id: gemini-3.1-pro-preview-tools
-            providerModel: gemini-3.1-pro-preview
-          - id: gemini-3-flash-preview-tools
-            providerModel: gemini-3-flash-preview
-          - id: gemini-3.1-flash-lite-preview-tools
-            providerModel: gemini-3.1-flash-lite-preview
-          - id: gemini-3.1-flash-image-preview-tools
-            providerModel: gemini-3.1-flash-image-preview
-          - id: gemini-2.5-flash-image-tools
-            providerModel: gemini-2.5-flash-image
-          - id: gemini-2.5-pro-tools
-            providerModel: gemini-2.5-pro
-          - id: gemini-2.5-flash-tools
-            providerModel: gemini-2.5-flash
-          - id: gemini-2.5-flash-lite-tools
-            providerModel: gemini-2.5-flash-lite
-        responseCommand:
-          executable: sh
-          args:
-            - -lc
-            - |
-              REQUEST_JSON="$(cat)"
-              PROMPT="$(
-                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const req=JSON.parse(d);const msgs=Array.isArray(req.messages)?req.messages:[];const tools=Array.isArray(req.tools)?req.tools:[];const norm=v=>typeof v==="string"?v:JSON.stringify(v??"");const msgText=typeof req.prompt==="string"&&req.prompt.trim()?req.prompt:msgs.map(m=>{const role=String(m&&m.role?m.role:"user").toUpperCase();const name=m&&typeof m==="object"&&typeof m.name==="string"&&m.name?" ("+m.name+")":"";const tcid=m&&typeof m==="object"&&typeof m.tool_call_id==="string"&&m.tool_call_id?" [tool_call_id="+m.tool_call_id+"]":"";const content=norm(m&&Object.prototype.hasOwnProperty.call(m,"content")?m.content:"");return role+name+tcid+":\n"+content;}).join("\n\n");if(tools.length===0){process.stdout.write(msgText);return;}const toolCatalog=tools.map(item=>{if(!item||typeof item!=="object") return null;const fn=item.function&&typeof item.function==="object"?item.function:null;const name=fn&&typeof fn.name==="string"?fn.name.trim():"";if(!name) return null;const description=typeof fn.description==="string"&&fn.description.trim()?fn.description.trim():"Tool exposed by AVAILABLE_TOOLS_JSON.";const parameters=Object.prototype.hasOwnProperty.call(fn,"parameters")?fn.parameters:{type:"object",additionalProperties:true};return {name,description,parameters};}).filter(Boolean);const toolNames=toolCatalog.map(t=>t.name).join(", ");const example=JSON.stringify({output_text:"",tool_calls:[{id:"call_1",name:"tool_name",arguments:{command:"echo hello"}}],finish_reason:"tool_calls"});const instruction=["You are connected through an OpenAI-compatible gateway.","The tools listed in AVAILABLE_TOOLS_JSON are the only tools you can use in this turn.","Respond normally in plain text unless a tool call is needed.","If a tool call is needed, output exactly one JSON contract object on the FINAL non-empty line of your response.","In tool_calls[0].arguments, use an OBJECT whose keys exactly match the selected tool schema in AVAILABLE_TOOLS_JSON.","Do not use placeholder keys like arg unless the schema explicitly defines arg.","For SSH-style tools, put the shell command text in command/cmd/script field when present in schema.","The final line must follow this exact shape:",example,"Use a tool name exactly from AVAILABLE_TOOL_NAMES: "+(toolNames||"(none)")].join("\n");process.stdout.write([msgText,"","AVAILABLE_TOOLS_JSON:",JSON.stringify(tools,null,2),"",instruction].join("\n"));}catch{process.stdout.write("");}});'
-              )"
-              gemini --model "{{provider_model}}" --prompt "$PROMPT"
-          input: request_json_stdin
+              {
+                "model": "{{provider_model}}",
+                "messages": [{"role": "user", "content": "{{prompt}}"}],
+                "temperature": 0.7
+              }
+          input: prompt_stdin
           output: text_contract_final_line
-          timeoutMs: 240000
-        auth:
-          loginCommand:
-            executable: sh
-            args:
-              - -c
-              - |
-                echo "Gemini CLI login is interactive in this version."
-                echo "Run in a TTY shell: gemini"
-                echo "Then run: /auth and choose Login with Google."
-                exit 1
-            timeoutMs: 10000
-          statusCommand:
-            executable: sh
-            args:
-              - -c
-              - |
-                test -f "$HOME/.gemini/oauth_creds.json" \
-                  && echo '{"ok":true,"source":"oauth_creds.json"}' \
-                  || (echo '{"ok":false,"error":"missing ~/.gemini/oauth_creds.json"}' && exit 1)
-            timeoutMs: 30000
-      - id: kimi-code-cli
-        type: cli
-        description: Kimi Code CLI adapter
-        models:
-          - id: kimi-for-coding
-            providerModel: kimi-for-coding
-          - id: kimi-k2-turbo-preview
-            providerModel: kimi-for-coding
-        responseCommand:
-          executable: sh
-          args:
-            - -lc
-            - |
-              REQUEST_JSON="$(cat)"
-              HAS_TOOLS="$(
-                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const req=JSON.parse(d);const tools=Array.isArray(req.tools)?req.tools:[];process.stdout.write(tools.length>0?"1":"0");}catch{process.stdout.write("0");}});'
-              )"
-              ALLOWED_TOOL_NAMES_JSON="$(
-                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const req=JSON.parse(d);const tools=Array.isArray(req.tools)?req.tools:[];const names=[];for(const item of tools){if(!item||typeof item!=="object") continue;const fn=item.function&&typeof item.function==="object"?item.function:null;const name=fn&&typeof fn.name==="string"?fn.name.trim():"";if(name) names.push(name);}process.stdout.write(JSON.stringify(names));}catch{process.stdout.write("[]");}});'
-              )"
-              LAST_USER_TEXT="$(
-                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const req=JSON.parse(d);const msgs=Array.isArray(req.messages)?req.messages:[];for(let i=msgs.length-1;i>=0;i--){const m=msgs[i];if(!m||typeof m!=="object") continue;if(String(m.role||"")==="user"){const c=typeof m.content==="string"?m.content:(m&&Object.prototype.hasOwnProperty.call(m,"content")?JSON.stringify(m.content??""):"");process.stdout.write(c||"");return;}}process.stdout.write("");}catch{process.stdout.write("");}});'
-              )"
-              TOOL_MESSAGE_COUNT="$(
-                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const req=JSON.parse(d);const msgs=Array.isArray(req.messages)?req.messages:[];let count=0;for(const m of msgs){if(!m||typeof m!=="object") continue;if(String(m.role||"")==="tool") count+=1;}process.stdout.write(String(count));}catch{process.stdout.write("0");}});'
-              )"
-              SYNTHETIC_TOOL_CALL_JSON="$(
-                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const req=JSON.parse(d);const tools=Array.isArray(req.tools)?req.tools:[];if(tools.length!==1){process.stdout.write("null");return;}const item=tools[0];if(!item||typeof item!=="object"){process.stdout.write("null");return;}const fn=item.function&&typeof item.function==="object"?item.function:null;const name=fn&&typeof fn.name==="string"?fn.name.trim():"";if(!name){process.stdout.write("null");return;}const description=typeof fn.description==="string"?fn.description:"";const params=fn&&fn.parameters&&typeof fn.parameters==="object"?fn.parameters:{};const props=params&&params.properties&&typeof params.properties==="object"?params.properties:{};const required=Array.isArray(params.required)?params.required.filter(x=>typeof x==="string"):[];const msgs=Array.isArray(req.messages)?req.messages:[];let userText="";for(let i=msgs.length-1;i>=0;i--){const m=msgs[i];if(!m||typeof m!=="object") continue;if(String(m.role||"")==="user"){userText=typeof m.content==="string"?m.content:JSON.stringify(m.content??"");break;}}const words=String(userText||"").toLowerCase().replace(/[^a-z0-9\s]/g," ").split(/\s+/).filter(Boolean).slice(0,8).join(" ");const session=(description.match(/sessionid\s*(?:is|=|:)\s*"([^"]+)"/i)||[])[1]||"LocalAgentMemory";const out={};const setArg=(key)=>{const lower=String(key||"").toLowerCase();if(/user|userid|session|account|tenant/.test(lower)){out[key]=session;return;}if(/command|cmd|script|instruction|exec/.test(lower)){out[key]=userText||words||"memory";return;}if(/content|query|search|keyword|text|prompt|message|input/.test(lower)){out[key]=words||userText||"memory";return;}out[key]="";};for(const key of required){setArg(key);}if(required.length===0){if(Object.prototype.hasOwnProperty.call(props,"userID")) out.userID=session;if(Object.prototype.hasOwnProperty.call(props,"content")) out.content=words||userText||"memory";}process.stdout.write(JSON.stringify({id:"call_1",name,arguments:out}));}catch{process.stdout.write("null");}});'
-              )"
-              PROMPT="$(
-                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const req=JSON.parse(d);const msgs=Array.isArray(req.messages)?req.messages:[];const tools=Array.isArray(req.tools)?req.tools:[];const metadata=req&&typeof req.metadata==="object"&&req.metadata?req.metadata:{};const toolChoice=metadata&&typeof metadata.tool_choice==="object"&&metadata.tool_choice?metadata.tool_choice:{};const forcedToolName=toolChoice&&toolChoice.type==="function"&&toolChoice.function&&typeof toolChoice.function==="object"&&typeof toolChoice.function.name==="string"?String(toolChoice.function.name).trim():"";const norm=v=>typeof v==="string"?v:JSON.stringify(v??"");const msgText=typeof req.prompt==="string"&&req.prompt.trim()?req.prompt:msgs.map(m=>{const role=String(m&&m.role?m.role:"user").toUpperCase();const name=m&&typeof m==="object"&&typeof m.name==="string"&&m.name?` (${m.name})`:"";const tcid=m&&typeof m==="object"&&typeof m.tool_call_id==="string"&&m.tool_call_id?` [tool_call_id=${m.tool_call_id}]`:"";return `${role}${name}${tcid}:\n${norm(m&&Object.prototype.hasOwnProperty.call(m,"content")?m.content:"")}`;}).join("\n\n");const toolCatalog=tools.map(item=>{if(!item||typeof item!=="object") return null;const fn=item.function&&typeof item.function==="object"?item.function:null;const name=fn&&typeof fn.name==="string"?fn.name.trim():"";if(!name) return null;const description=typeof fn.description==="string"&&fn.description.trim()?fn.description.trim():"Tool exposed by AVAILABLE_TOOLS_JSON.";const parameters=Object.prototype.hasOwnProperty.call(fn,"parameters")?fn.parameters:{type:"object",additionalProperties:true};return {name,description,parameters};}).filter(Boolean);const toolJson=JSON.stringify(tools,null,2);const toolCatalogJson=JSON.stringify(toolCatalog,null,2);const toolNames=toolCatalog.map(t=>t.name).join(", ");const instruction=["You are connected through an OpenAI-compatible gateway.","The tools listed in AVAILABLE_TOOLS_JSON are the only tools you can use in this turn.","Do not claim that tools are unavailable when AVAILABLE_TOOLS_JSON is non-empty.","Do not use any hidden or internal tools, shell commands, filesystem access, web browsing, or MCP tools.",forcedToolName?`tool_choice is set. You MUST call exactly this function name: ${forcedToolName}.`:"Use tools only when needed for external actions or data. For normal chat tasks including creative writing, respond directly with finish_reason stop.","When calling a tool, the name MUST exactly match one value from AVAILABLE_TOOL_NAMES.","Return raw JSON only. Do not wrap JSON in markdown or code fences.","If you need to call a tool, respond ONLY with JSON:","{\"output_text\":\"\",\"tool_calls\":[{\"id\":\"call_1\",\"name\":\"tool_name\",\"arguments\":{\"arg\":\"value\"}}],\"finish_reason\":\"tool_calls\"}","If no tool is needed, respond ONLY with JSON:","{\"output_text\":\"<assistant reply>\",\"finish_reason\":\"stop\"}"].join("\n");process.stdout.write([msgText,"","AVAILABLE_TOOLS_JSON:",toolJson,"","TOOL_CATALOG_JSON:",toolCatalogJson,"","AVAILABLE_TOOL_NAMES:",toolNames||"(none)","",instruction].join("\n"));});'
-              )"
-              export HOME="${HOME:-/var/lib/gateway-home}"
-              export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-              KIMI_CONFIG_FILE=""
-              for KIMI_CONFIG_CANDIDATE in \
-                "$HOME/.kimi/config.toml" \
-                "$HOME/config.toml" \
-                "$HOME/.kimi/config.json" \
-                "$HOME/config.json" \
-                "$HOME/.kimi/kimi.json" \
-                "$HOME/kimi.json"
-              do
-                if [ -f "$KIMI_CONFIG_CANDIDATE" ]; then
-                  KIMI_CONFIG_FILE="$KIMI_CONFIG_CANDIDATE"
-                  break
-                fi
-              done
-              if [ -z "$KIMI_CONFIG_FILE" ]; then
-                KIMI_CONFIG_FILE="$HOME/.kimi/config.toml"
-              fi
-              KIMI_MODEL_VALUE="{{provider_model}}"
-              KIMI_CONFIG_TO_USE="$KIMI_CONFIG_FILE"
-              if [ ! -f "$KIMI_CONFIG_FILE" ]; then
-                KIMI_CONFIG_TO_USE="$(mktemp)"
-                {
-                  printf "default_model = \"%s\"\n" "$KIMI_MODEL_VALUE"
-                  printf "default_llm = \"%s\"\n" "$KIMI_MODEL_VALUE"
-                  printf "model = \"%s\"\n" "$KIMI_MODEL_VALUE"
-                  printf "llm = \"%s\"\n" "$KIMI_MODEL_VALUE"
-                } > "$KIMI_CONFIG_TO_USE"
-              elif [ "${KIMI_CONFIG_FILE##*.}" = "toml" ]; then
-                if ! grep -Eq "^[[:space:]]*(default_model|default_llm|model|llm)[[:space:]]*=" "$KIMI_CONFIG_FILE"; then
-                  KIMI_CONFIG_TO_USE="$(mktemp)"
-                  {
-                    printf "default_model = \"%s\"\n" "$KIMI_MODEL_VALUE"
-                    printf "default_llm = \"%s\"\n" "$KIMI_MODEL_VALUE"
-                    printf "model = \"%s\"\n" "$KIMI_MODEL_VALUE"
-                    printf "llm = \"%s\"\n" "$KIMI_MODEL_VALUE"
-                    cat "$KIMI_CONFIG_FILE"
-                  } > "$KIMI_CONFIG_TO_USE"
-                fi
-              elif [ "${KIMI_CONFIG_FILE##*.}" = "json" ]; then
-                KIMI_CONFIG_TO_USE="$(mktemp)"
-                if ! node -e 'const fs=require("fs"); const file=process.argv[1]; const model=String(process.argv[2]||""); let cfg={}; try{cfg=JSON.parse(fs.readFileSync(file,"utf8"));}catch{} if(!cfg||typeof cfg!=="object"||Array.isArray(cfg)) cfg={}; if(!("default_model" in cfg)) cfg.default_model=model; if(!("default_llm" in cfg)) cfg.default_llm=model; if(!("model" in cfg)) cfg.model=model; if(!("llm" in cfg)) cfg.llm=model; process.stdout.write(JSON.stringify(cfg,null,2));' "$KIMI_CONFIG_FILE" "$KIMI_MODEL_VALUE" > "$KIMI_CONFIG_TO_USE"; then
-                  cp "$KIMI_CONFIG_FILE" "$KIMI_CONFIG_TO_USE"
-                fi
-              fi
-              KIMI_STDERR_FILE="$(mktemp)"
-              KIMI_EXIT_CODE=1
-              KIMI_MODEL_CANDIDATES="$KIMI_MODEL_VALUE"
-              if [ "$KIMI_MODEL_VALUE" = "kimi-for-coding" ]; then
-                KIMI_MODEL_CANDIDATES="$KIMI_MODEL_CANDIDATES kimi-k2-turbo-preview"
-              fi
-              for KIMI_MODEL_CANDIDATE in $KIMI_MODEL_CANDIDATES; do
-                for KIMI_MODEL_ARG in --model -m; do
-                  if [ -f "$KIMI_CONFIG_TO_USE" ]; then
-                    KIMI_EXIT_CODE=0
-                    RAW_OUTPUT="$(LLM="$KIMI_MODEL_CANDIDATE" MODEL="$KIMI_MODEL_CANDIDATE" DEFAULT_MODEL="$KIMI_MODEL_CANDIDATE" KIMI_MODEL="$KIMI_MODEL_CANDIDATE" KIMI_LLM="$KIMI_MODEL_CANDIDATE" KIMI_DEFAULT_MODEL="$KIMI_MODEL_CANDIDATE" kimi --config-file "$KIMI_CONFIG_TO_USE" --print "$KIMI_MODEL_ARG" "$KIMI_MODEL_CANDIDATE" --output-format=stream-json --prompt "$PROMPT" 2>"$KIMI_STDERR_FILE")" || KIMI_EXIT_CODE=$?
-                  else
-                    KIMI_EXIT_CODE=0
-                    RAW_OUTPUT="$(LLM="$KIMI_MODEL_CANDIDATE" MODEL="$KIMI_MODEL_CANDIDATE" DEFAULT_MODEL="$KIMI_MODEL_CANDIDATE" KIMI_MODEL="$KIMI_MODEL_CANDIDATE" KIMI_LLM="$KIMI_MODEL_CANDIDATE" KIMI_DEFAULT_MODEL="$KIMI_MODEL_CANDIDATE" kimi --print "$KIMI_MODEL_ARG" "$KIMI_MODEL_CANDIDATE" --output-format=stream-json --prompt "$PROMPT" 2>"$KIMI_STDERR_FILE")" || KIMI_EXIT_CODE=$?
-                  fi
-                  if [ "$KIMI_EXIT_CODE" -eq 0 ]; then
-                    if printf "%s" "$RAW_OUTPUT" | grep -Eqi "llm not set|model not set"; then
-                      printf "%s\n" "$RAW_OUTPUT" > "$KIMI_STDERR_FILE"
-                      KIMI_EXIT_CODE=86
-                      continue
-                    fi
-                    break 2
-                  fi
-                  if grep -Eqi "llm not set|model not set|no such option|unknown option|unrecognized option|invalid option" "$KIMI_STDERR_FILE"; then
-                    continue
-                  fi
-                  break
-                done
-                if [ "$KIMI_EXIT_CODE" -eq 0 ]; then
-                  break
-                fi
-              done
-              if [ "$KIMI_EXIT_CODE" -ne 0 ]; then
-                KIMI_FALLBACK_MODEL="${KIMI_MODEL_CANDIDATE:-$KIMI_MODEL_VALUE}"
-                if [ -f "$KIMI_CONFIG_TO_USE" ]; then
-                  KIMI_EXIT_CODE=0
-                  RAW_OUTPUT="$(LLM="$KIMI_FALLBACK_MODEL" MODEL="$KIMI_FALLBACK_MODEL" DEFAULT_MODEL="$KIMI_FALLBACK_MODEL" KIMI_MODEL="$KIMI_FALLBACK_MODEL" KIMI_LLM="$KIMI_FALLBACK_MODEL" KIMI_DEFAULT_MODEL="$KIMI_FALLBACK_MODEL" kimi --config-file "$KIMI_CONFIG_TO_USE" --print --output-format=stream-json --prompt "$PROMPT" 2>"$KIMI_STDERR_FILE")" || KIMI_EXIT_CODE=$?
-                else
-                  KIMI_EXIT_CODE=0
-                  RAW_OUTPUT="$(LLM="$KIMI_FALLBACK_MODEL" MODEL="$KIMI_FALLBACK_MODEL" DEFAULT_MODEL="$KIMI_FALLBACK_MODEL" KIMI_MODEL="$KIMI_FALLBACK_MODEL" KIMI_LLM="$KIMI_FALLBACK_MODEL" KIMI_DEFAULT_MODEL="$KIMI_FALLBACK_MODEL" kimi --print --output-format=stream-json --prompt "$PROMPT" 2>"$KIMI_STDERR_FILE")" || KIMI_EXIT_CODE=$?
-                fi
-                if [ "$KIMI_EXIT_CODE" -eq 0 ] && printf "%s" "$RAW_OUTPUT" | grep -Eqi "llm not set|model not set"; then
-                  printf "%s\n" "$RAW_OUTPUT" > "$KIMI_STDERR_FILE"
-                  KIMI_EXIT_CODE=86
-                fi
-              fi
-              if [ "$KIMI_EXIT_CODE" -ne 0 ]; then
-                {
-                  echo "KIMI debug: config_file=$KIMI_CONFIG_FILE config_to_use=$KIMI_CONFIG_TO_USE"
-                  echo "KIMI debug: model_candidates=$KIMI_MODEL_CANDIDATES"
-                  echo "KIMI debug: last_candidate=${KIMI_MODEL_CANDIDATE:-} last_arg=${KIMI_MODEL_ARG:-}"
-                  cat "$KIMI_STDERR_FILE"
-                } >&2
-                exit "$KIMI_EXIT_CODE"
-              fi
-              rm -f "$KIMI_STDERR_FILE"
-              if [ "$KIMI_CONFIG_TO_USE" != "$KIMI_CONFIG_FILE" ]; then
-                rm -f "$KIMI_CONFIG_TO_USE"
-              fi
-              printf "%s" "$RAW_OUTPUT" | node -e '
-                let d="";
-                const hasTools=process.argv[1]==="1";
-                let allowedNames=[];
-                try{
-                  const parsedAllowed=JSON.parse(process.argv[2]||"[]");
-                  if(Array.isArray(parsedAllowed)){
-                    allowedNames=parsedAllowed
-                      .filter(v=>typeof v==="string"&&v.trim())
-                      .map(v=>v.trim());
-                  }
-                }catch{}
-                const lastUserText=String(process.argv[3]||"");
-                const toolMessageCount=Math.max(0,Number(process.argv[5]||"0")||0);
-                let syntheticCall=null;
-                try{
-                  const parsedSynthetic=JSON.parse(process.argv[4]||"null");
-                  if(parsedSynthetic&&typeof parsedSynthetic==="object"){
-                    syntheticCall=parsedSynthetic;
-                  }
-                }catch{}
-                const normalizeName=(name)=>String(name??"")
-                  .trim()
-                  .replace(/([a-z0-9])([A-Z])/g,"$1_$2")
-                  .replace(/[\s\-./]+/g,"_")
-                  .replace(/[^A-Za-z0-9_]/g,"_")
-                  .replace(/_+/g,"_")
-                  .replace(/^_+|_+$/g,"")
-                  .toLowerCase();
-                const allowedMap=new Map(allowedNames.map(n=>[normalizeName(n),n]));
-                const normalizeAlias=(name)=>normalizeName(name)
-                  .replace(/^(tool_|function_|fn_)+/,"")
-                  .replace(/(_tool|_function|_fn|_api|_call)+$/,"");
-                const resolveAllowedName=(name)=>{
-                  const raw=String(name??"").trim();
-                  if(!raw) return "";
-                  if(allowedMap.size===0) return raw;
-                  const direct=allowedMap.get(normalizeName(raw));
-                  if(direct) return direct;
-                  const aliasNorm=normalizeAlias(raw);
-                  if(aliasNorm){
-                    const alias=allowedMap.get(aliasNorm);
-                    if(alias) return alias;
-                  }
-                  if(allowedNames.length===1){
-                    return allowedNames[0];
-                  }
-                  return "";
-                };
-                const getProp=(obj,keyCandidates)=>{
-                  if(!obj||typeof obj!=="object") return undefined;
-                  const source=obj;
-                  for(const key of keyCandidates){
-                    if(Object.prototype.hasOwnProperty.call(source,key)){
-                      return source[key];
-                    }
-                  }
-                  const normalizedCandidates=keyCandidates.map((k)=>normalizeName(k));
-                  for(const [rawKey,val] of Object.entries(source)){
-                    const normalizedRaw=normalizeName(rawKey);
-                    if(normalizedCandidates.includes(normalizedRaw)){
-                      return val;
-                    }
-                  }
-                  return undefined;
-                };
-                const sanitizeArgKeys=(value,depth=0)=>{
-                  if(depth>20) return value;
-                  if(Array.isArray(value)){
-                    return value.map((item)=>sanitizeArgKeys(item,depth+1));
-                  }
-                  if(value&&typeof value==="object"){
-                    const out={};
-                    for(const [rawKey,rawVal] of Object.entries(value)){
-                      const trimmedKey=String(rawKey??"").trim();
-                      const key=trimmedKey||String(rawKey??"");
-                      out[key]=sanitizeArgKeys(rawVal,depth+1);
-                    }
-                    return out;
-                  }
-                  return value;
-                };
-                const asArgs=(value)=>{
-                  if(typeof value==="string"){
-                    const t=value.trim();
-                    if(t&&(t.startsWith("{")||t.startsWith("["))){
-                      try{
-                        return JSON.stringify(sanitizeArgKeys(JSON.parse(t)));
-                      }catch{
-                        return value;
-                      }
-                    }
-                    return value;
-                  }
-                  try{
-                    return JSON.stringify(sanitizeArgKeys(value??{}));
-                  }catch{
-                    return "{}";
-                  }
-                };
-                const normalizeCall=(entry,index)=>{
-                  if(!entry||typeof entry!=="object") return null;
-                  const obj=entry;
-                  const fn=obj.function&&typeof obj.function==="object"?obj.function:null;
-                  const fnCall=obj.functionCall&&typeof obj.functionCall==="object"?obj.functionCall:null;
-                  const fnCallSnake=obj.function_call&&typeof obj.function_call==="object"?obj.function_call:null;
-                  const merged=fnCall||fnCallSnake||fn;
-                  const rawName=
-                    (typeof getProp(obj,["name"])==="string"&&getProp(obj,["name"])?getProp(obj,["name"]):"")||
-                    (typeof getProp(obj,["tool_name","toolName"])==="string"&&getProp(obj,["tool_name","toolName"])?getProp(obj,["tool_name","toolName"]):"")||
-                    (typeof getProp(merged,["name"])==="string"&&getProp(merged,["name"])?getProp(merged,["name"]):"");
-                  const name=String(rawName||"").trim();
-                  if(!name) return null;
-                  const mappedName=resolveAllowedName(name);
-                  if(allowedMap.size>0&&!mappedName) return null;
-                  const argsFromObj=getProp(obj,["arguments","args","parameters"]);
-                  const argsFromMerged=getProp(merged,["arguments","args","parameters"]);
-                  const argsRaw=argsFromObj!==undefined
-                    ?argsFromObj
-                    :argsFromMerged!==undefined
-                      ?argsFromMerged
-                      :{};
-                  const idFromObj=getProp(obj,["id","call_id","tool_id","toolId"]);
-                  const id=
-                    (typeof idFromObj==="string"&&idFromObj?String(idFromObj).trim():"")
-                    ||`call_${index+1}`;
-                  return {
-                    id,
-                    name:mappedName||name,
-                    arguments:asArgs(argsRaw)
-                  };
-                };
-                const appendCall=(out,item)=>{
-                  const call=normalizeCall(item,out.length);
-                  if(call) out.push(call);
-                };
-                const normalizeCallList=(items)=>{
-                  const src=Array.isArray(items)?items:[];
-                  const out=[];
-                  for(let i=0;i<src.length;i++){
-                    const call=normalizeCall(src[i],out.length);
-                    if(call) out.push(call);
-                  }
-                  return out;
-                };
-                const dedupeByKey=(items,keyFn)=>{
-                  const out=[];
-                  const seen=new Set();
-                  for(const item of items){
-                    const key=keyFn(item);
-                    if(seen.has(key)) continue;
-                    seen.add(key);
-                    out.push(item);
-                  }
-                  return out;
-                };
-                if(syntheticCall&&typeof syntheticCall==="object"){
-                  const n=typeof syntheticCall.name==="string"?syntheticCall.name.trim():"";
-                  const mapped=resolveAllowedName(n);
-                  if(!mapped){
-                    syntheticCall=null;
-                  }else{
-                    syntheticCall={
-                      id:typeof syntheticCall.id==="string"&&syntheticCall.id?syntheticCall.id:"call_1",
-                      name:mapped,
-                      arguments:asArgs(syntheticCall.arguments)
-                    };
-                  }
-                }
-                const collectCallsFromObject=(value)=>{
-                  if(!value||typeof value!=="object") return [];
-                  const obj=value;
-                  const out=[];
-                  const appendList=(items)=>{
-                    for(const call of normalizeCallList(items)){
-                      out.push(call);
-                    }
-                  };
-                  appendList(obj.tool_calls);
-                  appendList(obj.toolCalls);
-                  appendList(obj.function_calls);
-                  appendList(obj.functionCalls);
-                  appendList(obj.calls);
-                  appendCall(out,obj.tool_call);
-                  appendCall(out,obj.functionCall);
-                  appendCall(out,obj.function_call);
-                  if(obj.type==="tool_use"){
-                    appendCall(out,obj);
-                  }
-                  if(typeof obj.name==="string"&&(Object.prototype.hasOwnProperty.call(obj,"arguments")||Object.prototype.hasOwnProperty.call(obj,"args"))){
-                    appendCall(out,obj);
-                  }
-                  if(obj.message&&typeof obj.message==="object"){
-                    appendList(obj.message.tool_calls);
-                    appendList(obj.message.function_calls);
-                    appendCall(out,obj.message.functionCall);
-                    appendCall(out,obj.message.function_call);
-                  }
-                  const appendCallsFromParts=(parts)=>{
-                    const list=Array.isArray(parts)?parts:[];
-                    for(const part of list){
-                      if(!part||typeof part!=="object") continue;
-                      appendCall(out,part);
-                      appendCall(out,part.functionCall);
-                      appendCall(out,part.function_call);
-                    }
-                  };
-                  if(obj.content&&typeof obj.content==="object"){
-                    appendCallsFromParts(obj.content.parts);
-                  }
-                  const candidates=Array.isArray(obj.candidates)?obj.candidates:[];
-                  for(const candidate of candidates){
-                    if(!candidate||typeof candidate!=="object") continue;
-                    if(candidate.content&&typeof candidate.content==="object"){
-                      appendCallsFromParts(candidate.content.parts);
-                    }
-                  }
-                  return dedupeByKey(out,(c)=>`${c.id}\u0000${c.name}\u0000${c.arguments}`);
-                };
-                const collectTextChunks=(value)=>{
-                  const out=[];
-                  const push=(v)=>{
-                    if(typeof v!=="string") return;
-                    const t=v.trim();
-                    if(t) out.push(t);
-                  };
-                  if(!value||typeof value!=="object") return out;
-                  const role=typeof value.role==="string"?value.role.toLowerCase():"";
-                  if(
-                    value.type==="message" &&
-                    role &&
-                    role!=="assistant" &&
-                    role!=="model"
-                  ){
-                    return out;
-                  }
-
-                  push(value.output_text);
-                  push(value.text);
-                  push(value.response);
-                  push(value.value);
-                  push(value.content);
-
-                  if(value.message&&typeof value.message==="object"){
-                    push(value.message.content);
-                    push(value.message.text);
-                    push(value.message.output_text);
-                  }
-
-                  const fromParts=(parts)=>{
-                    const list=Array.isArray(parts)?parts:[];
-                    for(const part of list){
-                      if(typeof part==="string"){
-                        push(part);
-                        continue;
-                      }
-                      if(!part||typeof part!=="object") continue;
-                      push(part.text);
-                      push(part.output_text);
-                    }
-                  };
-
-                  if(Array.isArray(value.content)){
-                    fromParts(value.content);
-                  }
-                  if(value.content&&typeof value.content==="object"){
-                    fromParts(value.content.parts);
-                  }
-
-                  const candidates=Array.isArray(value.candidates)?value.candidates:[];
-                  for(const candidate of candidates){
-                    if(!candidate||typeof candidate!=="object") continue;
-                    if(candidate.content&&typeof candidate.content==="object"){
-                      fromParts(candidate.content.parts);
-                    }
-                    push(candidate.output_text);
-                    push(candidate.text);
-                    push(candidate.response);
-                  }
-
-                  return out;
-                };
-                process.stdin.on("data",c=>d+=c).on("end",()=>{
-                  const t=d.trim();
-                  if(!t){
-                    process.stdout.write(JSON.stringify({output_text:"",finish_reason:"stop"}));
-                    return;
-                  }
-
-                  const toolCalls=[];
-                  const textChunks=[];
-                  const pushCalls=(source)=>{
-                    for(const call of collectCallsFromObject(source)){
-                      toolCalls.push(call);
-                    }
-                  };
-                  const pushText=(source)=>{
-                    for(const chunk of collectTextChunks(source)){
-                      textChunks.push(chunk);
-                    }
-                  };
-                  const parseAndCollect=(value)=>{
-                    if(Array.isArray(value)){
-                      for(const item of value){
-                        parseAndCollect(item);
-                      }
-                      return;
-                    }
-                    if(!value||typeof value!=="object"){
-                      return;
-                    }
-                    pushCalls(value);
-                    pushText(value);
-                  };
-                  const extractJsonCandidates=(input)=>{
-                    if(typeof input!=="string") return [];
-                    const out=[];
-                    const push=(v)=>{
-                      if(typeof v!=="string") return;
-                      const t=v.trim();
-                      if(t) out.push(t);
-                    };
-                    push(input);
-                    const fence=/```(?:json)?\s*([\s\S]*?)```/gi;
-                    let m;
-                    while((m=fence.exec(input))!==null){
-                      push(m[1]);
-                    }
-                    const start=input.indexOf("{");
-                    const end=input.lastIndexOf("}");
-                    if(start!==-1&&end>start){
-                      push(input.slice(start,end+1));
-                    }
-                    return dedupeByKey(out,(x)=>x);
-                  };
-                  const promoteContractFromText=(input)=>{
-                    const candidates=extractJsonCandidates(input);
-                    for(const candidate of candidates){
-                      let parsed=null;
-                      try{
-                        parsed=JSON.parse(candidate);
-                      }catch{
-                        continue;
-                      }
-                      if(!parsed||typeof parsed!=="object") continue;
-                      const calls=collectCallsFromObject(parsed);
-                      const promotedText=
-                        typeof parsed.output_text==="string"
-                          ?parsed.output_text
-                          :(typeof parsed.text==="string"
-                            ?parsed.text
-                            :(typeof parsed.content==="string"
-                              ?parsed.content
-                              :""));
-                      if(calls.length>0){
-                        return {
-                          calls,
-                          text:promotedText
-                        };
-                      }
-                    }
-                    return null;
-                  };
-
-                  const lines=t.split(/\r?\n/).map((line)=>line.trim()).filter(Boolean);
-                  let parsedAny=false;
-                  for(const line of lines){
-                    let parsed=null;
-                    try{
-                      parsed=JSON.parse(line);
-                    }catch{
-                      continue;
-                    }
-                    parsedAny=true;
-                    parseAndCollect(parsed);
-                  }
-
-                  if(!parsedAny){
-                    try{
-                      const parsedWhole=JSON.parse(t);
-                      parsedAny=true;
-                      parseAndCollect(parsedWhole);
-                    }catch{}
-                  }
-
-                  const uniqueCalls=dedupeByKey(toolCalls,(c)=>`${c.id}\u0000${c.name}\u0000${c.arguments}`);
-                  const uniqueText=dedupeByKey(textChunks,(x)=>x);
-                  const outputText=uniqueText.join("\n").trim();
-                  const promotedFromText=hasTools
-                    ?(promoteContractFromText(outputText)||promoteContractFromText(t))
-                    :null;
-                  if(promotedFromText&&promotedFromText.calls.length>0){
-                    const mergedCalls=dedupeByKey(
-                      [...uniqueCalls,...promotedFromText.calls],
-                      (c)=>`${c.id}\u0000${c.name}\u0000${c.arguments}`
-                    );
-                    process.stdout.write(JSON.stringify({
-                      output_text:(promotedFromText.text||outputText).trim(),
-                      tool_calls:mergedCalls,
-                      finish_reason:"tool_calls"
-                    }));
-                    return;
-                  }
-                  const refusalText=(outputText||t).toLowerCase();
-                  const looksLikeToolRefusal=
-                    /tool\s+(?:is\s+)?not\s+available/.test(refusalText) ||
-                    /cannot\s+(?:access|use|call|invoke)/.test(refusalText) ||
-                    /can.t\s+(?:access|use|call|invoke)/.test(refusalText) ||
-                    /do not have access to/.test(refusalText) ||
-                    /don.t have access to/.test(refusalText);
-                  const userAskedTool=/\b(use|call|invoke|run|search|find|look|query|check)\b/.test(lastUserText.toLowerCase());
-
-                  if(hasTools&&uniqueCalls.length>0){
-                    process.stdout.write(JSON.stringify({
-                      output_text:outputText,
-                      tool_calls:uniqueCalls,
-                      finish_reason:"tool_calls"
-                    }));
-                    return;
-                  }
-                  if(
-                    hasTools&&
-                    syntheticCall&&
-                    toolMessageCount===0&&
-                    uniqueCalls.length===0&&
-                    (looksLikeToolRefusal||(!outputText&&userAskedTool))
-                  ){
-                    process.stdout.write(JSON.stringify({
-                      output_text:outputText,
-                      tool_calls:[syntheticCall],
-                      finish_reason:"tool_calls"
-                    }));
-                    return;
-                  }
-
-                  if(outputText){
-                    process.stdout.write(JSON.stringify({
-                      output_text:outputText,
-                      finish_reason:"stop"
-                    }));
-                    return;
-                  }
-
-                  const unfenced=t.replace(/^```(?:json)?\s*/i,"").replace(/```$/,"").trim();
-                  process.stdout.write(JSON.stringify({
-                    output_text:unfenced||t,
-                    finish_reason:"stop"
-                  }));
-                });
-              ' "$HAS_TOOLS" "$ALLOWED_TOOL_NAMES_JSON" "$LAST_USER_TEXT" "$SYNTHETIC_TOOL_CALL_JSON" "$TOOL_MESSAGE_COUNT"
-          input: request_json_stdin
-          output: json_contract
-          timeoutMs: 240000
-        auth:
-          loginCommand:
-            executable: sh
-            args:
-              - -c
-              - |
-                echo "Kimi Code CLI login is interactive in this version."
-                echo "Run in a TTY shell: kimi"
-                echo "Then run: /setup and complete auth."
-                exit 1
-            timeoutMs: 10000
-          statusCommand:
-            executable: sh
-            args:
-              - -c
-              - |
-                if [ -f "$HOME/.kimi/config.toml" ] || [ -f "$HOME/config.toml" ] || [ -f "$HOME/.kimi/config.json" ] || [ -f "$HOME/config.json" ] || [ -f "$HOME/.kimi/kimi.json" ] || [ -f "$HOME/kimi.json" ]; then
-                  echo '{"ok":true,"source":"~/.kimi/*"}'
-                  exit 0
-                fi
-                echo '{"ok":false,"error":"missing ~/.kimi/config.toml (run kimi then /setup)"}'
-                exit 1
-            timeoutMs: 30000
-      - id: antigravity-cli
-        type: cli
-        description: Antigravity CLI adapter
-        models:
-          - id: antigravity-default
-            providerModel: default
-        responseCommand:
-          executable: antigravity
-          args:
-            - chat
-            - --model
-            - "{{provider_model}}"
-            - --json
-          input: request_json_stdin
-          output: json_contract
-          timeoutMs: 240000
-        auth:
-          loginCommand:
-            executable: antigravity
-            args:
-              - auth
-              - login
-              - --no-browser
-            timeoutMs: 900000
-          statusCommand:
-            executable: antigravity
-            args:
-              - auth
-              - status
-              - --json
-            timeoutMs: 30000
-      - id: codex-cli
-        type: cli
-        description: OpenAI (Codex CLI) adapter
-        models:
-          - id: gpt-5.4
-            providerModel: gpt-5.4
-            fallbackModels:
-              - gpt-5.4-pro
-              - gemini-3.1-pro-preview
-          - id: gpt-5.4-pro
-            providerModel: gpt-5.4-pro
-            fallbackModels:
-              - gpt-5.4
-          - id: gpt-5.3-instant
-            providerModel: gpt-5.3-instant
-            fallbackModels:
-              - gpt-5.4
-          - id: gpt-5.3-codex
-            providerModel: gpt-5.3-codex
-          - id: gpt-5.2
-            providerModel: gpt-5.2
-          - id: gpt-5.2-codex
-            providerModel: gpt-5.2-codex
-          - id: gpt-5
-            providerModel: gpt-5
-          - id: gpt-5-codex
-            providerModel: gpt-5-codex
-          - id: gpt-5-codex-mini
-            providerModel: gpt-5-codex-mini
-          - id: gpt-5.1
-            providerModel: gpt-5.1
-          - id: gpt-5.1-codex
-            providerModel: gpt-5.1-codex
-          - id: gpt-5.1-codex-max
-            providerModel: gpt-5.1-codex-max
-          - id: gpt-5.1-codex-mini
-            providerModel: gpt-5.1-codex-mini
-        responseCommand:
-          executable: node
-          args:
-            - /app/dist/scripts/codex-appserver-bridge.js
-            - --model
-            - "{{provider_model}}"
-          input: request_json_stdin
-          output: json_contract
-          timeoutMs: 240000
-        auth:
-          loginCommand:
-            executable: sh
-            args:
-              - -lc
-              - |
-                if codex login --help 2>&1 | grep -q -- '--device-auth'; then
-                  echo "Starting Codex device auth (no localhost callback required)..."
-                  exec codex login --device-auth
-                fi
-                if codex login --help 2>&1 | grep -q -- '--no-browser'; then
-                  echo "Starting Codex no-browser auth..."
-                  exec codex login --no-browser
-                fi
-                echo "Starting Codex interactive login..."
-                exec codex login
-            timeoutMs: 900000
-          statusCommand:
-            executable: sh
-            args:
-              - -lc
-              - |
-                if codex login status >/tmp/codex-status.txt 2>&1; then
-                  cat /tmp/codex-status.txt
-                  exit 0
-                fi
-                if [ -f "$HOME/.codex/auth.json" ] || [ -f "$HOME/.codex/oauth_creds.json" ] || [ -f "$HOME/.config/codex/auth.json" ]; then
-                  echo '{"ok":true,"source":"local-auth-cache"}'
-                  exit 0
-                fi
-                cat /tmp/codex-status.txt
-                echo '{"ok":false,"error":"codex login status failed"}'
-                exit 1
-            timeoutMs: 30000
-      - id: ollama-cli
-        type: cli
-        description: Ollama local backup adapter with native tool calling
-        models:
-          - id: ollama-local-best
-            providerModel: qwen3:8b
-          - id: ollama-local-fast
-            providerModel: qwen3:4b
-          - id: ollama-phi4-mini
-            providerModel: phi4-mini:3.8b
-          - id: ollama-phi35-mini-q4
-            providerModel: phi3.5:3.8b
-          - id: ollama-qwen3-8b
-            providerModel: qwen3:8b
-          - id: ollama-qwen3-4b
-            providerModel: qwen3:4b
-        responseCommand:
-          executable: sh
-          args:
-            - -lc
-            - |
-              REQUEST_JSON="$(cat)"
-              OLLAMA_URL="${OLLAMA_BASE_URL:-http://ollama.n8n-openai-gateway.svc.cluster.local:11434}"
-              OLLAMA_NUM_THREAD="${OLLAMA_NUM_THREAD:-6}"
-              OLLAMA_NUM_CTX="${OLLAMA_NUM_CTX:-2048}"
-              OLLAMA_NUM_PREDICT="${OLLAMA_NUM_PREDICT:-384}"
-              HAS_TOOLS="$(
-                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const req=JSON.parse(d);const tools=Array.isArray(req.tools)?req.tools:[];process.stdout.write(tools.length>0?"1":"0");}catch{process.stdout.write("0");}});'
-              )"
-
-              PAYLOAD="$(
-                printf "%s" "$REQUEST_JSON" | node -e 'let d="";const numThread=Number(process.argv[1]);const numCtx=Number(process.argv[2]);const numPredict=Number(process.argv[3]);process.stdin.on("data",c=>d+=c).on("end",()=>{const req=JSON.parse(d);const msgs=Array.isArray(req.messages)?req.messages:[];const tools=Array.isArray(req.tools)?req.tools:[];const normalized=msgs.map((m)=>{const out={role:String(m.role||"user"),content:typeof m.content==="string"?m.content:JSON.stringify(m.content??"")};if(out.role==="tool"){const n=typeof m.name==="string"&&m.name?m.name:(typeof m.tool_call_id==="string"&&m.tool_call_id?m.tool_call_id:undefined);if(n)out.tool_name=n;}return out;});const body={model:"{{provider_model}}",messages:normalized,tools,stream:false};const options={};if(Number.isFinite(numThread)&&numThread>0){options.num_thread=Math.trunc(numThread);}if(Number.isFinite(numCtx)&&numCtx>0){options.num_ctx=Math.trunc(numCtx);}if(Number.isFinite(numPredict)&&numPredict>0){options.num_predict=Math.trunc(numPredict);}if(Object.keys(options).length>0){body.options=options;}process.stdout.write(JSON.stringify(body));});' "$OLLAMA_NUM_THREAD" "$OLLAMA_NUM_CTX" "$OLLAMA_NUM_PREDICT"
-              )"
-
-              RESPONSE_JSON="$(curl -fsS "$OLLAMA_URL/api/chat" -H "Content-Type: application/json" -d "$PAYLOAD")" || exit $?
-
-              printf "%s" "$RESPONSE_JSON" | node -e '
-                let d="";
-                const hasTools=process.argv[1]==="1";
-                const providerModel=String(process.argv[2]||"").toLowerCase();
-                const isPhiModel=/\bphi/.test(providerModel);
-                const looksLikePretendToolUse=(value)=>{
-                  if(typeof value!=="string") return false;
-                  const t=value.toLowerCase();
-                  if(t.includes("simulated action")) return true;
-                  if(t.includes("working memory tool")) return true;
-                  if(t.includes("status table")) return true;
-                  if(t.includes("query memory")) return true;
-                  if(/\b(use|using|call|invoke|query|save|store|write)\b[\s\S]{0,100}\b(tool|memory|table)\b/.test(t)) return true;
-                  return false;
-                };
-                const maybeRejectMissingToolCalls=(text,toolCallCount)=>{
-                  if(!hasTools||!isPhiModel||toolCallCount>0) return false;
-                  if(!looksLikePretendToolUse(text)) return false;
-                  process.stderr.write("ollama phi pseudo-tool output detected without tool_calls\n");
-                  return true;
-                };
-                process.stdin.on("data",c=>d+=c).on("end",()=>{
-                  const res=JSON.parse(d);
-                  const msg=res&&typeof res.message==="object"&&res.message?res.message:{};
-                  const content=typeof msg.content==="string"?msg.content:"";
-
-                  const normalizeToolCalls=(arr)=>{
-                    const calls=Array.isArray(arr)?arr:[];
-                    return calls.map((c,i)=>{
-                      if(!c||typeof c!=="object") return null;
-                      const fn=c.function&&typeof c.function==="object"?c.function:{};
-                      const name=typeof c.name==="string"&&c.name
-                        ?c.name
-                        :(typeof fn.name==="string"&&fn.name?fn.name:"");
-                      if(!name) return null;
-                      const args=c.arguments!==undefined
-                        ?c.arguments
-                        :(fn.arguments!==undefined?fn.arguments:{});
-                      return {
-                        id:typeof c.id==="string"&&c.id?c.id:`call_${i+1}`,
-                        name,
-                        arguments:typeof args==="string"?args:JSON.stringify(args)
-                      };
-                    }).filter(Boolean);
-                  };
-
-                  const rawToolCalls=normalizeToolCalls(msg.tool_calls);
-                  if(rawToolCalls.length>0){
-                    process.stdout.write(JSON.stringify({
-                      output_text:content,
-                      tool_calls:rawToolCalls,
-                      finish_reason:"tool_calls"
-                    }));
-                    return;
-                  }
-
-                  const parseContract=(input)=>{
-                    const t=typeof input==="string"?input.trim():"";
-                    if(!t) return null;
-                    const seen=new Set();
-                    const queue=[];
-                    const push=(s)=>{
-                      if(typeof s!=="string") return;
-                      const v=s.trim();
-                      if(!v||seen.has(v)) return;
-                      seen.add(v);
-                      queue.push(v);
-                    };
-                    const pushDerived=(s)=>{
-                      const fence=/```(?:json)?\s*([\s\S]*?)```/gi;
-                      let m;
-                      while((m=fence.exec(s))!==null){
-                        push(m[1]);
-                      }
-                      const start=s.indexOf("{");
-                      const end=s.lastIndexOf("}");
-                      if(start!==-1&&end>start){
-                        push(s.slice(start,end+1));
-                      }
-                    };
-                    const isContract=(j)=>j&&typeof j==="object"&&(
-                      "output_text" in j || "tool_calls" in j || "finish_reason" in j || "text" in j || "content" in j
-                    );
-
-                    push(t);
-                    pushDerived(t);
-
-                    for(let i=0;i<queue.length&&i<50;i++){
-                      const cur=queue[i];
-                      pushDerived(cur);
-                      let parsed=null;
-                      try{parsed=JSON.parse(cur);}catch{}
-                      if(!parsed||typeof parsed!=="object") continue;
-
-                      if(isContract(parsed)){
-                        const innerCandidates=[
-                          typeof parsed.output_text==="string"?parsed.output_text:"",
-                          typeof parsed.text==="string"?parsed.text:"",
-                          typeof parsed.content==="string"?parsed.content:""
-                        ].filter(Boolean);
-                        for(const c of innerCandidates){
-                          push(c);
-                          pushDerived(c);
-                          try{
-                            const j2=JSON.parse(c);
-                            if(isContract(j2)) return j2;
-                          }catch{}
-                        }
-                        return parsed;
-                      }
-
-                      if(typeof parsed.response==="string") push(parsed.response);
-                      if(parsed.message&&typeof parsed.message==="object"&&typeof parsed.message.content==="string"){
-                        push(parsed.message.content);
-                      }
-                    }
-
-                    return null;
-                  };
-
-                  const parsedContract=parseContract(content);
-                  if(parsedContract){
-                    const parsedToolCalls=normalizeToolCalls(parsedContract.tool_calls);
-                    const outputText=typeof parsedContract.output_text==="string"
-                      ?parsedContract.output_text
-                      :(typeof parsedContract.text==="string"
-                        ?parsedContract.text
-                        :(typeof parsedContract.content==="string"?parsedContract.content:content));
-                    if(maybeRejectMissingToolCalls(outputText,parsedToolCalls.length)){
-                      process.exit(86);
-                    }
-                    const finishReason=parsedToolCalls.length>0
-                      ?"tool_calls"
-                      :(typeof parsedContract.finish_reason==="string"&&parsedContract.finish_reason
-                        ?parsedContract.finish_reason
-                        :"stop");
-                    process.stdout.write(JSON.stringify({
-                      output_text:outputText,
-                      tool_calls:parsedToolCalls,
-                      finish_reason:finishReason
-                    }));
-                    return;
-                  }
-
-                  const unfenced=content
-                    .replace(/^```(?:json)?\s*/i,"")
-                    .replace(/```$/,"")
-                    .trim();
-                  if(maybeRejectMissingToolCalls(unfenced||content,0)){
-                    process.exit(86);
-                  }
-                  process.stdout.write(JSON.stringify({
-                    output_text:unfenced||content,
-                    finish_reason:"stop"
-                  }));
-                });
-              ' "$HAS_TOOLS" "{{provider_model}}"
-          input: request_json_stdin
-          output: json_contract
-          timeoutMs: 240000
-        auth:
-          loginCommand:
-            executable: sh
-            args:
-              - -lc
-              - |
-                echo "Ollama local provider does not require login."
-                curl -fsS "${OLLAMA_BASE_URL:-http://ollama.n8n-openai-gateway.svc.cluster.local:11434}/api/tags" >/dev/null
-            timeoutMs: 30000
-          statusCommand:
-            executable: sh
-            args:
-              - -lc
-              - |
-                curl -fsS "${OLLAMA_BASE_URL:-http://ollama.n8n-openai-gateway.svc.cluster.local:11434}/api/tags"
-            timeoutMs: 30000
+          timeoutMs: 120000
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -1285,100 +217,11 @@ metadata:
   name: n8n-openai-cli-gateway-home
   namespace: n8n-openai-gateway
 spec:
-  # Set this if your cluster does not have a default storage class.
-  # storageClassName: replace-with-storageclass
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
       storage: 5Gi
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: ollama-models
-  namespace: n8n-openai-gateway
-spec:
-  # Set this if your cluster does not have a default storage class.
-  # storageClassName: replace-with-storageclass
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 40Gi
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ollama
-  namespace: n8n-openai-gateway
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: ollama
-  template:
-    metadata:
-      labels:
-        app: ollama
-    spec:
-      nodeSelector:
-        kubernetes.io/arch: arm64
-      containers:
-        - name: ollama
-          image: ollama/ollama:latest
-          imagePullPolicy: Always
-          ports:
-            - containerPort: 11434
-              name: http
-          env:
-            - name: OLLAMA_HOST
-              value: "0.0.0.0:11434"
-            - name: OLLAMA_CONTEXT_LENGTH
-              value: "2048"
-          volumeMounts:
-            - name: ollama-models
-              mountPath: /root/.ollama
-          readinessProbe:
-            httpGet:
-              path: /api/tags
-              port: 11434
-            initialDelaySeconds: 10
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /api/tags
-              port: 11434
-            initialDelaySeconds: 30
-            periodSeconds: 20
-          resources:
-            requests:
-              cpu: "2"
-              memory: 8Gi
-            limits:
-              cpu: "10"
-              memory: 16Gi
-      volumes:
-        - name: ollama-models
-          persistentVolumeClaim:
-            claimName: ollama-models
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: ollama
-  namespace: n8n-openai-gateway
-  labels:
-    app: ollama
-spec:
-  type: ClusterIP
-  selector:
-    app: ollama
-  ports:
-    - name: http
-      port: 11434
-      targetPort: 11434
-      protocol: TCP
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1396,8 +239,6 @@ spec:
         app: n8n-openai-cli-gateway
     spec:
       serviceAccountName: n8n-openai-cli-gateway
-      nodeSelector:
-        kubernetes.io/arch: arm64
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -1405,76 +246,10 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
-      initContainers:
-        - name: kimi-bootstrap
-          image: ghcr.io/philly1084/n8n-openai-cli-gateway:main
-          imagePullPolicy: Always
-          command:
-            - sh
-            - -lc
-            - |
-              set -eu
-              export HOME=/var/lib/gateway-home
-              export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-              mkdir -p "$HOME/.local/bin"
-              if [ ! -x "$HOME/.local/bin/uv" ]; then
-                curl -LsSf https://astral.sh/uv/install.sh | sh
-              fi
-              if [ ! -x "$HOME/.local/bin/kimi" ]; then
-                "$HOME/.local/bin/uv" tool install --python 3.13 kimi-cli
-              fi
-              "$HOME/.local/bin/kimi" --version >/dev/null
-          env:
-            - name: HOME
-              value: /var/lib/gateway-home
-            - name: PATH
-              value: /var/lib/gateway-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false
-            capabilities:
-              drop: ["ALL"]
-          volumeMounts:
-            - name: provider-home
-              mountPath: /var/lib/gateway-home
-        - name: gemini-nanobanana-bootstrap
-          image: ghcr.io/philly1084/n8n-openai-cli-gateway:main
-          imagePullPolicy: Always
-          command:
-            - sh
-            - -lc
-            - |
-              set -eu
-              export HOME=/var/lib/gateway-home
-              export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-              if ! command -v gemini >/dev/null 2>&1; then
-                echo "gemini CLI not found; skipping nanobanana bootstrap."
-                exit 0
-              fi
-              EXT_LIST="$(gemini extensions list 2>&1 || true)"
-              if printf "%s" "$EXT_LIST" | grep -Eqi "nanobanana|nano[[:space:]]*banana"; then
-                echo "nanobanana extension already installed."
-                exit 0
-              fi
-              printf "y\n" | gemini extensions install https://github.com/gemini-cli-extensions/nanobanana || \
-              printf "y\n" | gemini extensions install nanobanana || true
-          env:
-            - name: HOME
-              value: /var/lib/gateway-home
-            - name: PATH
-              value: /var/lib/gateway-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false
-            capabilities:
-              drop: ["ALL"]
-          volumeMounts:
-            - name: provider-home
-              mountPath: /var/lib/gateway-home
       containers:
         - name: gateway
-          image: ghcr.io/philly1084/n8n-openai-cli-gateway:main
-          imagePullPolicy: Always
+          image: ghcr.io/philly1084/n8n-openai-cli-gateway:latest
+          imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false
@@ -1498,24 +273,6 @@ spec:
               value: /var/lib/gateway-home
             - name: PATH
               value: /var/lib/gateway-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-            - name: OLLAMA_BASE_URL
-              value: "http://ollama.n8n-openai-gateway.svc.cluster.local:11434"
-            - name: OLLAMA_NUM_THREAD
-              value: "6"
-            - name: OLLAMA_NUM_CTX
-              value: "2048"
-            - name: OLLAMA_NUM_PREDICT
-              value: "384"
-            - name: CODEX_APPSERVER_MODEL_PROVIDER
-              value: "openai"
-            - name: CODEX_APPSERVER_TIMEOUT_MS
-              value: "240000"
-            - name: CODEX_APPSERVER_INITIALIZE_TIMEOUT_MS
-              value: "60000"
-            - name: CODEX_APPSERVER_START_TIMEOUT_MS
-              value: "45000"
-            - name: CODEX_APPSERVER_CHATGPT_FALLBACK_MODEL
-              value: "gpt-5.4"
             - name: N8N_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -1526,49 +283,34 @@ spec:
                 secretKeyRef:
                   name: n8n-openai-cli-gateway-secrets
                   key: adminApiKey
-            - name: GEMINI_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: n8n-openai-cli-gateway-secrets
-                  key: geminiApiKey
-            - name: GOOGLE_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: n8n-openai-cli-gateway-secrets
-                  key: geminiApiKey
-            - name: NANOBANANA_GEMINI_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: n8n-openai-cli-gateway-secrets
-                  key: geminiApiKey
-            - name: NANOBANANA_GOOGLE_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: n8n-openai-cli-gateway-secrets
-                  key: geminiApiKey
             - name: GROQ_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: n8n-openai-cli-gateway-secrets
                   key: groqApiKey
+            - name: DEEPSEEK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: n8n-openai-cli-gateway-secrets
+                  key: deepseekApiKey
           volumeMounts:
             - name: providers-config
               mountPath: /app/config/providers.yaml
               subPath: providers.yaml
             - name: provider-home
               mountPath: /var/lib/gateway-home
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: 8080
-            initialDelaySeconds: 20
-            periodSeconds: 15
           startupProbe:
             httpGet:
               path: /healthz
               port: 8080
             failureThreshold: 30
             periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 15
           readinessProbe:
             httpGet:
               path: /healthz
@@ -1606,30 +348,3 @@ spec:
       port: 80
       targetPort: 8080
       protocol: TCP
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: n8n-openai-cli-gateway
-  namespace: n8n-openai-gateway
-  annotations:
-    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
-spec:
-  ingressClassName: nginx
-  tls:
-    - hosts:
-        - gateway.example.com
-      secretName: n8n-openai-cli-gateway-tls
-  rules:
-    - host: gateway.example.com
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: n8n-openai-cli-gateway
-                port:
-                  number: 80

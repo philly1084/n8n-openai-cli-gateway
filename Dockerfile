@@ -12,7 +12,7 @@ RUN npm run build
 
 FROM --platform=$TARGETPLATFORM node:20-bookworm-slim AS runtime
 
-ARG EXTRA_NPM_GLOBAL_PACKAGES="opencode-ai"
+ARG EXTRA_NPM_GLOBAL_PACKAGES="@openai/codex opencode-ai"
 
 WORKDIR /app
 ENV NODE_ENV=production
