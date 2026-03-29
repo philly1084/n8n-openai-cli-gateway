@@ -552,6 +552,45 @@ spec:
           volumeMounts:
             - name: provider-home
               mountPath: /var/lib/gateway-home
+        - name: gemini-auth-bootstrap
+          image: ghcr.io/philly1084/n8n-openai-cli-gateway:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -lc
+            - |
+              set -eu
+              export HOME=/var/lib/gateway-home
+              BOOTSTRAP_DIR=/bootstrap/gemini
+              TARGET_DIR="$HOME/.gemini"
+              if [ -f "$TARGET_DIR/oauth_creds.json" ]; then
+                echo "Gemini auth already present in $TARGET_DIR"
+                exit 0
+              fi
+              set -- "$BOOTSTRAP_DIR"/*
+              if [ "$1" = "$BOOTSTRAP_DIR/*" ]; then
+                echo "No Gemini auth bootstrap secret mounted; skipping seed"
+                exit 0
+              fi
+              mkdir -p "$TARGET_DIR"
+              cp "$BOOTSTRAP_DIR"/* "$TARGET_DIR"/
+              chmod 700 "$TARGET_DIR"
+              chmod 600 "$TARGET_DIR"/* || true
+              echo "Seeded Gemini auth into $TARGET_DIR"
+          env:
+            - name: HOME
+              value: /var/lib/gateway-home
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: provider-home
+              mountPath: /var/lib/gateway-home
+            - name: gemini-auth-seed
+              mountPath: /bootstrap/gemini
+              readOnly: true
         - name: kimi-bootstrap
           image: ghcr.io/philly1084/n8n-openai-cli-gateway:latest
           imagePullPolicy: IfNotPresent
@@ -668,6 +707,10 @@ spec:
         - name: provider-home
           persistentVolumeClaim:
             claimName: n8n-openai-cli-gateway-home
+        - name: gemini-auth-seed
+          secret:
+            secretName: n8n-openai-cli-gateway-gemini-auth
+            optional: true
 ---
 apiVersion: v1
 kind: Service

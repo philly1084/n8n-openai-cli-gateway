@@ -441,6 +441,40 @@ Important for OAuth/token persistence:
 - Deployment is pinned to `arm64` nodes via `nodeSelector`.
   Remove the selector if you publish a multi-arch image and want mixed scheduling.
 
+### Gemini auth bootstrap secret
+
+The Kubernetes manifests now support an optional Secret named `n8n-openai-cli-gateway-gemini-auth`.
+If the PVC does not already contain `/var/lib/gateway-home/.gemini/oauth_creds.json`, an init container
+will seed `/var/lib/gateway-home/.gemini/` from that Secret on startup. Existing PVC auth is left untouched.
+
+This is the repeatable way to bring Gemini auth forward to a fresh cluster or a fresh PVC.
+
+Create or refresh the Secret from a running gateway pod:
+
+```bash
+chmod +x scripts/bootstrap-gemini-auth-secret.sh
+./scripts/bootstrap-gemini-auth-secret.sh
+```
+
+Create or refresh the Secret from a local Gemini CLI directory:
+
+```bash
+./scripts/bootstrap-gemini-auth-secret.sh --source-dir "$HOME/.gemini"
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\bootstrap-gemini-auth-secret.ps1
+.\scripts\bootstrap-gemini-auth-secret.ps1 -SourceDir "$HOME\.gemini"
+```
+
+After updating the Secret, restart the deployment if you want a fresh PVC to be seeded on next start:
+
+```bash
+kubectl rollout restart deployment/n8n-openai-cli-gateway -n n8n-openai-gateway
+```
+
 ## Build image
 
 ```bash
@@ -499,6 +533,11 @@ Use `kubernetes/rancher-install.yaml` as a single import in Rancher:
    - ingress host `gateway.example.com`
    - `providers.yaml` contents for your real CLI commands/models
 4. Deploy.
+
+Optional for Gemini CLI:
+
+- Create the `n8n-openai-cli-gateway-gemini-auth` Secret before first start if you want Rancher to seed Gemini OAuth state into a new PVC automatically.
+- Use `scripts/bootstrap-gemini-auth-secret.sh` or `scripts/bootstrap-gemini-auth-secret.ps1` to export that Secret from an existing working environment.
 
 After deploy:
 
