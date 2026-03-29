@@ -3,7 +3,12 @@ import { LruMap } from "../utils/lru-map";
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { ProviderRegistry } from "../providers/registry";
-import type { ChatMessage, ReasoningEffort, UnifiedToolDefinition } from "../types";
+import type {
+  ChatMessage,
+  ProviderResult,
+  ReasoningEffort,
+  UnifiedToolDefinition,
+} from "../types";
 import { makeId } from "../utils/ids";
 import { extractTextContent } from "../utils/prompt";
 import { resolveReasoningEffort } from "../utils/reasoning";
@@ -184,6 +189,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
         reasoningEffort,
         metadata: body as Record<string, unknown>,
       });
+      logBlankAssistantResult(app.log.warn.bind(app.log), body.model, result, "/responses");
 
       const output: unknown[] = [];
       if (result.outputText) {
@@ -501,6 +507,7 @@ async function handleChatCompletionsRequest(
       reasoningEffort,
       metadata: body as Record<string, unknown>,
     });
+    logBlankAssistantResult(reply.log.warn.bind(reply.log), body.model, result, "/chat/completions");
 
     // Log tool calls for debugging
     if (result.toolCalls.length > 0) {
@@ -1241,4 +1248,61 @@ function extractTranscriptionText(text: string): string {
   }
 
   return trimmed;
+}
+
+function logBlankAssistantResult(
+  warn: (obj: Record<string, unknown>, msg?: string) => void,
+  model: string,
+  result: ProviderResult,
+  endpoint: string,
+): void {
+  if (result.outputText || result.toolCalls.length > 0) {
+    return;
+  }
+
+  const debug = extractProviderDebugData(result.raw);
+  warn(
+    {
+      endpoint,
+      model,
+      normalized_finish_reason: result.finishReason,
+      provider_response_id: debug.responseId,
+      provider_finish_reason: debug.finishReason,
+      provider_message: debug.message,
+      provider_x_groq: debug.xGroq,
+    },
+    "Provider returned a blank assistant completion.",
+  );
+}
+
+function extractProviderDebugData(payload: unknown): {
+  responseId?: string;
+  finishReason?: string;
+  message?: Record<string, unknown>;
+  xGroq?: Record<string, unknown>;
+} {
+  if (!payload || typeof payload !== "object") {
+    return {};
+  }
+
+  const record = payload as Record<string, unknown>;
+  const choice =
+    Array.isArray(record.choices) && record.choices[0] && typeof record.choices[0] === "object"
+      ? (record.choices[0] as Record<string, unknown>)
+      : undefined;
+  const message =
+    choice?.message && typeof choice.message === "object"
+      ? (choice.message as Record<string, unknown>)
+      : undefined;
+  const xGroq =
+    record.x_groq && typeof record.x_groq === "object"
+      ? (record.x_groq as Record<string, unknown>)
+      : undefined;
+
+  return {
+    responseId: typeof record.id === "string" ? record.id : undefined,
+    finishReason: typeof choice?.finish_reason === "string" ? choice.finish_reason : undefined,
+    message,
+    xGroq,
+  };
 }

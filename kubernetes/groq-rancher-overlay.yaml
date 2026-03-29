@@ -142,6 +142,5 @@ spec:
           configMap:
             name: n8n-openai-cli-gateway-groq-config
         - name: provider-home
-          persistentVolumeClaim:
-            claimName: gateway-home
+          emptyDir: {}
 

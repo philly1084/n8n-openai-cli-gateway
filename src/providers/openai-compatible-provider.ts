@@ -70,8 +70,9 @@ export class OpenAiCompatibleProvider implements Provider {
       throw new Error(`Provider ${this.id} does not expose model ${request.model}.`);
     }
 
+    const providerModel = modelConfig.providerModel || request.providerModel;
     const body: Record<string, unknown> = {
-      model: modelConfig.providerModel || request.providerModel,
+      model: providerModel,
       messages: buildApiMessages(request.messages),
       stream: false,
     };
@@ -83,6 +84,17 @@ export class OpenAiCompatibleProvider implements Provider {
     copyNumberMetadata(body, metadata, "frequency_penalty");
     copyIntegerMetadata(body, metadata, "max_tokens");
     copyStringMetadata(body, metadata, "user");
+    copyStringMetadata(body, metadata, "reasoning_format");
+    copyBooleanMetadata(body, metadata, "include_reasoning");
+
+    const groqReasoningEffort = normalizeGroqReasoningEffort(
+      this.config.baseUrl,
+      providerModel,
+      request.reasoningEffort,
+    );
+    if (groqReasoningEffort) {
+      body.reasoning_effort = groqReasoningEffort;
+    }
 
     const toolChoice = metadata && "tool_choice" in metadata ? metadata.tool_choice : undefined;
     if (request.tools.length > 0) {
@@ -571,6 +583,39 @@ function copyStringMetadata(
   if (typeof value === "string" && value.trim()) {
     target[key] = value;
   }
+}
+
+function copyBooleanMetadata(
+  target: Record<string, unknown>,
+  metadata: UnifiedRequest["metadata"],
+  key: string,
+): void {
+  const value = metadata && key in metadata ? metadata[key] : undefined;
+  if (typeof value === "boolean") {
+    target[key] = value;
+  }
+}
+
+function normalizeGroqReasoningEffort(
+  baseUrl: string,
+  providerModel: string,
+  reasoningEffort: UnifiedRequest["reasoningEffort"],
+): "low" | "medium" | "high" | undefined {
+  if (!reasoningEffort) {
+    return undefined;
+  }
+
+  if (!/api\.groq\.com/i.test(baseUrl) || !/^openai\/gpt-oss-(20b|120b)$/i.test(providerModel)) {
+    return undefined;
+  }
+
+  if (reasoningEffort === "xhigh") {
+    return "high";
+  }
+
+  return reasoningEffort === "low" || reasoningEffort === "medium" || reasoningEffort === "high"
+    ? reasoningEffort
+    : undefined;
 }
 
 function extractApiErrorMessage(payload: unknown): string {
