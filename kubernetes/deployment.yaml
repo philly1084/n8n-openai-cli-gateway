@@ -21,6 +21,32 @@ spec:
         runAsUser: 10001
         runAsGroup: 10001
         fsGroup: 10001
+      initContainers:
+        - name: gemini-bootstrap
+          image: ghcr.io/philly1084/n8n-openai-cli-gateway:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -lc
+            - |
+              set -eu
+              export HOME=/var/lib/gateway-home
+              export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+              mkdir -p "$HOME/.local/bin"
+              if [ ! -x "$HOME/.local/bin/gemini" ]; then
+                npm install -g --prefix "$HOME/.local" @google/gemini-cli
+              fi
+              "$HOME/.local/bin/gemini" --version >/dev/null
+          env:
+            - name: HOME
+              value: /var/lib/gateway-home
+            - name: PATH
+              value: /var/lib/gateway-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          securityContext:
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: provider-home
+              mountPath: /var/lib/gateway-home
       containers:
         - name: gateway
           image: ghcr.io/philly1084/n8n-openai-cli-gateway:latest
@@ -40,6 +66,8 @@ spec:
               value: /app/config/providers.yaml
             - name: HOME
               value: /var/lib/gateway-home
+            - name: PATH
+              value: /var/lib/gateway-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
             - name: N8N_API_KEY
               valueFrom:
                 secretKeyRef:
