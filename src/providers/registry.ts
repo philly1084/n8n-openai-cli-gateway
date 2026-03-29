@@ -154,6 +154,9 @@ export class ProviderRegistry {
           model: binding.modelId,
           providerModel: binding.providerModel,
         });
+        if (isBlankProviderResult(result)) {
+          throw new Error(buildBlankProviderResultError(binding.provider.id, binding.modelId, result));
+        }
         this.modelStats.recordSuccess({
           modelId: binding.modelId,
           requestedModelId: modelId,
@@ -203,4 +206,37 @@ export class ProviderRegistry {
       `Model execution failed after fallback chain: ${attempted.join(" -> ")}.\nLast error: ${lastErrorMessage}`,
     );
   }
+}
+
+function isBlankProviderResult(result: ProviderResult): boolean {
+  return result.toolCalls.length === 0 && result.outputText.trim().length === 0;
+}
+
+function buildBlankProviderResultError(
+  providerId: string,
+  modelId: string,
+  result: ProviderResult,
+): string {
+  const raw = result.raw && typeof result.raw === "object"
+    ? (result.raw as Record<string, unknown>)
+    : undefined;
+  const choice =
+    raw && Array.isArray(raw.choices) && raw.choices[0] && typeof raw.choices[0] === "object"
+      ? (raw.choices[0] as Record<string, unknown>)
+      : undefined;
+  const responseId = raw && typeof raw.id === "string" ? raw.id : undefined;
+  const providerFinishReason =
+    choice && typeof choice.finish_reason === "string" ? choice.finish_reason : undefined;
+
+  const details = [
+    `provider=${providerId}`,
+    `model=${modelId}`,
+    `normalized_finish_reason=${result.finishReason}`,
+    providerFinishReason ? `provider_finish_reason=${providerFinishReason}` : undefined,
+    responseId ? `response_id=${responseId}` : undefined,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" ");
+
+  return `Provider returned a blank assistant completion. ${details}`.trim();
 }

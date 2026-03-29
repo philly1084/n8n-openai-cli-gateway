@@ -15,6 +15,7 @@ stringData:
   n8nApiKey: "replace-with-long-random-n8n-key"
   adminApiKey: "replace-with-long-random-admin-key"
   groqApiKey: "replace-with-groq-api-key"
+  kimiApiKey: "replace-with-kimi-api-key"
   deepseekApiKey: "replace-with-deepseek-api-key"
 ---
 apiVersion: v1
@@ -152,10 +153,10 @@ data:
 
       - id: kimi-code-cli
         type: cli
-        description: Kimi Code CLI adapter
+        description: Kimi API adapter via Moonshot Open Platform
         models:
           - id: kimi-for-coding
-            providerModel: kimi-for-coding
+            providerModel: kimi-k2-turbo-preview
           - id: kimi-k2-turbo-preview
             providerModel: kimi-k2-turbo-preview
         responseCommand:
@@ -163,30 +164,65 @@ data:
           args:
             - -lc
             - |
-              export HOME="${HOME:-/var/lib/gateway-home}"
-              export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-              PROMPT="$(cat)"
-              KIMI_CONFIG_FILE=""
-              for KIMI_CONFIG_CANDIDATE in \
-                "$HOME/.kimi/config.toml" \
-                "$HOME/config.toml" \
-                "$HOME/.kimi/config.json" \
-                "$HOME/config.json" \
-                "$HOME/.kimi/kimi.json" \
-                "$HOME/kimi.json"
-              do
-                if [ -f "$KIMI_CONFIG_CANDIDATE" ]; then
-                  KIMI_CONFIG_FILE="$KIMI_CONFIG_CANDIDATE"
-                  break
-                fi
-              done
-              if [ -n "$KIMI_CONFIG_FILE" ]; then
-                kimi --config-file "$KIMI_CONFIG_FILE" --print --model "{{provider_model}}" --prompt "$PROMPT"
-              else
-                kimi --print --model "{{provider_model}}" --prompt "$PROMPT"
+              REQUEST_JSON="$(cat)"
+              KIMI_API_KEY_VALUE="${KIMI_API_KEY:-${MOONSHOT_API_KEY:-}}"
+              KIMI_BASE_URL_VALUE="${KIMI_BASE_URL:-${MOONSHOT_BASE_URL:-https://api.moonshot.ai/v1}}"
+              if [ -z "$KIMI_API_KEY_VALUE" ]; then
+                echo "Set KIMI_API_KEY or MOONSHOT_API_KEY." >&2
+                exit 1
               fi
-          input: prompt_stdin
-          output: text_plain
+              PAYLOAD="$(
+                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const req=JSON.parse(d);const metadata=req&&typeof req.metadata==="object"&&req.metadata?req.metadata:{};const toolChoice=metadata&&typeof metadata.tool_choice==="object"&&metadata.tool_choice?metadata.tool_choice:undefined;const body={model:"{{provider_model}}",messages:Array.isArray(req.messages)?req.messages:[],stream:false};if(Array.isArray(req.tools)&&req.tools.length>0) body.tools=req.tools;if(toolChoice) body.tool_choice=toolChoice;if(typeof req.temperature==="number") body.temperature=req.temperature;if(typeof req.max_tokens==="number") body.max_tokens=req.max_tokens;if(typeof req.top_p==="number") body.top_p=req.top_p;if(typeof req.presence_penalty==="number") body.presence_penalty=req.presence_penalty;if(typeof req.frequency_penalty==="number") body.frequency_penalty=req.frequency_penalty;process.stdout.write(JSON.stringify(body));});'
+              )"
+              RESPONSE_JSON="$(curl -fsS "$KIMI_BASE_URL_VALUE/chat/completions" -H "Content-Type: application/json" -H "Authorization: Bearer $KIMI_API_KEY_VALUE" -d "$PAYLOAD")" || exit $?
+              printf "%s" "$RESPONSE_JSON" | node -e '
+                let d="";
+                const normalizeText=(value)=>{
+                  if(typeof value==="string") return value;
+                  if(Array.isArray(value)){
+                    return value.map((part)=>{
+                      if(typeof part==="string") return part;
+                      if(!part||typeof part!=="object") return "";
+                      if(typeof part.text==="string") return part.text;
+                      if(typeof part.content==="string") return part.content;
+                      return "";
+                    }).filter(Boolean).join("\n");
+                  }
+                  return "";
+                };
+                const normalizeToolCalls=(value)=>{
+                  const calls=Array.isArray(value)?value:[];
+                  return calls.map((call,index)=>{
+                    if(!call||typeof call!=="object") return null;
+                    const fn=call.function&&typeof call.function==="object"?call.function:{};
+                    const name=typeof fn.name==="string"&&fn.name?fn.name:(typeof call.name==="string"?call.name:"");
+                    if(!name) return null;
+                    const args=fn.arguments!==undefined?fn.arguments:(call.arguments!==undefined?call.arguments:{});
+                    return {
+                      id:typeof call.id==="string"&&call.id?call.id:`call_${index+1}`,
+                      name,
+                      arguments:typeof args==="string"?args:JSON.stringify(args)
+                    };
+                  }).filter(Boolean);
+                };
+                process.stdin.on("data",c=>d+=c).on("end",()=>{
+                  const response=JSON.parse(d);
+                  const choice=Array.isArray(response.choices)&&response.choices.length>0&&response.choices[0]&&typeof response.choices[0]==="object"?response.choices[0]:{};
+                  const message=choice&&typeof choice.message==="object"&&choice.message?choice.message:{};
+                  const toolCalls=normalizeToolCalls(message.tool_calls);
+                  const finishReason=typeof choice.finish_reason==="string"&&choice.finish_reason?choice.finish_reason:(toolCalls.length>0?"tool_calls":"stop");
+                  const out={
+                    output_text:normalizeText(message.content),
+                    finish_reason:finishReason
+                  };
+                  if(toolCalls.length>0){
+                    out.tool_calls=toolCalls;
+                  }
+                  process.stdout.write(JSON.stringify(out));
+                });
+              '
+          input: request_json_stdin
+          output: json_contract
           timeoutMs: 240000
         auth:
           loginCommand:
@@ -194,9 +230,8 @@ data:
             args:
               - -c
               - |
-                echo "Kimi Code CLI login is interactive in this version."
-                echo "Run in a TTY shell: kimi"
-                echo "Then run: /setup and complete auth."
+                echo "Kimi uses API key auth in this setup."
+                echo "Set KIMI_API_KEY or MOONSHOT_API_KEY."
                 exit 1
             timeoutMs: 10000
           statusCommand:
@@ -204,12 +239,13 @@ data:
             args:
               - -c
               - |
-                if [ -f "$HOME/.kimi/config.toml" ] || [ -f "$HOME/config.toml" ] || [ -f "$HOME/.kimi/config.json" ] || [ -f "$HOME/config.json" ] || [ -f "$HOME/.kimi/kimi.json" ] || [ -f "$HOME/kimi.json" ]; then
-                  echo '{"ok":true,"source":"~/.kimi/*"}'
-                  exit 0
+                KIMI_API_KEY_VALUE="${KIMI_API_KEY:-${MOONSHOT_API_KEY:-}}"
+                KIMI_BASE_URL_VALUE="${KIMI_BASE_URL:-${MOONSHOT_BASE_URL:-https://api.moonshot.ai/v1}}"
+                if [ -z "$KIMI_API_KEY_VALUE" ]; then
+                  echo '{"ok":false,"error":"missing KIMI_API_KEY or MOONSHOT_API_KEY"}'
+                  exit 1
                 fi
-                echo '{"ok":false,"error":"missing ~/.kimi/config.toml (run kimi then /setup)"}'
-                exit 1
+                curl -fsS "$KIMI_BASE_URL_VALUE/models" -H "Authorization: Bearer $KIMI_API_KEY_VALUE"
             timeoutMs: 30000
 
       - id: groq-api
@@ -250,7 +286,7 @@ data:
                 -H "Authorization: Bearer $GROQ_API_KEY" \
                 -H "Content-Type: application/json" \
                 --data-binary @- | \
-                node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const out={output_text:"",tool_calls:[],finish_reason:"stop"};try{const res=JSON.parse(d);const choice=Array.isArray(res.choices)&&res.choices[0]&&typeof res.choices[0]==="object"?res.choices[0]:{};const msg=choice.message&&typeof choice.message==="object"?choice.message:{};const extractText=(content)=>{if(typeof content==="string") return content.trim();if(Array.isArray(content)){return content.map(part=>{if(typeof part==="string") return part;if(part&&typeof part==="object"){if(typeof part.text==="string") return part.text;if(typeof part.content==="string") return part.content;}return "";}).filter(Boolean).join("\n").trim();}if(content&&typeof content==="object"){if(typeof content.text==="string") return content.text.trim();if(typeof content.content==="string") return content.content.trim();}return "";};const content=extractText(msg.content);const toolCalls=Array.isArray(msg.tool_calls)?msg.tool_calls.map((call,i)=>{if(!call||typeof call!=="object") return null;const fn=call.function&&typeof call.function==="object"?call.function:{};const name=typeof fn.name==="string"?fn.name.trim():"";if(!name) return null;const args=typeof fn.arguments==="string"?fn.arguments:JSON.stringify(fn.arguments??{});return {id:typeof call.id==="string"&&call.id?call.id:`call_${i+1}`,name,arguments:args};}).filter(Boolean):[];const finish=typeof choice.finish_reason==="string"&&choice.finish_reason?choice.finish_reason:(toolCalls.length>0?"tool_calls":"stop");out.output_text=content;out.tool_calls=toolCalls;out.finish_reason=finish;}catch(e){out.output_text=d.trim();}process.stdout.write(JSON.stringify(out));});'
+                node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const out={output_text:"",tool_calls:[],finish_reason:"stop"};try{const res=JSON.parse(d);const choice=Array.isArray(res.choices)&&res.choices[0]&&typeof res.choices[0]==="object"?res.choices[0]:{};const msg=choice.message&&typeof choice.message==="object"?choice.message:{};const extractText=(content)=>{if(typeof content==="string") return content.trim();if(Array.isArray(content)){return content.map(part=>{if(typeof part==="string") return part;if(part&&typeof part==="object"){if(typeof part.text==="string") return part.text;if(typeof part.content==="string") return part.content;if(typeof part.output_text==="string") return part.output_text;if(typeof part.refusal==="string") return part.refusal;}return "";}).filter(Boolean).join("\n").trim();}if(content&&typeof content==="object"){if(typeof content.text==="string") return content.text.trim();if(typeof content.content==="string") return content.content.trim();if(typeof content.output_text==="string") return content.output_text.trim();if(typeof content.refusal==="string") return content.refusal.trim();}return "";};const content=extractText(msg.content)||extractText(msg.text)||extractText(msg.output_text)||extractText(msg.refusal)||extractText(choice.text)||extractText(choice.output_text)||extractText(res.output_text);const toolCalls=Array.isArray(msg.tool_calls)?msg.tool_calls.map((call,i)=>{if(!call||typeof call!=="object") return null;const fn=call.function&&typeof call.function==="object"?call.function:{};const name=typeof fn.name==="string"?fn.name.trim():"";if(!name) return null;const args=typeof fn.arguments==="string"?fn.arguments:JSON.stringify(fn.arguments??{});return {id:typeof call.id==="string"&&call.id?call.id:`call_${i+1}`,name,arguments:args};}).filter(Boolean):[];const finish=typeof choice.finish_reason==="string"&&choice.finish_reason?choice.finish_reason:(toolCalls.length>0?"tool_calls":"stop");out.output_text=content;out.tool_calls=toolCalls;out.finish_reason=finish;if(!content&&toolCalls.length===0){process.stderr.write(`Groq returned blank completion for model {{provider_model}} finish_reason=${finish} id=${typeof res.id==="string"?res.id:""}\n`);process.exit(86);}}catch(e){out.output_text=d.trim();}process.stdout.write(JSON.stringify(out));});'
           input: request_json_stdin
           output: json_contract
           timeoutMs: 120000
@@ -301,6 +337,18 @@ data:
           timeoutMs: 120000
 ---
 apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: n8n-openai-cli-gateway-opencode-config
+  namespace: n8n-openai-gateway
+data:
+  opencode.json: |
+    {
+      "$schema": "https://opencode.ai/config.json",
+      "plugin": ["opencode-gemini-auth@latest"]
+    }
+---
+apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: n8n-openai-cli-gateway-home
@@ -335,38 +383,6 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
-      initContainers:
-        - name: kimi-bootstrap
-          image: ghcr.io/philly1084/n8n-openai-cli-gateway:latest
-          imagePullPolicy: IfNotPresent
-          command:
-            - sh
-            - -lc
-            - |
-              set -eu
-              export HOME=/var/lib/gateway-home
-              export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-              mkdir -p "$HOME/.local/bin"
-              if [ ! -x "$HOME/.local/bin/uv" ]; then
-                curl -LsSf https://astral.sh/uv/install.sh | sh
-              fi
-              if [ ! -x "$HOME/.local/bin/kimi" ]; then
-                "$HOME/.local/bin/uv" tool install --python 3.13 kimi-cli
-              fi
-              "$HOME/.local/bin/kimi" --version >/dev/null
-          env:
-            - name: HOME
-              value: /var/lib/gateway-home
-            - name: PATH
-              value: /var/lib/gateway-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false
-            capabilities:
-              drop: ["ALL"]
-          volumeMounts:
-            - name: provider-home
-              mountPath: /var/lib/gateway-home
       containers:
         - name: gateway
           image: ghcr.io/philly1084/n8n-openai-cli-gateway:latest
@@ -409,6 +425,16 @@ spec:
                 secretKeyRef:
                   name: n8n-openai-cli-gateway-secrets
                   key: groqApiKey
+            - name: KIMI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: n8n-openai-cli-gateway-secrets
+                  key: kimiApiKey
+            - name: MOONSHOT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: n8n-openai-cli-gateway-secrets
+                  key: kimiApiKey
             - name: DEEPSEEK_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -420,6 +446,8 @@ spec:
               subPath: providers.yaml
             - name: provider-home
               mountPath: /var/lib/gateway-home
+            - name: opencode-config
+              mountPath: /var/lib/gateway-home/.config/opencode
           startupProbe:
             httpGet:
               path: /healthz
@@ -452,6 +480,9 @@ spec:
         - name: provider-home
           persistentVolumeClaim:
             claimName: n8n-openai-cli-gateway-home
+        - name: opencode-config
+          configMap:
+            name: n8n-openai-cli-gateway-opencode-config
 ---
 apiVersion: v1
 kind: Service

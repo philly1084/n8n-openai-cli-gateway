@@ -385,7 +385,7 @@ function parseChatCompletionResponse(payload: unknown): ProviderResult {
   const finishReason = normalizeFinishReason(choice.finish_reason, toolCalls.length > 0);
 
   return {
-    outputText: extractMessageText(message?.content),
+    outputText: extractMessageText(payload, choice, message),
     toolCalls,
     finishReason,
     raw: payload,
@@ -422,9 +422,51 @@ function normalizeApiToolCalls(raw: unknown): ProviderToolCall[] {
   return toolCalls;
 }
 
-function extractMessageText(content: unknown): string {
+function extractMessageText(
+  payload: unknown,
+  choice: Record<string, unknown>,
+  message?: Record<string, unknown>,
+): string {
+  const directCandidates = [
+    message?.content,
+    message?.text,
+    message?.output_text,
+    message?.refusal,
+    choice.text,
+    choice.output_text,
+    payload && typeof payload === "object"
+      ? (payload as Record<string, unknown>).output_text
+      : undefined,
+  ];
+
+  for (const candidate of directCandidates) {
+    const extracted = extractTextCandidate(candidate);
+    if (extracted) {
+      return extracted;
+    }
+  }
+
+  return "";
+}
+
+function extractTextCandidate(content: unknown): string {
   if (typeof content === "string") {
     return content.trim();
+  }
+
+  if (content && typeof content === "object" && !Array.isArray(content)) {
+    const record = content as Record<string, unknown>;
+    const direct = [
+      record.text,
+      record.content,
+      record.output_text,
+      record.refusal,
+    ];
+    for (const candidate of direct) {
+      if (typeof candidate === "string" && candidate.trim()) {
+        return candidate.trim();
+      }
+    }
   }
 
   if (!Array.isArray(content)) {
