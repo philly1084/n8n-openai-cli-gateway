@@ -123,6 +123,10 @@ data:
             providerModel: gpt-4.1
             fallbackModels:
               - gpt-5.3-instant
+          - id: gpt-5.1-codex-mini
+            providerModel: gpt-5.1-codex-mini
+            fallbackModels:
+              - gpt-5.4
         responseCommand:
           executable: node
           args:
@@ -146,14 +150,71 @@ data:
               - --json
             timeoutMs: 30000
 
+      - id: kimi-code-cli
+        type: cli
+        description: Kimi Code CLI adapter
+        models:
+          - id: kimi-for-coding
+            providerModel: kimi-for-coding
+          - id: kimi-k2-turbo-preview
+            providerModel: kimi-k2-turbo-preview
+        responseCommand:
+          executable: sh
+          args:
+            - -lc
+            - |
+              export HOME="${HOME:-/var/lib/gateway-home}"
+              export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+              PROMPT="$(cat)"
+              KIMI_CONFIG_FILE=""
+              for KIMI_CONFIG_CANDIDATE in \
+                "$HOME/.kimi/config.toml" \
+                "$HOME/config.toml" \
+                "$HOME/.kimi/config.json" \
+                "$HOME/config.json" \
+                "$HOME/.kimi/kimi.json" \
+                "$HOME/kimi.json"
+              do
+                if [ -f "$KIMI_CONFIG_CANDIDATE" ]; then
+                  KIMI_CONFIG_FILE="$KIMI_CONFIG_CANDIDATE"
+                  break
+                fi
+              done
+              if [ -n "$KIMI_CONFIG_FILE" ]; then
+                kimi --config-file "$KIMI_CONFIG_FILE" --print --model "{{provider_model}}" --prompt "$PROMPT"
+              else
+                kimi --print --model "{{provider_model}}" --prompt "$PROMPT"
+              fi
+          input: prompt_stdin
+          output: text_plain
+          timeoutMs: 240000
+        auth:
+          loginCommand:
+            executable: sh
+            args:
+              - -c
+              - |
+                echo "Kimi Code CLI login is interactive in this version."
+                echo "Run in a TTY shell: kimi"
+                echo "Then run: /setup and complete auth."
+                exit 1
+            timeoutMs: 10000
+          statusCommand:
+            executable: sh
+            args:
+              - -c
+              - |
+                if [ -f "$HOME/.kimi/config.toml" ] || [ -f "$HOME/config.toml" ] || [ -f "$HOME/.kimi/config.json" ] || [ -f "$HOME/config.json" ] || [ -f "$HOME/.kimi/kimi.json" ] || [ -f "$HOME/kimi.json" ]; then
+                  echo '{"ok":true,"source":"~/.kimi/*"}'
+                  exit 0
+                fi
+                echo '{"ok":false,"error":"missing ~/.kimi/config.toml (run kimi then /setup)"}'
+                exit 1
+            timeoutMs: 30000
+
       - id: groq-api
-        type: openai
-        description: Groq API - auto-discovers chat-usable models at startup
-        baseUrl: https://api.groq.com/openai/v1
-        apiKeyEnv: GROQ_API_KEY
-        timeoutMs: 60000
-        discovery:
-          enabled: true
+        type: cli
+        description: Groq API via curl using Groq production chat models
         models:
           - id: groq/compound
             providerModel: groq/compound
@@ -176,6 +237,34 @@ data:
             providerModel: llama-3.3-70b-versatile
           - id: llama-3.1-8b-instant
             providerModel: llama-3.1-8b-instant
+        responseCommand:
+          executable: sh
+          args:
+            - -lc
+            - |
+              REQUEST_JSON="$(cat)"
+              PAYLOAD="$(
+                printf "%s" "$REQUEST_JSON" | node -e 'let d="";const maxChars=Number(process.env.GROQ_MAX_PROMPT_CHARS||120000);process.stdin.on("data",c=>d+=c).on("end",()=>{const norm=v=>typeof v==="string"?v:JSON.stringify(v??"");try{const req=JSON.parse(d);const rawMsgs=Array.isArray(req.messages)?req.messages:[];const allowedRoles=new Set(["system","user","assistant","tool"]);const msgs=rawMsgs.map(m=>{const role=allowedRoles.has(String(m&&m.role||""))?String(m.role):"user";const content=norm(m&&Object.prototype.hasOwnProperty.call(m,"content")?m.content:"").trim();if(!content)return null;const out={role,content};if(role==="tool"&&m&&typeof m==="object"&&typeof m.tool_call_id==="string"&&m.tool_call_id){out.tool_call_id=m.tool_call_id;}if(role==="assistant"&&m&&typeof m==="object"&&Array.isArray(m.tool_calls)&&m.tool_calls.length>0){out.tool_calls=m.tool_calls;}return out;}).filter(Boolean);let total=0;const kept=[];for(let i=msgs.length-1;i>=0;i--){const msg=msgs[i];const cost=msg.content.length+msg.role.length+32;if(kept.length>0&&total+cost>maxChars) continue;kept.unshift(msg);total+=cost;}const firstSystem=msgs.find(m=>m.role==="system");if(firstSystem&&!kept.some(m=>m.role==="system")&&(total+firstSystem.content.length+32)<=maxChars){kept.unshift(firstSystem);total+=firstSystem.content.length+32;}if(kept.length===0){const fallback=(typeof req.prompt==="string"?req.prompt:norm(req.prompt)).trim();kept.push({role:"user",content:fallback.slice(-maxChars)||"Hello"});}process.stdout.write(JSON.stringify({model:"{{provider_model}}",messages:kept,stream:false}));}catch{process.stdout.write(JSON.stringify({model:"{{provider_model}}",messages:[{role:"user",content:"Hello"}],stream:false}));}});'
+              )"
+              printf "%s" "$PAYLOAD" | curl -fsS https://api.groq.com/openai/v1/chat/completions \
+                -H "Authorization: Bearer $GROQ_API_KEY" \
+                -H "Content-Type: application/json" \
+                --data-binary @- | \
+                node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const out={output_text:"",tool_calls:[],finish_reason:"stop"};try{const res=JSON.parse(d);const choice=Array.isArray(res.choices)&&res.choices[0]&&typeof res.choices[0]==="object"?res.choices[0]:{};const msg=choice.message&&typeof choice.message==="object"?choice.message:{};const extractText=(content)=>{if(typeof content==="string") return content.trim();if(Array.isArray(content)){return content.map(part=>{if(typeof part==="string") return part;if(part&&typeof part==="object"){if(typeof part.text==="string") return part.text;if(typeof part.content==="string") return part.content;}return "";}).filter(Boolean).join("\n").trim();}if(content&&typeof content==="object"){if(typeof content.text==="string") return content.text.trim();if(typeof content.content==="string") return content.content.trim();}return "";};const content=extractText(msg.content);const toolCalls=Array.isArray(msg.tool_calls)?msg.tool_calls.map((call,i)=>{if(!call||typeof call!=="object") return null;const fn=call.function&&typeof call.function==="object"?call.function:{};const name=typeof fn.name==="string"?fn.name.trim():"";if(!name) return null;const args=typeof fn.arguments==="string"?fn.arguments:JSON.stringify(fn.arguments??{});return {id:typeof call.id==="string"&&call.id?call.id:`call_${i+1}`,name,arguments:args};}).filter(Boolean):[];const finish=typeof choice.finish_reason==="string"&&choice.finish_reason?choice.finish_reason:(toolCalls.length>0?"tool_calls":"stop");out.output_text=content;out.tool_calls=toolCalls;out.finish_reason=finish;}catch(e){out.output_text=d.trim();}process.stdout.write(JSON.stringify(out));});'
+          input: request_json_stdin
+          output: json_contract
+          timeoutMs: 120000
+        auth:
+          statusCommand:
+            executable: sh
+            args:
+              - -lc
+              - |
+                test -n "${GROQ_API_KEY:-}" || { echo '{"ok":false,"error":"GROQ_API_KEY not set"}'; exit 1; }
+                curl -fsS https://api.groq.com/openai/v1/models \
+                  -H "Authorization: Bearer $GROQ_API_KEY" >/dev/null
+                echo '{"ok":true}'
+            timeoutMs: 15000
 
       - id: deepseek-api
         type: cli
@@ -246,6 +335,38 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        - name: kimi-bootstrap
+          image: ghcr.io/philly1084/n8n-openai-cli-gateway:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -lc
+            - |
+              set -eu
+              export HOME=/var/lib/gateway-home
+              export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+              mkdir -p "$HOME/.local/bin"
+              if [ ! -x "$HOME/.local/bin/uv" ]; then
+                curl -LsSf https://astral.sh/uv/install.sh | sh
+              fi
+              if [ ! -x "$HOME/.local/bin/kimi" ]; then
+                "$HOME/.local/bin/uv" tool install --python 3.13 kimi-cli
+              fi
+              "$HOME/.local/bin/kimi" --version >/dev/null
+          env:
+            - name: HOME
+              value: /var/lib/gateway-home
+            - name: PATH
+              value: /var/lib/gateway-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: provider-home
+              mountPath: /var/lib/gateway-home
       containers:
         - name: gateway
           image: ghcr.io/philly1084/n8n-openai-cli-gateway:latest
