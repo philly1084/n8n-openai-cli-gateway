@@ -9,6 +9,11 @@ import { OpenAiCompatibleProvider } from "./openai-compatible-provider";
 import type { Provider } from "./provider";
 import { trackProvider, trackFallback } from "../metrics";
 
+const INVALID_ASSISTANT_SUBSTRINGS = [
+  "final answer could not be synthesized from the model response",
+  "could not be synthesized from the model response",
+] as const;
+
 interface ModelBinding {
   modelId: string;
   providerModel: string;
@@ -154,8 +159,8 @@ export class ProviderRegistry {
           model: binding.modelId,
           providerModel: binding.providerModel,
         });
-        if (isBlankProviderResult(result)) {
-          throw new Error(buildBlankProviderResultError(binding.provider.id, binding.modelId, result));
+        if (isInvalidProviderResult(result)) {
+          throw new Error(buildInvalidProviderResultError(binding.provider.id, binding.modelId, result));
         }
         this.modelStats.recordSuccess({
           modelId: binding.modelId,
@@ -208,11 +213,30 @@ export class ProviderRegistry {
   }
 }
 
+function isInvalidProviderResult(result: ProviderResult): boolean {
+  return isBlankProviderResult(result) || isSyntheticFailureProviderResult(result);
+}
+
 function isBlankProviderResult(result: ProviderResult): boolean {
   return result.toolCalls.length === 0 && result.outputText.trim().length === 0;
 }
 
-function buildBlankProviderResultError(
+function isSyntheticFailureProviderResult(result: ProviderResult): boolean {
+  if (result.toolCalls.length > 0) {
+    return false;
+  }
+
+  const normalizedOutput = normalizeProviderOutputText(result.outputText);
+  if (!normalizedOutput) {
+    return false;
+  }
+
+  return INVALID_ASSISTANT_SUBSTRINGS.some((fragment) =>
+    normalizedOutput.includes(fragment),
+  );
+}
+
+function buildInvalidProviderResultError(
   providerId: string,
   modelId: string,
   result: ProviderResult,
@@ -238,5 +262,14 @@ function buildBlankProviderResultError(
     .filter((value): value is string => Boolean(value))
     .join(" ");
 
-  return `Provider returned a blank assistant completion. ${details}`.trim();
+  if (isBlankProviderResult(result)) {
+    return `Provider returned a blank assistant completion. ${details}`.trim();
+  }
+
+  const excerpt = result.outputText.trim().replace(/\s+/g, " ").slice(0, 160);
+  return `Provider returned a synthetic failure assistant completion. ${details} output_excerpt=${JSON.stringify(excerpt)}`.trim();
+}
+
+function normalizeProviderOutputText(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
 }

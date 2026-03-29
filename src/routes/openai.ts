@@ -1269,6 +1269,8 @@ function logBlankAssistantResult(
       provider_response_id: debug.responseId,
       provider_finish_reason: debug.finishReason,
       provider_message: debug.message,
+      provider_executed_tools: debug.executedTools,
+      provider_reasoning: debug.reasoning,
       provider_x_groq: debug.xGroq,
     },
     "Provider returned a blank assistant completion.",
@@ -1280,6 +1282,8 @@ function extractProviderDebugData(payload: unknown): {
   finishReason?: string;
   message?: Record<string, unknown>;
   xGroq?: Record<string, unknown>;
+  executedTools?: unknown[];
+  reasoning?: unknown;
 } {
   if (!payload || typeof payload !== "object") {
     return {};
@@ -1298,11 +1302,20 @@ function extractProviderDebugData(payload: unknown): {
     record.x_groq && typeof record.x_groq === "object"
       ? (record.x_groq as Record<string, unknown>)
       : undefined;
+  const executedTools = Array.isArray(message?.executed_tools)
+    ? message.executed_tools
+    : undefined;
+  const reasoning =
+    message && Object.prototype.hasOwnProperty.call(message, "reasoning")
+      ? message.reasoning
+      : undefined;
 
   return {
     responseId: typeof record.id === "string" ? record.id : undefined,
     finishReason: typeof choice?.finish_reason === "string" ? choice.finish_reason : undefined,
     message,
     xGroq,
+    executedTools,
+    reasoning,
   };
 }

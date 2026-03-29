@@ -71,9 +71,15 @@ export class OpenAiCompatibleProvider implements Provider {
     }
 
     const providerModel = modelConfig.providerModel || request.providerModel;
+    const suppressGroqLocalToolCalling = shouldSuppressGroqLocalToolCalling(
+      this.config.baseUrl,
+      providerModel,
+    );
     const body: Record<string, unknown> = {
       model: providerModel,
-      messages: buildApiMessages(request.messages),
+      messages: buildApiMessages(request.messages, {
+        suppressLocalToolCalling: suppressGroqLocalToolCalling,
+      }),
       stream: false,
     };
 
@@ -97,7 +103,7 @@ export class OpenAiCompatibleProvider implements Provider {
     }
 
     const toolChoice = metadata && "tool_choice" in metadata ? metadata.tool_choice : undefined;
-    if (request.tools.length > 0) {
+    if (request.tools.length > 0 && !suppressGroqLocalToolCalling) {
       body.tools = request.tools;
       if (toolChoice !== undefined) {
         body.tool_choice = toolChoice;
@@ -279,11 +285,15 @@ function extractModelList(payload: unknown): Array<{ id?: unknown; active?: unkn
     .filter((item): item is { id?: unknown; active?: unknown } => Boolean(item && typeof item === "object"));
 }
 
-function buildApiMessages(messages: UnifiedRequest["messages"]): ApiMessage[] {
-  return messages.map((message) => {
+function buildApiMessages(
+  messages: UnifiedRequest["messages"],
+  options?: { suppressLocalToolCalling?: boolean },
+): ApiMessage[] {
+  const suppressLocalToolCalling = Boolean(options?.suppressLocalToolCalling);
+  return messages.flatMap((message) => {
     if (message.role === "assistant") {
       const parsed = splitAssistantToolContext(message.content);
-      if (parsed.toolCalls.length > 0) {
+      if (!suppressLocalToolCalling && parsed.toolCalls.length > 0) {
         return {
           role: "assistant",
           content: parsed.content || null,
@@ -297,9 +307,25 @@ function buildApiMessages(messages: UnifiedRequest["messages"]): ApiMessage[] {
           })),
         };
       }
+
+      return {
+        role: "assistant",
+        content: parsed.content || message.content || null,
+      };
     }
 
     if (message.role === "tool") {
+      if (suppressLocalToolCalling) {
+        const toolResult = message.content.trim();
+        if (!toolResult) {
+          return [];
+        }
+        return {
+          role: "user",
+          content: `Context from a previous tool result:\n${toolResult}`,
+        };
+      }
+
       return {
         role: "tool",
         content: message.content,
@@ -390,6 +416,18 @@ function parseChatCompletionResponse(payload: unknown): ProviderResult {
     finishReason,
     raw: payload,
   };
+}
+
+function shouldSuppressGroqLocalToolCalling(baseUrl: string, providerModel: string): boolean {
+  if (!isGroqBaseUrl(baseUrl)) {
+    return false;
+  }
+
+  return /^groq\/compound(?:-mini)?$/i.test(providerModel.trim());
+}
+
+function isGroqBaseUrl(baseUrl: string): boolean {
+  return /api\.groq\.com/i.test(baseUrl);
 }
 
 function normalizeApiToolCalls(raw: unknown): ProviderToolCall[] {
