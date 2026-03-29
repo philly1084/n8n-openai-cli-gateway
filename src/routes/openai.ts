@@ -12,6 +12,7 @@ import type {
 import { makeId } from "../utils/ids";
 import { extractTextContent } from "../utils/prompt";
 import { resolveReasoningEffort } from "../utils/reasoning";
+import { normalizeAssistantResult, parseAssistantPayloadText } from "../utils/assistant-output";
 import {
   chatCompletionsRequestSchema,
   responsesRequestSchema,
@@ -182,13 +183,13 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
 
     try {
       const reasoningEffort = resolveReasoningEffort(body, options.defaultReasoningEffort);
-      const result = await options.registry.runModel(body.model, {
+      const result = normalizeAssistantResult(await options.registry.runModel(body.model, {
         requestId: makeId("req"),
         messages,
         tools,
         reasoningEffort,
         metadata: body as Record<string, unknown>,
-      });
+      }));
       logBlankAssistantResult(app.log.warn.bind(app.log), body.model, result, "/responses");
 
       const output: unknown[] = [];
@@ -500,13 +501,13 @@ async function handleChatCompletionsRequest(
 
   try {
     const reasoningEffort = resolveReasoningEffort(body, defaultReasoningEffort);
-    const result = await registry.runModel(body.model, {
+    const result = normalizeAssistantResult(await registry.runModel(body.model, {
       requestId: makeId("req"),
       messages,
       tools,
       reasoningEffort,
       metadata: body as Record<string, unknown>,
-    });
+    }));
     logBlankAssistantResult(reply.log.warn.bind(reply.log), body.model, result, "/chat/completions");
 
     // Log tool calls for debugging
@@ -742,9 +743,10 @@ function normalizeChatMessages(raw: unknown[]): ChatMessage[] {
       continue;
     }
 
-    const content = mergeMessageContent(
-      extractTextContent(record.content),
-      extractToolCallContext(record.tool_calls ?? record.tool_call ?? record.function_call),
+    const content = normalizeMessageContentForRole(
+      role,
+      record.content,
+      record.tool_calls ?? record.tool_call ?? record.function_call,
     );
     messages.push({
       role,
@@ -856,17 +858,19 @@ function normalizeResponsesInput(raw: unknown, depth = 0): ChatMessage[] {
   }
 
   if (record.type === "message") {
-    const content = mergeMessageContent(
-      extractTextContent(record.content),
-      extractToolCallContext(record.tool_calls ?? record.tool_call ?? record.function_call),
+    const content = normalizeMessageContentForRole(
+      role,
+      record.content,
+      record.tool_calls ?? record.tool_call ?? record.function_call,
     );
     return [{ role, content }];
   }
 
   if ("content" in record) {
-    const content = mergeMessageContent(
-      extractTextContent(record.content),
-      extractToolCallContext(record.tool_calls ?? record.tool_call ?? record.function_call),
+    const content = normalizeMessageContentForRole(
+      role,
+      record.content,
+      record.tool_calls ?? record.tool_call ?? record.function_call,
     );
     return [{ role, content }];
   }
@@ -903,8 +907,32 @@ function mergeMessageContent(content: string, extra: string): string {
   return `${base}\n\n${appended}`;
 }
 
+function normalizeMessageContentForRole(
+  role: ChatMessage["role"],
+  content: unknown,
+  toolContext: unknown,
+): string {
+  const explicitToolCalls = normalizeToolCallContext(toolContext);
+  if (role !== "assistant") {
+    return mergeMessageContent(extractTextContent(content), renderToolCallContext(explicitToolCalls));
+  }
+
+  const parsed = parseAssistantPayloadText(extractTextContent(content));
+  const combinedToolCalls = dedupeToolCallContext([
+    ...parsed.toolCalls,
+    ...explicitToolCalls,
+  ]);
+  return mergeMessageContent(parsed.outputText, renderToolCallContext(combinedToolCalls));
+}
+
 function extractToolCallContext(value: unknown): string {
   const normalized = normalizeToolCallContext(value);
+  return renderToolCallContext(normalized);
+}
+
+function renderToolCallContext(
+  normalized: Array<{ id?: string; name: string; arguments: string }>,
+): string {
   if (normalized.length === 0) {
     return "";
   }
@@ -953,6 +981,34 @@ function normalizeToolCallContext(
       id,
       name,
       arguments: stringifyToolContextArguments(argsRaw),
+    });
+  }
+
+  return out;
+}
+
+function dedupeToolCallContext(
+  toolCalls: Array<{ id?: string; name: string; arguments: string }>,
+): Array<{ id?: string; name: string; arguments: string }> {
+  const out: Array<{ id?: string; name: string; arguments: string }> = [];
+  const seen = new Set<string>();
+
+  for (const call of toolCalls) {
+    const name = typeof call.name === "string" ? call.name.trim() : "";
+    if (!name) {
+      continue;
+    }
+    const id = typeof call.id === "string" ? call.id.trim() : "";
+    const argumentsText = typeof call.arguments === "string" ? call.arguments : "{}";
+    const key = `${id}|${name}|${argumentsText}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push({
+      id: id || undefined,
+      name,
+      arguments: argumentsText,
     });
   }
 

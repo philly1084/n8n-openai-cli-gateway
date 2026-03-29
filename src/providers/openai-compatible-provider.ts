@@ -9,6 +9,7 @@ import type {
   ProviderToolCall,
   UnifiedRequest,
 } from "../types";
+import { normalizeAssistantResult } from "../utils/assistant-output";
 import type { Provider } from "./provider";
 
 const DEFAULT_TIMEOUT_MS = 240000;
@@ -410,12 +411,12 @@ function parseChatCompletionResponse(payload: unknown): ProviderResult {
   const toolCalls = normalizeApiToolCalls(message?.tool_calls);
   const finishReason = normalizeFinishReason(choice.finish_reason, toolCalls.length > 0);
 
-  return {
+  return normalizeAssistantResult({
     outputText: extractMessageText(payload, choice, message),
     toolCalls,
     finishReason,
     raw: payload,
-  };
+  });
 }
 
 function shouldSuppressGroqLocalToolCalling(baseUrl: string, providerModel: string): boolean {

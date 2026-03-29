@@ -16,6 +16,7 @@ import type {
 import { runCommand, resolveCommand } from "../utils/command";
 import { buildPrompt } from "../utils/prompt";
 import { normalizeToolName, normalizeToolAlias, normalizeArgumentKey } from "../utils/tools";
+import { normalizeAssistantResult } from "../utils/assistant-output";
 import type { Provider } from "./provider";
 
 interface JsonContract {
@@ -352,11 +353,11 @@ export class CliProvider implements Provider {
   private parseOutput(stdout: string): ProviderResult {
     const mode = this.config.responseCommand.output;
     if (mode === "text_plain") {
-      return {
+      return normalizeAssistantResult({
         outputText: stdout.trim(),
         toolCalls: [],
         finishReason: "stop",
-      };
+      });
     }
 
     if (mode === "text_contract_final_line") {
@@ -367,19 +368,19 @@ export class CliProvider implements Provider {
       }
       if (contract && (contract.output_text || contract.text || contract.content || contract.tool_calls?.length)) {
         const toolCalls = normalizeToolCalls(contract.tool_calls);
-        return {
+        return normalizeAssistantResult({
           outputText: (contract.output_text ?? contract.text ?? contract.content ?? "").trim(),
           toolCalls,
           finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
           raw: contract,
-        };
+        });
       }
 
-      return {
+      return normalizeAssistantResult({
         outputText: stdout.trim(),
         toolCalls: [],
         finishReason: "stop",
-      };
+      });
     }
 
     if (mode === "text") {
@@ -387,20 +388,20 @@ export class CliProvider implements Provider {
       const contract = tryParseJsonContractFromText(stdout);
       if (contract && (contract.output_text || contract.text || contract.content || contract.tool_calls?.length)) {
         const toolCalls = normalizeToolCalls(contract.tool_calls);
-        return {
+        return normalizeAssistantResult({
           outputText: (contract.output_text ?? contract.text ?? contract.content ?? "").trim(),
           toolCalls,
           finishReason:
             contract.finish_reason ?? (toolCalls.length > 0 ? "tool_calls" : "stop"),
           raw: contract,
-        };
+        });
       }
 
-      return {
+      return normalizeAssistantResult({
         outputText: stdout.trim(),
         toolCalls: [],
         finishReason: "stop",
-      };
+      });
     }
 
     const json = tryParseJsonContract(stdout);
@@ -428,20 +429,20 @@ export class CliProvider implements Provider {
         nestedContract.finish_reason ??
         (promotedToolCalls.length > 0 ? "tool_calls" : finishReason);
 
-      return {
+      return normalizeAssistantResult({
         outputText: promotedOutputText,
         toolCalls: promotedToolCalls,
         finishReason: promotedFinishReason,
         raw: json,
-      };
+      });
     }
 
-    return {
+    return normalizeAssistantResult({
       outputText,
       toolCalls,
       finishReason,
       raw: json,
-    };
+    });
   }
 }
 

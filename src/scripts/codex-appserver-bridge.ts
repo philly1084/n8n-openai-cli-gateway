@@ -359,7 +359,7 @@ function buildPrompt(request: GatewayRequest): string {
     "If a tool is needed, return raw JSON only:",
     '{"output_text":"","tool_calls":[{"id":"call_1","name":"tool_name","arguments":{"arg":"value"}}],"finish_reason":"tool_calls"}',
     "If no tool is needed, return raw JSON only:",
-    '{"output_text":"<assistant reply>","finish_reason":"stop"}',
+    '{"output_text":"Reply to the user directly.","finish_reason":"stop"}',
   ].join("\n");
 
   return [messageText, "", "AVAILABLE_TOOLS_JSON:", toolJson, "", instruction].join(

@@ -8,11 +8,7 @@ import { CliProvider } from "./cli-provider";
 import { OpenAiCompatibleProvider } from "./openai-compatible-provider";
 import type { Provider } from "./provider";
 import { trackProvider, trackFallback } from "../metrics";
-
-const INVALID_ASSISTANT_SUBSTRINGS = [
-  "final answer could not be synthesized from the model response",
-  "could not be synthesized from the model response",
-] as const;
+import { isSyntheticAssistantOutputText, normalizeAssistantResult } from "../utils/assistant-output";
 
 interface ModelBinding {
   modelId: string;
@@ -154,11 +150,12 @@ export class ProviderRegistry {
       });
 
       try {
-        const result = await binding.provider.run({
+        const rawResult = await binding.provider.run({
           ...request,
           model: binding.modelId,
           providerModel: binding.providerModel,
         });
+        const result = normalizeAssistantResult(rawResult);
         if (isInvalidProviderResult(result)) {
           throw new Error(buildInvalidProviderResultError(binding.provider.id, binding.modelId, result));
         }
@@ -226,14 +223,7 @@ function isSyntheticFailureProviderResult(result: ProviderResult): boolean {
     return false;
   }
 
-  const normalizedOutput = normalizeProviderOutputText(result.outputText);
-  if (!normalizedOutput) {
-    return false;
-  }
-
-  return INVALID_ASSISTANT_SUBSTRINGS.some((fragment) =>
-    normalizedOutput.includes(fragment),
-  );
+  return isSyntheticAssistantOutputText(result.outputText);
 }
 
 function buildInvalidProviderResultError(
@@ -268,8 +258,4 @@ function buildInvalidProviderResultError(
 
   const excerpt = result.outputText.trim().replace(/\s+/g, " ").slice(0, 160);
   return `Provider returned a synthetic failure assistant completion. ${details} output_excerpt=${JSON.stringify(excerpt)}`.trim();
-}
-
-function normalizeProviderOutputText(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
