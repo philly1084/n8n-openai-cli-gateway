@@ -184,8 +184,54 @@ export function loadProvidersFile(providersPath: string): ProvidersFile {
   try {
     parsed = YAML.parse(raw);
   } catch (error) {
-    throw new Error(`Invalid YAML in ${providersPath}.`, { cause: error });
+    const details = describeYamlError(error, raw);
+    throw new Error(`Invalid YAML in ${providersPath}.${details ? ` ${details}` : ""}`, {
+      cause: error,
+    });
   }
 
   return providersFileSchema.parse(parsed);
+}
+
+function describeYamlError(error: unknown, source: string): string {
+  if (!error || typeof error !== "object") {
+    return "";
+  }
+
+  const record = error as Record<string, unknown>;
+  const message =
+    typeof record.message === "string" && record.message.trim()
+      ? record.message.trim()
+      : "";
+
+  const linePos = Array.isArray(record.linePos) ? record.linePos : [];
+  const firstLinePos =
+    linePos.length > 0 && linePos[0] && typeof linePos[0] === "object"
+      ? (linePos[0] as Record<string, unknown>)
+      : null;
+  const line =
+    firstLinePos && typeof firstLinePos.line === "number" ? firstLinePos.line : undefined;
+  const col =
+    firstLinePos && typeof firstLinePos.col === "number" ? firstLinePos.col : undefined;
+
+  if (line && col) {
+    const excerpt = buildYamlExcerpt(source, line, 2);
+    return `${message} at line ${line}, column ${col}.${excerpt ? `\n${excerpt}` : ""}`;
+  }
+
+  return message;
+}
+
+function buildYamlExcerpt(source: string, line: number, radius: number): string {
+  const lines = source.split(/\r?\n/);
+  const start = Math.max(1, line - radius);
+  const end = Math.min(lines.length, line + radius);
+  const excerpt: string[] = [];
+
+  for (let i = start; i <= end; i += 1) {
+    const prefix = i === line ? ">" : " ";
+    excerpt.push(`${prefix} ${String(i).padStart(4, " ")} | ${lines[i - 1] ?? ""}`);
+  }
+
+  return excerpt.join("\n");
 }
