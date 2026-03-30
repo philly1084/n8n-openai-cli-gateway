@@ -45,4 +45,17 @@ test("treats assistant placeholder output as synthetic", () => {
   assert.equal(parsed.synthetic, true);
   assert.equal(isSyntheticAssistantOutputText("<assistant reply>"), true);
   assert.equal(isSyntheticAssistantOutputText("Reply to the user directly."), true);
+  assert.equal(
+    isSyntheticAssistantOutputText("Provide your actual helpful response here."),
+    true,
+  );
+});
+
+test("treats Groq synthesis-failure text as synthetic", () => {
+  assert.equal(
+    isSyntheticAssistantOutputText(
+      'I completed the request, but the final answer could not be synthesized from the model response.',
+    ),
+    true,
+  );
 });

@@ -25,11 +25,66 @@ import {
 // Cache tool definitions for sessions. n8n occasionally drops them on subsequent turns.
 const multiTurnToolsCache = new LruMap<string, UnifiedToolDefinition[]>(100);
 
-export function getSessionSignature(messages: ChatMessage[]): string {
+export function getSessionSignature(
+  messages: ChatMessage[],
+  metadata?: Record<string, unknown>,
+): string {
+  const explicitSessionId = findSessionIdentifier(metadata);
   const firstSystem = messages.find((m) => m.role === "system")?.content || "";
   const firstUser = messages.find((m) => m.role === "user")?.content || "";
-  const content = `${typeof firstSystem === "string" ? firstSystem : JSON.stringify(firstSystem)}|${typeof firstUser === "string" ? firstUser : JSON.stringify(firstUser)}`;
+  const user = findMetadataString(metadata, ["user"]) || "";
+  const content = explicitSessionId
+    ? `session=${explicitSessionId}|user=${user}`
+    : `${typeof firstSystem === "string" ? firstSystem : JSON.stringify(firstSystem)}|${typeof firstUser === "string" ? firstUser : JSON.stringify(firstUser)}|user=${user}`;
   return createHash("sha256").update(content).digest("hex");
+}
+
+function findSessionIdentifier(metadata?: Record<string, unknown>): string | undefined {
+  return findMetadataString(metadata, [
+    "session_id",
+    "sessionId",
+    "conversation_id",
+    "conversationId",
+    "thread_id",
+    "threadId",
+    "previous_response_id",
+    "previousResponseId",
+    "response_id",
+    "responseId",
+  ]);
+}
+
+function findMetadataString(
+  metadata: Record<string, unknown> | undefined,
+  keys: string[],
+): string | undefined {
+  if (!metadata || typeof metadata !== "object") {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    const value = metadata[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  const nestedMetadata =
+    metadata.metadata && typeof metadata.metadata === "object"
+      ? (metadata.metadata as Record<string, unknown>)
+      : undefined;
+  if (!nestedMetadata) {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    const value = nestedMetadata[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return undefined;
 }
 
 interface OpenAiRoutesOptions {
@@ -152,7 +207,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
       );
     }
 
-    const sessionSig = getSessionSignature(messages);
+    const sessionSig = getSessionSignature(messages, body as Record<string, unknown>);
     if (tools.length > 0) {
       multiTurnToolsCache.set(sessionSig, tools);
     } else if (messages.length > 2) {
@@ -516,7 +571,7 @@ async function handleChatCompletionsRequest(
       "No tools normalized from chat request payload.",
     );
   }
-  const sessionSig = getSessionSignature(messages);
+  const sessionSig = getSessionSignature(messages, body as Record<string, unknown>);
   if (tools.length > 0) {
     multiTurnToolsCache.set(sessionSig, tools);
   } else if (messages.length > 2) {

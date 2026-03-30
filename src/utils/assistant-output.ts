@@ -16,9 +16,12 @@ const PLACEHOLDER_OUTPUTS = [
   "[assistant reply]",
   "assistant reply",
   "reply to the user directly.",
+  "provide your actual helpful response here.",
 ] as const;
 
 const LEGACY_INVALID_ASSISTANT_SUBSTRINGS = [
+  "completed the request, but the final answer could not be synthesized from the model response",
+  "i completed the request, but the final answer could not be synthesized from the model response",
   "final answer could not be synthesized from the model response",
   "could not be synthesized from the model response",
 ] as const;

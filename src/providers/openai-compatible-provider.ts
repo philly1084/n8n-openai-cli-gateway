@@ -76,6 +76,11 @@ export class OpenAiCompatibleProvider implements Provider {
       this.config.baseUrl,
       providerModel,
     );
+    if (shouldRejectGroqCompoundToolTurn(this.config.baseUrl, providerModel, request)) {
+      throw new Error(
+        `Model ${providerModel} does not reliably support gateway-managed tool calling. Retry with a fallback model.`,
+      );
+    }
     const body: Record<string, unknown> = {
       model: providerModel,
       messages: buildApiMessages(request.messages, {
@@ -425,6 +430,22 @@ function shouldSuppressGroqLocalToolCalling(baseUrl: string, providerModel: stri
   }
 
   return /^groq\/compound(?:-mini)?$/i.test(providerModel.trim());
+}
+
+function shouldRejectGroqCompoundToolTurn(
+  baseUrl: string,
+  providerModel: string,
+  request: UnifiedRequest,
+): boolean {
+  if (!shouldSuppressGroqLocalToolCalling(baseUrl, providerModel)) {
+    return false;
+  }
+
+  // Compound models can produce synthetic "completed request" responses when
+  // the gateway expects explicit OpenAI-style tool calls. Fail fast so the
+  // registry can move to the configured fallback chain instead of surfacing an
+  // unusable assistant turn.
+  return request.tools.length > 0;
 }
 
 function isGroqBaseUrl(baseUrl: string): boolean {
