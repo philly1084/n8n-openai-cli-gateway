@@ -17,6 +17,7 @@ import {
   chatCompletionsRequestSchema,
   responsesRequestSchema,
   imageGenerationsRequestSchema,
+  documentGenerationsRequestSchema,
   audioSpeechRequestSchema,
   audioTranscriptionsRequestSchema,
 } from "../validation";
@@ -306,6 +307,54 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
       return handleModelError(reply, error);
     }
   });
+
+  const handleDocumentGenerations = async (request: FastifyRequest, reply: FastifyReply) => {
+    const validationResult = validateBody(request.body, documentGenerationsRequestSchema);
+    if (!validationResult.success) {
+      return sendOpenAiError(reply, 400, validationResult.error, "invalid_request_error");
+    }
+
+    const body = validationResult.data;
+    const prompt = extractTextContent(body.prompt);
+
+    if (!prompt.trim()) {
+      return sendOpenAiError(reply, 400, "prompt is required.");
+    }
+
+    const n = Math.min(body.n ?? 1, 10);
+
+    try {
+      const result = normalizeAssistantResult(await options.registry.runModel(body.model, {
+        requestId: makeId("req"),
+        messages: [{ role: "user", content: prompt }],
+        tools: [],
+        metadata: body as Record<string, unknown>,
+      }));
+
+      const documents = parseDocumentGenerations(result.outputText, {
+        fileType: body.file_type,
+        filename: body.filename,
+      });
+      if (documents.length === 0) {
+        return sendOpenAiError(
+          reply,
+          500,
+          "Provider returned no parseable document data.",
+          "provider_error",
+        );
+      }
+
+      return {
+        created: Math.floor(Date.now() / 1000),
+        data: documents.slice(0, n),
+      };
+    } catch (error) {
+      return handleModelError(reply, error);
+    }
+  };
+
+  app.post("/documents/generations", handleDocumentGenerations);
+  app.post("/files/generations", handleDocumentGenerations);
 
   // Audio Speech (TTS) endpoint
   app.post("/audio/speech", async (request, reply) => {
@@ -1072,6 +1121,12 @@ type OpenAiImageItem = {
   revised_prompt?: string;
 };
 
+type OpenAiDocumentItem = {
+  filename?: string;
+  mime_type?: string;
+  b64_data: string;
+};
+
 function parseImageGenerations(text: string): OpenAiImageItem[] {
   const direct = normalizeImagePayload(text.trim());
   if (direct.length > 0) {
@@ -1195,6 +1250,225 @@ function normalizeImageItem(raw: unknown): OpenAiImageItem | null {
 
 function isImageItem(value: OpenAiImageItem | null): value is OpenAiImageItem {
   return Boolean(value && (value.url || value.b64_json));
+}
+
+function parseDocumentGenerations(
+  text: string,
+  defaults?: { fileType?: string; filename?: string },
+): OpenAiDocumentItem[] {
+  const direct = normalizeDocumentPayload(text.trim(), defaults);
+  if (direct.length > 0) {
+    return direct;
+  }
+
+  for (const candidate of extractJsonCandidates(text)) {
+    const parsed = normalizeDocumentPayload(candidate, defaults);
+    if (parsed.length > 0) {
+      return parsed;
+    }
+  }
+
+  return [];
+}
+
+function normalizeDocumentPayload(
+  raw: unknown,
+  defaults?: { fileType?: string; filename?: string },
+): OpenAiDocumentItem[] {
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return [];
+    }
+
+    const parsed = tryParseJson(trimmed);
+    if (parsed !== null) {
+      return normalizeDocumentPayload(parsed, defaults);
+    }
+
+    const dataUrlMatch = /^data:([^;]+);base64,(.+)$/i.exec(trimmed);
+    if (dataUrlMatch && dataUrlMatch[1] && dataUrlMatch[2]) {
+      return [{
+        filename: normalizeDocumentFilename(defaults?.filename, defaults?.fileType, dataUrlMatch[1]),
+        mime_type: dataUrlMatch[1],
+        b64_data: dataUrlMatch[2],
+      }];
+    }
+
+    const compact = trimmed.replace(/\s/g, "");
+    if (/^[A-Za-z0-9+/]{100,}={0,2}$/.test(compact)) {
+      const mimeType = inferDocumentMimeType(defaults?.fileType, defaults?.filename);
+      return [{
+        filename: normalizeDocumentFilename(defaults?.filename, defaults?.fileType, mimeType),
+        mime_type: mimeType,
+        b64_data: compact,
+      }];
+    }
+
+    return [];
+  }
+
+  if (Array.isArray(raw)) {
+    return raw.flatMap((item) => normalizeDocumentItem(item, defaults)).filter(isDocumentItem);
+  }
+
+  if (!raw || typeof raw !== "object") {
+    return [];
+  }
+
+  const obj = raw as Record<string, unknown>;
+  if (Array.isArray(obj.data)) {
+    return obj.data.flatMap((item) => normalizeDocumentItem(item, defaults)).filter(isDocumentItem);
+  }
+
+  if (Array.isArray(obj.documents)) {
+    return obj.documents.flatMap((item) => normalizeDocumentItem(item, defaults)).filter(isDocumentItem);
+  }
+
+  if (Array.isArray(obj.files)) {
+    return obj.files.flatMap((item) => normalizeDocumentItem(item, defaults)).filter(isDocumentItem);
+  }
+
+  const single = normalizeDocumentItem(obj, defaults);
+  return single ? [single] : [];
+}
+
+function normalizeDocumentItem(
+  raw: unknown,
+  defaults?: { fileType?: string; filename?: string },
+): OpenAiDocumentItem | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const obj = raw as Record<string, unknown>;
+  const base64ValueRaw =
+    typeof obj.b64_data === "string"
+      ? obj.b64_data.trim()
+      : typeof obj.b64_json === "string"
+        ? obj.b64_json.trim()
+        : typeof obj.base64 === "string"
+          ? obj.base64.trim()
+          : typeof obj.data === "string"
+            ? extractBase64FromDataUrl(obj.data.trim()) ?? obj.data.trim()
+            : "";
+  const base64Value = base64ValueRaw.replace(/\s/g, "");
+  if (!isLikelyBase64(base64Value)) {
+    return null;
+  }
+
+  const mimeType =
+    typeof obj.mime_type === "string"
+      ? obj.mime_type.trim()
+      : typeof obj.mimeType === "string"
+        ? obj.mimeType.trim()
+        : typeof obj.content_type === "string"
+          ? obj.content_type.trim()
+          : typeof obj.contentType === "string"
+            ? obj.contentType.trim()
+            : inferDocumentMimeType(defaults?.fileType, typeof obj.filename === "string" ? obj.filename : typeof obj.name === "string" ? obj.name : defaults?.filename);
+
+  const filename =
+    typeof obj.filename === "string"
+      ? obj.filename.trim()
+      : typeof obj.name === "string"
+        ? obj.name.trim()
+        : normalizeDocumentFilename(defaults?.filename, defaults?.fileType, mimeType);
+
+  return {
+    filename,
+    mime_type: mimeType,
+    b64_data: base64Value,
+  };
+}
+
+function isDocumentItem(value: OpenAiDocumentItem | null): value is OpenAiDocumentItem {
+  return Boolean(value && value.b64_data);
+}
+
+function extractBase64FromDataUrl(value: string): string | null {
+  const match = /^data:([^;]+);base64,(.+)$/i.exec(value);
+  return match && match[2] ? match[2] : null;
+}
+
+function isLikelyBase64(value: string): boolean {
+  return /^[A-Za-z0-9+/]{100,}={0,2}$/.test(value);
+}
+
+function normalizeDocumentFilename(
+  filename: string | undefined,
+  fileType: string | undefined,
+  mimeType: string | undefined,
+): string {
+  const trimmedFilename = typeof filename === "string" ? filename.trim() : "";
+  if (trimmedFilename) {
+    return trimmedFilename;
+  }
+
+  const extension = inferDocumentExtension(fileType, mimeType);
+  return `document.${extension}`;
+}
+
+function inferDocumentMimeType(fileType?: string, filename?: string): string {
+  const extension = inferDocumentExtension(fileType, undefined, filename);
+  const mimeTypes: Record<string, string> = {
+    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    pdf: "application/pdf",
+    txt: "text/plain",
+    html: "text/html",
+    csv: "text/csv",
+    json: "application/json",
+  };
+  return mimeTypes[extension] || "application/octet-stream";
+}
+
+function inferDocumentExtension(
+  fileType?: string,
+  mimeType?: string,
+  filename?: string,
+): string {
+  const fromFileType = typeof fileType === "string" ? fileType.trim().toLowerCase().replace(/^\./, "") : "";
+  if (fromFileType) {
+    return fromFileType;
+  }
+
+  const fromFilename =
+    typeof filename === "string" && filename.includes(".")
+      ? filename.slice(filename.lastIndexOf(".") + 1).trim().toLowerCase()
+      : "";
+  if (fromFilename) {
+    return fromFilename;
+  }
+
+  const fromMimeType = typeof mimeType === "string" ? mimeType.trim().toLowerCase() : "";
+  if (fromMimeType.includes("presentationml.presentation")) {
+    return "pptx";
+  }
+  if (fromMimeType.includes("wordprocessingml.document")) {
+    return "docx";
+  }
+  if (fromMimeType.includes("spreadsheetml.sheet")) {
+    return "xlsx";
+  }
+  if (fromMimeType.includes("/pdf")) {
+    return "pdf";
+  }
+  if (fromMimeType.includes("/html")) {
+    return "html";
+  }
+  if (fromMimeType.includes("/csv")) {
+    return "csv";
+  }
+  if (fromMimeType.includes("/json")) {
+    return "json";
+  }
+  if (fromMimeType.includes("/plain")) {
+    return "txt";
+  }
+
+  return "bin";
 }
 
 function tryParseJson(value: string): unknown | null {

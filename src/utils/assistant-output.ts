@@ -15,6 +15,7 @@ const PLACEHOLDER_OUTPUTS = [
   "<assistant reply>",
   "[assistant reply]",
   "assistant reply",
+  "reply to the user directly.",
 ] as const;
 
 const LEGACY_INVALID_ASSISTANT_SUBSTRINGS = [

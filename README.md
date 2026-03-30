@@ -13,6 +13,8 @@ OpenAI-compatible gateway for n8n that exposes:
 - `POST /v1/message` (alias of chat completions)
 - `POST /v1/responses`
 - `POST /v1/images/generations`
+- `POST /v1/documents/generations`
+- `POST /v1/files/generations` (alias of document generation)
 - `GET /v1/models`
 
 Also exposed under `/openai/v1/*` for in-cluster compatibility URLs.
@@ -421,6 +423,45 @@ Returned shape:
       "url": "https://...",
       "b64_json": "...",
       "revised_prompt": "optional"
+    }
+  ]
+}
+```
+
+### Document generation provider output
+
+`POST /v1/documents/generations` and `POST /v1/files/generations` run the selected model and expect document payloads in JSON or base64 form. This is the path to use for `.pptx` generation.
+
+Accepted provider output patterns:
+
+- raw base64 text
+- data URL text such as `data:application/vnd.openxmlformats-officedocument.presentationml.presentation;base64,...`
+- JSON object/array in text:
+  - `{"data":[{"filename":"deck.pptx","mime_type":"application/vnd.openxmlformats-officedocument.presentationml.presentation","b64_data":"..."}]}`
+  - `{"documents":[{"filename":"deck.pptx","base64":"..."}]}`
+  - `[{"name":"deck.pptx","b64_json":"..."}]`
+
+Request body:
+
+```json
+{
+  "model": "gemini-2.5-flash",
+  "prompt": "Create a 5-slide product overview deck.",
+  "file_type": "pptx",
+  "filename": "product-overview.pptx"
+}
+```
+
+Returned shape:
+
+```json
+{
+  "created": 0,
+  "data": [
+    {
+      "filename": "product-overview.pptx",
+      "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "b64_data": "..."
     }
   ]
 }

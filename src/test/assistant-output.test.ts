@@ -44,4 +44,5 @@ test("treats assistant placeholder output as synthetic", () => {
   assert.equal(parsed.outputText, "");
   assert.equal(parsed.synthetic, true);
   assert.equal(isSyntheticAssistantOutputText("<assistant reply>"), true);
+  assert.equal(isSyntheticAssistantOutputText("Reply to the user directly."), true);
 });

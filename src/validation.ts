@@ -94,6 +94,15 @@ export const imageGenerationsRequestSchema = z.object({
   user: z.string().optional(),
 });
 
+export const documentGenerationsRequestSchema = z.object({
+  model: z.string().min(1, "model is required"),
+  prompt: z.unknown(),
+  n: z.number().int().min(1).max(10).optional(),
+  file_type: z.string().optional(),
+  filename: z.string().optional(),
+  user: z.string().optional(),
+}).passthrough();
+
 // Audio speech (TTS) request schema
 export const audioSpeechRequestSchema = z.object({
   model: z.string().min(1, "model is required"),
@@ -128,6 +137,7 @@ export const audioTranslationsRequestSchema = z.object({
 export type ChatCompletionsRequest = z.infer<typeof chatCompletionsRequestSchema>;
 export type ResponsesRequest = z.infer<typeof responsesRequestSchema>;
 export type ImageGenerationsRequest = z.infer<typeof imageGenerationsRequestSchema>;
+export type DocumentGenerationsRequest = z.infer<typeof documentGenerationsRequestSchema>;
 export type AudioSpeechRequest = z.infer<typeof audioSpeechRequestSchema>;
 export type AudioTranscriptionsRequest = z.infer<typeof audioTranscriptionsRequestSchema>;
 export type AudioTranslationsRequest = z.infer<typeof audioTranslationsRequestSchema>;
