@@ -353,6 +353,9 @@ function buildPrompt(request: GatewayRequest): string {
     "The tools listed in AVAILABLE_TOOLS_JSON are the only tools you can use in this turn.",
     "Do not claim that tools are unavailable when AVAILABLE_TOOLS_JSON is non-empty.",
     "Do not use any internal tools, shell commands, filesystem access, web browsing, or MCP tools.",
+    "TOOL: messages are outputs from previous tool calls.",
+    "When TOOL: messages are present and no more tools are needed, synthesize the final answer for the user in output_text.",
+    'Do not copy placeholder/example text like "Reply to the user directly." into output_text.',
     forcedToolName
       ? `tool_choice is set. You MUST call exactly this function name: ${forcedToolName}.`
       : "If the user asks to use/call a tool and AVAILABLE_TOOLS_JSON is non-empty, you MUST return a tool_calls response.",

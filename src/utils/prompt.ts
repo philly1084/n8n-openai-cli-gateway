@@ -54,3 +54,24 @@ export function extractTextContent(content: unknown): string {
 
   return "";
 }
+
+export function extractTextContentOrJson(content: unknown): string {
+  const text = extractTextContent(content);
+  if (text.trim()) {
+    return text;
+  }
+
+  if (content === null || content === undefined) {
+    return "";
+  }
+
+  if (typeof content === "string") {
+    return content;
+  }
+
+  try {
+    return JSON.stringify(content);
+  } catch {
+    return String(content);
+  }
+}

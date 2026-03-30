@@ -10,7 +10,7 @@ import type {
   UnifiedToolDefinition,
 } from "../types";
 import { makeId } from "../utils/ids";
-import { extractTextContent } from "../utils/prompt";
+import { extractTextContent, extractTextContentOrJson } from "../utils/prompt";
 import { resolveReasoningEffort } from "../utils/reasoning";
 import { normalizeAssistantResult, parseAssistantPayloadText } from "../utils/assistant-output";
 import {
@@ -903,7 +903,7 @@ function normalizeResponsesInput(raw: unknown, depth = 0): ChatMessage[] {
           : typeof record.id === "string"
             ? record.id
             : undefined;
-    const outputText = extractTextContent(
+    const outputText = extractTextContentOrJson(
       record.output ?? record.content ?? record.text ?? "",
     );
     return [
@@ -950,7 +950,7 @@ function normalizeResponsesInput(raw: unknown, depth = 0): ChatMessage[] {
           : typeof record.id === "string"
             ? record.id
             : undefined;
-    const outputText = extractTextContent(
+    const outputText = extractTextContentOrJson(
       record.content ?? record.output ?? record.text ?? "",
     );
     return [
@@ -1018,8 +1018,12 @@ function normalizeMessageContentForRole(
   toolContext: unknown,
 ): string {
   const explicitToolCalls = normalizeToolCallContext(toolContext);
+  const baseContent =
+    role === "tool"
+      ? extractTextContentOrJson(content)
+      : extractTextContent(content);
   if (role !== "assistant") {
-    return mergeMessageContent(extractTextContent(content), renderToolCallContext(explicitToolCalls));
+    return mergeMessageContent(baseContent, renderToolCallContext(explicitToolCalls));
   }
 
   const parsed = parseAssistantPayloadText(extractTextContent(content));
