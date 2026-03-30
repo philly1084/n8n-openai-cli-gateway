@@ -355,6 +355,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
 
   app.post("/documents/generations", handleDocumentGenerations);
   app.post("/files/generations", handleDocumentGenerations);
+  app.post("/presentations/generations", handleDocumentGenerations);
 
   // Audio Speech (TTS) endpoint
   app.post("/audio/speech", async (request, reply) => {
@@ -1124,7 +1125,28 @@ type OpenAiImageItem = {
 type OpenAiDocumentItem = {
   filename?: string;
   mime_type?: string;
-  b64_data: string;
+  b64_data?: string;
+  download_url?: string;
+  title?: string;
+  summary?: string;
+  text?: string;
+  markdown?: string;
+  html?: string;
+  page_count?: number;
+  slide_count?: number;
+  theme?: string;
+  template?: string;
+  design_style?: string;
+  preview_url?: string;
+  preview_b64_json?: string;
+  slides?: Array<{
+    title?: string;
+    subtitle?: string;
+    text?: string;
+    notes?: string;
+    bullets?: string[];
+    image_url?: string;
+  }>;
 };
 
 function parseImageGenerations(text: string): OpenAiImageItem[] {
@@ -1252,7 +1274,7 @@ function isImageItem(value: OpenAiImageItem | null): value is OpenAiImageItem {
   return Boolean(value && (value.url || value.b64_json));
 }
 
-function parseDocumentGenerations(
+export function parseDocumentGenerations(
   text: string,
   defaults?: { fileType?: string; filename?: string },
 ): OpenAiDocumentItem[] {
@@ -1321,12 +1343,20 @@ function normalizeDocumentPayload(
     return obj.data.flatMap((item) => normalizeDocumentItem(item, defaults)).filter(isDocumentItem);
   }
 
+  if (Array.isArray(obj.items)) {
+    return obj.items.flatMap((item) => normalizeDocumentItem(item, defaults)).filter(isDocumentItem);
+  }
+
   if (Array.isArray(obj.documents)) {
     return obj.documents.flatMap((item) => normalizeDocumentItem(item, defaults)).filter(isDocumentItem);
   }
 
   if (Array.isArray(obj.files)) {
     return obj.files.flatMap((item) => normalizeDocumentItem(item, defaults)).filter(isDocumentItem);
+  }
+
+  if (Array.isArray(obj.artifacts)) {
+    return obj.artifacts.flatMap((item) => normalizeDocumentItem(item, defaults)).filter(isDocumentItem);
   }
 
   const single = normalizeDocumentItem(obj, defaults);
@@ -1353,9 +1383,16 @@ function normalizeDocumentItem(
             ? extractBase64FromDataUrl(obj.data.trim()) ?? obj.data.trim()
             : "";
   const base64Value = base64ValueRaw.replace(/\s/g, "");
-  if (!isLikelyBase64(base64Value)) {
-    return null;
-  }
+  const normalizedBase64 = isLikelyBase64(base64Value) ? base64Value : undefined;
+
+  const downloadUrl =
+    typeof obj.download_url === "string"
+      ? obj.download_url.trim()
+      : typeof obj.downloadUrl === "string"
+        ? obj.downloadUrl.trim()
+        : typeof obj.url === "string" && /^https?:\/\//i.test(obj.url.trim())
+          ? obj.url.trim()
+          : "";
 
   const mimeType =
     typeof obj.mime_type === "string"
@@ -1371,19 +1408,126 @@ function normalizeDocumentItem(
   const filename =
     typeof obj.filename === "string"
       ? obj.filename.trim()
-      : typeof obj.name === "string"
-        ? obj.name.trim()
-        : normalizeDocumentFilename(defaults?.filename, defaults?.fileType, mimeType);
+        : typeof obj.name === "string"
+          ? obj.name.trim()
+          : normalizeDocumentFilename(defaults?.filename, defaults?.fileType, mimeType);
+
+  const title = firstDocumentString(
+    obj.title,
+    obj.document_title,
+    obj.documentTitle,
+    obj.name,
+  );
+  const summary = firstDocumentString(
+    obj.summary,
+    obj.description,
+    obj.abstract,
+    obj.excerpt,
+  );
+  const text = normalizeDocumentText(
+    firstDefinedDocumentValue(
+      obj.text,
+      obj.content_text,
+      obj.contentText,
+      obj.plain_text,
+      obj.plainText,
+      !normalizedBase64 ? obj.data : undefined,
+    ),
+  );
+  const markdown = normalizeDocumentText(
+    firstDefinedDocumentValue(
+      obj.markdown,
+      obj.md,
+      obj.content_markdown,
+      obj.contentMarkdown,
+    ),
+  );
+  const html = normalizeDocumentText(
+    firstDefinedDocumentValue(
+      obj.html,
+      obj.content_html,
+      obj.contentHtml,
+    ),
+  );
+  const pageCount = normalizePositiveInteger(
+    firstDefinedDocumentValue(obj.page_count, obj.pageCount),
+  );
+  const slideCount = normalizePositiveInteger(
+    firstDefinedDocumentValue(obj.slide_count, obj.slideCount, obj.slides_count, obj.slidesCount),
+  );
+  const theme = firstDocumentString(obj.theme);
+  const template = firstDocumentString(obj.template, obj.template_name, obj.templateName);
+  const designStyle = firstDocumentString(obj.design_style, obj.designStyle, obj.style);
+  const previewUrl = firstDocumentString(
+    obj.preview_url,
+    obj.previewUrl,
+    obj.thumbnail_url,
+    obj.thumbnailUrl,
+  );
+  const previewB64Json = normalizePreviewBase64(
+    firstDefinedDocumentValue(
+      obj.preview_b64_json,
+      obj.previewB64Json,
+      obj.thumbnail_b64,
+      obj.thumbnailB64,
+    ),
+  );
+  const slides = normalizeDocumentSlides(
+    firstDefinedDocumentValue(obj.slides, obj.pages, obj.outline),
+  );
+
+  if (
+    !normalizedBase64 &&
+    !downloadUrl &&
+    !title &&
+    !summary &&
+    !text &&
+    !markdown &&
+    !html &&
+    !previewUrl &&
+    !previewB64Json &&
+    slides.length === 0
+  ) {
+    return null;
+  }
 
   return {
     filename,
     mime_type: mimeType,
-    b64_data: base64Value,
+    b64_data: normalizedBase64,
+    download_url: downloadUrl || undefined,
+    title,
+    summary,
+    text,
+    markdown,
+    html,
+    page_count: pageCount,
+    slide_count: slideCount,
+    theme,
+    template,
+    design_style: designStyle,
+    preview_url: previewUrl,
+    preview_b64_json: previewB64Json,
+    slides: slides.length > 0 ? slides : undefined,
   };
 }
 
 function isDocumentItem(value: OpenAiDocumentItem | null): value is OpenAiDocumentItem {
-  return Boolean(value && value.b64_data);
+  return Boolean(
+    value &&
+      (
+        value.b64_data ||
+        value.download_url ||
+        value.text ||
+        value.markdown ||
+        value.html ||
+        value.title ||
+        value.summary ||
+        value.preview_url ||
+        value.preview_b64_json ||
+        (value.slides && value.slides.length > 0)
+      ),
+  );
 }
 
 function extractBase64FromDataUrl(value: string): string | null {
@@ -1393,6 +1537,126 @@ function extractBase64FromDataUrl(value: string): string | null {
 
 function isLikelyBase64(value: string): boolean {
   return /^[A-Za-z0-9+/]{100,}={0,2}$/.test(value);
+}
+
+function normalizePreviewBase64(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const extracted = extractBase64FromDataUrl(trimmed) ?? trimmed;
+  const compact = extracted.replace(/\s/g, "");
+  return isLikelyBase64(compact) ? compact : undefined;
+}
+
+function normalizeDocumentText(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function normalizePositiveInteger(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value.trim(), 10);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function normalizeDocumentSlides(
+  value: unknown,
+): Array<{
+  title?: string;
+  subtitle?: string;
+  text?: string;
+  notes?: string;
+  bullets?: string[];
+  image_url?: string;
+}> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const out: Array<{
+    title?: string;
+    subtitle?: string;
+    text?: string;
+    notes?: string;
+    bullets?: string[];
+    image_url?: string;
+  }> = [];
+
+  for (const item of value) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const obj = item as Record<string, unknown>;
+    const bullets = normalizeSlideBullets(
+      firstDefinedDocumentValue(obj.bullets, obj.points, obj.items),
+    );
+    const slide = {
+      title: firstDocumentString(obj.title, obj.heading),
+      subtitle: firstDocumentString(obj.subtitle, obj.subheading),
+      text: normalizeDocumentText(firstDefinedDocumentValue(obj.text, obj.content, obj.body)),
+      notes: normalizeDocumentText(firstDefinedDocumentValue(obj.notes, obj.speaker_notes, obj.speakerNotes)),
+      bullets: bullets.length > 0 ? bullets : undefined,
+      image_url: firstDocumentString(obj.image_url, obj.imageUrl, obj.url),
+    };
+    if (
+      slide.title ||
+      slide.subtitle ||
+      slide.text ||
+      slide.notes ||
+      slide.image_url ||
+      slide.bullets
+    ) {
+      out.push(slide);
+    }
+  }
+
+  return out;
+}
+
+function normalizeSlideBullets(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter((item): item is string => Boolean(item));
+}
+
+function firstDocumentString(...candidates: unknown[]): string | undefined {
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") {
+      continue;
+    }
+    const trimmed = candidate.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+  return undefined;
+}
+
+function firstDefinedDocumentValue(...candidates: unknown[]): unknown {
+  for (const candidate of candidates) {
+    if (candidate !== undefined) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 function normalizeDocumentFilename(

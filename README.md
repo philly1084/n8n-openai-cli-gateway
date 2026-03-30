@@ -15,6 +15,7 @@ OpenAI-compatible gateway for n8n that exposes:
 - `POST /v1/images/generations`
 - `POST /v1/documents/generations`
 - `POST /v1/files/generations` (alias of document generation)
+- `POST /v1/presentations/generations` (alias of document generation)
 - `GET /v1/models`
 
 Also exposed under `/openai/v1/*` for in-cluster compatibility URLs.
@@ -430,7 +431,7 @@ Returned shape:
 
 ### Document generation provider output
 
-`POST /v1/documents/generations` and `POST /v1/files/generations` run the selected model and expect document payloads in JSON or base64 form. This is the path to use for `.pptx` generation.
+`POST /v1/documents/generations`, `POST /v1/files/generations`, and `POST /v1/presentations/generations` run the selected model and expect document payloads in JSON or base64 form. Use the presentations alias when the provider is producing decks such as `.pptx`.
 
 Accepted provider output patterns:
 
@@ -440,6 +441,22 @@ Accepted provider output patterns:
   - `{"data":[{"filename":"deck.pptx","mime_type":"application/vnd.openxmlformats-officedocument.presentationml.presentation","b64_data":"..."}]}`
   - `{"documents":[{"filename":"deck.pptx","base64":"..."}]}`
   - `[{"name":"deck.pptx","b64_json":"..."}]`
+
+Optional design/document fields that are also passed through when present:
+
+- `title`
+- `summary`
+- `text`
+- `markdown`
+- `html`
+- `page_count`
+- `slide_count`
+- `theme`
+- `template`
+- `design_style`
+- `preview_url`
+- `preview_b64_json`
+- `slides` as an array of `{title, subtitle, text, notes, bullets, image_url}`
 
 Request body:
 
@@ -461,7 +478,17 @@ Returned shape:
     {
       "filename": "product-overview.pptx",
       "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-      "b64_data": "..."
+      "b64_data": "...",
+      "title": "Product Overview",
+      "slide_count": 5,
+      "theme": "modern",
+      "design_style": "editorial",
+      "slides": [
+        {
+          "title": "Problem",
+          "bullets": ["Fragmented workflow", "High reporting overhead"]
+        }
+      ]
     }
   ]
 }

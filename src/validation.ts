@@ -100,6 +100,13 @@ export const documentGenerationsRequestSchema = z.object({
   n: z.number().int().min(1).max(10).optional(),
   file_type: z.string().optional(),
   filename: z.string().optional(),
+  title: z.string().optional(),
+  template: z.string().optional(),
+  theme: z.string().optional(),
+  style: z.string().optional(),
+  audience: z.string().optional(),
+  page_count: z.number().int().min(1).optional(),
+  slide_count: z.number().int().min(1).optional(),
   user: z.string().optional(),
 }).passthrough();
 
