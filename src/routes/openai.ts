@@ -12,7 +12,11 @@ import type {
 import { makeId } from "../utils/ids";
 import { extractTextContent, extractTextContentOrJson } from "../utils/prompt";
 import { resolveReasoningEffort } from "../utils/reasoning";
-import { normalizeAssistantResult, parseAssistantPayloadText } from "../utils/assistant-output";
+import {
+  isSyntheticAssistantOutputText,
+  normalizeAssistantResult,
+  parseAssistantPayloadText,
+} from "../utils/assistant-output";
 import {
   chatCompletionsRequestSchema,
   responsesRequestSchema,
@@ -1024,7 +1028,7 @@ function firstDefined(...candidates: unknown[]): unknown {
   return undefined;
 }
 
-function normalizeChatMessages(raw: unknown[]): ChatMessage[] {
+export function normalizeChatMessages(raw: unknown[]): ChatMessage[] {
   if (!Array.isArray(raw)) {
     return [];
   }
@@ -1046,6 +1050,15 @@ function normalizeChatMessages(raw: unknown[]): ChatMessage[] {
       record.content,
       record.tool_calls ?? record.tool_call ?? record.function_call,
     );
+    if (
+      shouldDropSyntheticAssistantHistoryMessage(
+        role,
+        content,
+        record.tool_calls ?? record.tool_call ?? record.function_call,
+      )
+    ) {
+      continue;
+    }
     messages.push({
       role,
       content,
@@ -1161,6 +1174,15 @@ export function normalizeResponsesInput(raw: unknown, depth = 0): ChatMessage[] 
       record.content,
       record.tool_calls ?? record.tool_call ?? record.function_call,
     );
+    if (
+      shouldDropSyntheticAssistantHistoryMessage(
+        role,
+        content,
+        record.tool_calls ?? record.tool_call ?? record.function_call,
+      )
+    ) {
+      return [];
+    }
     return [{ role, content }];
   }
 
@@ -1170,6 +1192,15 @@ export function normalizeResponsesInput(raw: unknown, depth = 0): ChatMessage[] 
       record.content,
       record.tool_calls ?? record.tool_call ?? record.function_call,
     );
+    if (
+      shouldDropSyntheticAssistantHistoryMessage(
+        role,
+        content,
+        record.tool_calls ?? record.tool_call ?? record.function_call,
+      )
+    ) {
+      return [];
+    }
     return [{ role, content }];
   }
 
@@ -1227,6 +1258,27 @@ function mergeMessageContent(content: string, extra: string): string {
     return base;
   }
   return `${base}\n\n${appended}`;
+}
+
+function shouldDropSyntheticAssistantHistoryMessage(
+  role: ChatMessage["role"],
+  content: string,
+  toolContext: unknown,
+): boolean {
+  if (role !== "assistant") {
+    return false;
+  }
+
+  if (hasToolContext(toolContext)) {
+    return false;
+  }
+
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return true;
+  }
+
+  return isSyntheticAssistantOutputText(trimmed);
 }
 
 function normalizeMessageContentForRole(

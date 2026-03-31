@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { ChatMessage } from "../types";
-import { getSessionSignature, normalizeResponsesInput } from "../routes/openai";
+import {
+  getSessionSignature,
+  normalizeChatMessages,
+  normalizeResponsesInput,
+} from "../routes/openai";
 
 test("getSessionSignature prefers explicit session identifiers when available", () => {
   const messages: ChatMessage[] = [
@@ -51,6 +55,48 @@ test("normalizeResponsesInput infers assistant role for output_text messages wit
     {
       role: "assistant",
       content: "Tool work completed successfully.",
+    },
+  ]);
+});
+
+test("normalizeChatMessages drops synthetic assistant failure history", () => {
+  const messages = normalizeChatMessages([
+    {
+      role: "assistant",
+      content:
+        "I completed the request, but the final answer could not be synthesized from the model response.",
+    },
+    {
+      role: "user",
+      content: "hi",
+    },
+  ]);
+
+  assert.deepStrictEqual(messages, [
+    {
+      role: "user",
+      content: "hi",
+    },
+  ]);
+});
+
+test("normalizeResponsesInput drops synthetic assistant failure history", () => {
+  const messages = normalizeResponsesInput([
+    {
+      role: "assistant",
+      content:
+        "I completed the request, but the final answer could not be synthesized from the model response.",
+    },
+    {
+      role: "user",
+      content: "what is the server ip?",
+    },
+  ]);
+
+  assert.deepStrictEqual(messages, [
+    {
+      role: "user",
+      content: "what is the server ip?",
     },
   ]);
 });
