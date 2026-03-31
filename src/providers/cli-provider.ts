@@ -609,12 +609,12 @@ function buildPromptWithTools(prompt: string, tools: UnifiedToolDefinition[]): s
     "",
     "TOOL: messages are outputs from previous tool calls.",
     "When TOOL: messages are present and no more tools are needed, answer the user in output_text.",
-    'Do not copy placeholder/example text like "Reply to the user directly." into output_text.',
+    "Do not copy placeholder or example text into output_text.",
     "",
     "If a tool is needed, respond ONLY with valid JSON in this exact shape:",
     '{"output_text":"","tool_calls":[{"id":"call_1","name":"tool_name","arguments":"{\\"key\\":\\"value\\"}"}],"finish_reason":"tool_calls"}',
     "",
-    'If no tool is needed, respond ONLY with valid JSON: {"output_text":"...","finish_reason":"stop"}',
+    'If no tool is needed, respond ONLY with valid JSON containing a real user-facing answer in output_text and "finish_reason":"stop".',
   ].join("\n");
 }
 
