@@ -16,43 +16,7 @@ export function buildPrompt(messages: ChatMessage[]): string {
 }
 
 export function extractTextContent(content: unknown): string {
-  if (typeof content === "string") {
-    return content;
-  }
-
-  if (Array.isArray(content)) {
-    const parts = content
-      .map((item) => {
-        if (typeof item === "string") {
-          return item;
-        }
-
-        if (item && typeof item === "object") {
-          const maybeText = (item as Record<string, unknown>).text;
-          if (typeof maybeText === "string") {
-            return maybeText;
-          }
-
-          const maybeInputText = (item as Record<string, unknown>).input_text;
-          if (typeof maybeInputText === "string") {
-            return maybeInputText;
-          }
-        }
-
-        return "";
-      })
-      .filter(Boolean);
-    return parts.join("\n");
-  }
-
-  if (content && typeof content === "object") {
-    const textField = (content as Record<string, unknown>).text;
-    if (typeof textField === "string") {
-      return textField;
-    }
-  }
-
-  return "";
+  return collectTextSegments(content, 0, new WeakSet<object>()).join("\n");
 }
 
 export function extractTextContentOrJson(content: unknown): string {
@@ -74,4 +38,60 @@ export function extractTextContentOrJson(content: unknown): string {
   } catch {
     return String(content);
   }
+}
+
+function collectTextSegments(
+  value: unknown,
+  depth: number,
+  seen: WeakSet<object>,
+): string[] {
+  if (depth > 8 || value === null || value === undefined) {
+    return [];
+  }
+
+  if (typeof value === "string") {
+    return value ? [value] : [];
+  }
+
+  if (Array.isArray(value)) {
+    return dedupeTextSegments(
+      value.flatMap((item) => collectTextSegments(item, depth + 1, seen)),
+    );
+  }
+
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+
+  if (seen.has(value)) {
+    return [];
+  }
+  seen.add(value);
+
+  const record = value as Record<string, unknown>;
+  return dedupeTextSegments(
+    [
+      record.text,
+      record.input_text,
+      record.output_text,
+      record.content,
+      record.value,
+    ].flatMap((item) => collectTextSegments(item, depth + 1, seen)),
+  );
+}
+
+function dedupeTextSegments(parts: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+
+  return out;
 }

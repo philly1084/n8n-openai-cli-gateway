@@ -10,6 +10,7 @@ import type {
   UnifiedRequest,
 } from "../types";
 import { normalizeAssistantResult } from "../utils/assistant-output";
+import { extractTextContent } from "../utils/prompt";
 import type { Provider } from "./provider";
 
 const DEFAULT_TIMEOUT_MS = 240000;
@@ -509,51 +510,47 @@ function extractMessageText(
 }
 
 function extractTextCandidate(content: unknown): string {
+  return extractTextCandidateRecursive(content, 0);
+}
+
+function extractTextCandidateRecursive(content: unknown, depth: number): string {
+  if (depth > 8 || content === null || content === undefined) {
+    return "";
+  }
+
   if (typeof content === "string") {
     return content.trim();
   }
 
-  if (content && typeof content === "object" && !Array.isArray(content)) {
-    const record = content as Record<string, unknown>;
-    const direct = [
-      record.text,
-      record.content,
-      record.output_text,
-      record.refusal,
-    ];
-    for (const candidate of direct) {
-      if (typeof candidate === "string" && candidate.trim()) {
-        return candidate.trim();
-      }
-    }
+  const directText = extractTextContent(content).trim();
+  if (directText) {
+    return directText;
   }
 
-  if (!Array.isArray(content)) {
+  if (Array.isArray(content)) {
+    const parts = content
+      .map((item) => extractTextCandidateRecursive(item, depth + 1))
+      .filter(Boolean);
+    return parts.join("\n\n").trim();
+  }
+
+  if (!content || typeof content !== "object") {
     return "";
   }
 
-  const parts: string[] = [];
-  for (const item of content) {
-    if (!item || typeof item !== "object") {
-      continue;
-    }
+  const record = content as Record<string, unknown>;
+  if (typeof record.refusal === "string" && record.refusal.trim()) {
+    return record.refusal.trim();
+  }
 
-    const record = item as Record<string, unknown>;
-    if (typeof record.text === "string" && record.text.trim()) {
-      parts.push(record.text.trim());
-      continue;
-    }
-
-    if (
-      record.type === "output_text" &&
-      typeof record.text === "string" &&
-      record.text.trim()
-    ) {
-      parts.push(record.text.trim());
+  for (const candidate of [record.message, record.response]) {
+    const extracted = extractTextCandidateRecursive(candidate, depth + 1);
+    if (extracted) {
+      return extracted;
     }
   }
 
-  return parts.join("\n\n").trim();
+  return "";
 }
 
 function normalizeFinishReason(

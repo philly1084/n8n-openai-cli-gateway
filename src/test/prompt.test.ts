@@ -20,3 +20,21 @@ test("extractTextContentOrJson still prefers textual content blocks", () => {
   const payload = [{ type: "input_text", input_text: "server healthy" }];
   assert.equal(extractTextContentOrJson(payload), "server healthy");
 });
+
+test("extractTextContent unwraps nested output_text blocks", () => {
+  const payload = [
+    {
+      type: "message",
+      content: [
+        {
+          type: "output_text",
+          text: {
+            value: "final synthesized answer",
+          },
+        },
+      ],
+    },
+  ];
+
+  assert.equal(extractTextContent(payload), "final synthesized answer");
+});

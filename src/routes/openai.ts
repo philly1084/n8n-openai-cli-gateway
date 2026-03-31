@@ -1057,7 +1057,7 @@ function normalizeChatMessages(raw: unknown[]): ChatMessage[] {
   return messages;
 }
 
-function normalizeResponsesInput(raw: unknown, depth = 0): ChatMessage[] {
+export function normalizeResponsesInput(raw: unknown, depth = 0): ChatMessage[] {
   if (depth > 10) return [];
 
   if (typeof raw === "string") {
@@ -1081,7 +1081,7 @@ function normalizeResponsesInput(raw: unknown, depth = 0): ChatMessage[] {
   }
 
   const record = raw as Record<string, unknown>;
-  const role = asRole(record.role) || "user";
+  const role = inferResponsesRole(record);
 
   if (record.type === "input_text" && typeof record.text === "string") {
     return [{ role: "user", content: record.text }];
@@ -1193,6 +1193,30 @@ function asRole(value: unknown): ChatMessage["role"] | undefined {
   return undefined;
 }
 
+function inferResponsesRole(record: Record<string, unknown>): ChatMessage["role"] {
+  const explicitRole = asRole(record.role);
+  if (explicitRole) {
+    return explicitRole;
+  }
+
+  if (record.type === "function_call_output" || record.type === "tool_result") {
+    return "tool";
+  }
+
+  if (record.type === "function_call") {
+    return "assistant";
+  }
+
+  if (
+    hasToolContext(record.tool_calls ?? record.tool_call ?? record.function_call) ||
+    looksLikeAssistantResponseContent(record.content)
+  ) {
+    return "assistant";
+  }
+
+  return "user";
+}
+
 function mergeMessageContent(content: string, extra: string): string {
   const base = content.trim();
   const appended = extra.trim();
@@ -1225,6 +1249,47 @@ function normalizeMessageContentForRole(
     ...explicitToolCalls,
   ]);
   return mergeMessageContent(parsed.outputText, renderToolCallContext(combinedToolCalls));
+}
+
+function hasToolContext(value: unknown): boolean {
+  return normalizeToolCallContext(value).length > 0;
+}
+
+function looksLikeAssistantResponseContent(value: unknown, depth = 0): boolean {
+  if (depth > 8 || value === null || value === undefined) {
+    return false;
+  }
+
+  if (Array.isArray(value)) {
+    return value.some((item) => looksLikeAssistantResponseContent(item, depth + 1));
+  }
+
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+  const type = typeof record.type === "string" ? record.type : "";
+  if (
+    type === "output_text" ||
+    type === "text" ||
+    type === "message" ||
+    type === "output_message"
+  ) {
+    return true;
+  }
+
+  if (
+    (typeof record.text === "string" && record.text.trim()) ||
+    (typeof record.output_text === "string" && record.output_text.trim()) ||
+    (typeof record.content === "string" && record.content.trim())
+  ) {
+    return true;
+  }
+
+  return [record.text, record.output_text, record.content].some((item) =>
+    looksLikeAssistantResponseContent(item, depth + 1),
+  );
 }
 
 function extractToolCallContext(value: unknown): string {
@@ -2115,9 +2180,11 @@ function logBlankAssistantResult(
       provider_response_id: debug.responseId,
       provider_finish_reason: debug.finishReason,
       provider_message: debug.message,
+      provider_message_content_shape: debug.messageContentShape,
       provider_executed_tools: debug.executedTools,
       provider_reasoning: debug.reasoning,
       provider_x_groq: debug.xGroq,
+      provider_payload_keys: debug.payloadKeys,
     },
     "Provider returned a blank assistant completion.",
   );
@@ -2127,9 +2194,11 @@ function extractProviderDebugData(payload: unknown): {
   responseId?: string;
   finishReason?: string;
   message?: Record<string, unknown>;
+  messageContentShape?: unknown;
   xGroq?: Record<string, unknown>;
   executedTools?: unknown[];
   reasoning?: unknown;
+  payloadKeys?: string[];
 } {
   if (!payload || typeof payload !== "object") {
     return {};
@@ -2160,8 +2229,36 @@ function extractProviderDebugData(payload: unknown): {
     responseId: typeof record.id === "string" ? record.id : undefined,
     finishReason: typeof choice?.finish_reason === "string" ? choice.finish_reason : undefined,
     message,
+    messageContentShape: summarizeContentShape(message?.content),
     xGroq,
     executedTools,
     reasoning,
+    payloadKeys: Object.keys(record).slice(0, 20),
+  };
+}
+
+function summarizeContentShape(value: unknown): unknown {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value === "string") {
+    return "string";
+  }
+
+  if (Array.isArray(value)) {
+    return value.slice(0, 10).map((item) => summarizeContentShape(item));
+  }
+
+  if (!value || typeof value !== "object") {
+    return typeof value;
+  }
+
+  const record = value as Record<string, unknown>;
+  const type = typeof record.type === "string" ? record.type : "object";
+  const keys = Object.keys(record).slice(0, 10);
+  return {
+    type,
+    keys,
   };
 }

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { ChatMessage } from "../types";
-import { getSessionSignature } from "../routes/openai";
+import { getSessionSignature, normalizeResponsesInput } from "../routes/openai";
 
 test("getSessionSignature prefers explicit session identifiers when available", () => {
   const messages: ChatMessage[] = [
@@ -32,4 +32,25 @@ test("getSessionSignature falls back to prompt content when no session id is pre
   ];
 
   assert.notEqual(getSessionSignature(baseMessages), getSessionSignature(changedMessages));
+});
+
+test("normalizeResponsesInput infers assistant role for output_text messages without role", () => {
+  const messages = normalizeResponsesInput({
+    type: "message",
+    content: [
+      {
+        type: "output_text",
+        text: {
+          value: "Tool work completed successfully.",
+        },
+      },
+    ],
+  });
+
+  assert.deepStrictEqual(messages, [
+    {
+      role: "assistant",
+      content: "Tool work completed successfully.",
+    },
+  ]);
 });
