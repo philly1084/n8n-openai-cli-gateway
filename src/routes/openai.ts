@@ -87,6 +87,161 @@ function findMetadataString(
   return undefined;
 }
 
+function resolveFrontendToolAllowlist(metadata?: Record<string, unknown>): Set<string> {
+  const candidateItems = collectFrontendToolCandidateItems(metadata, [
+    "toolCandidates",
+    "candidateTools",
+    "candidate_tools",
+    "allowedTools",
+    "allowed_tools",
+  ]);
+
+  const allowedNames = new Set<string>();
+  for (const item of candidateItems) {
+    const name = extractFrontendToolCandidateName(item);
+    if (name) {
+      allowedNames.add(name.toLowerCase());
+    }
+  }
+
+  return allowedNames;
+}
+
+function collectFrontendToolCandidateItems(
+  metadata: Record<string, unknown> | undefined,
+  keys: string[],
+): unknown[] {
+  if (!metadata || typeof metadata !== "object") {
+    return [];
+  }
+
+  const directItems = collectFrontendToolCandidateItemsFromRecord(metadata, keys);
+  if (directItems.length > 0) {
+    return directItems;
+  }
+
+  const nestedMetadata =
+    metadata.metadata && typeof metadata.metadata === "object"
+      ? (metadata.metadata as Record<string, unknown>)
+      : undefined;
+  if (!nestedMetadata) {
+    return [];
+  }
+
+  return collectFrontendToolCandidateItemsFromRecord(nestedMetadata, keys);
+}
+
+function collectFrontendToolCandidateItemsFromRecord(
+  record: Record<string, unknown>,
+  keys: string[],
+): unknown[] {
+  for (const key of keys) {
+    const value = record[key];
+    const items = normalizeFrontendToolCandidateItems(value);
+    if (items.length > 0) {
+      return items;
+    }
+  }
+
+  return [];
+}
+
+function normalizeFrontendToolCandidateItems(value: unknown): unknown[] {
+  if (Array.isArray(value)) {
+    return value;
+  }
+
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+
+  const record = value as Record<string, unknown>;
+  if (Array.isArray(record.tools)) {
+    return record.tools;
+  }
+  if (Array.isArray(record.functions)) {
+    return record.functions;
+  }
+  if (Array.isArray(record.items)) {
+    return record.items;
+  }
+  if (Array.isArray(record.candidates)) {
+    return record.candidates;
+  }
+
+  return [];
+}
+
+function extractFrontendToolCandidateName(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const fnRecord =
+    record.function && typeof record.function === "object"
+      ? (record.function as Record<string, unknown>)
+      : undefined;
+  const nestedToolRecord =
+    record.tool && typeof record.tool === "object"
+      ? (record.tool as Record<string, unknown>)
+      : undefined;
+
+  return firstNonEmptyString(
+    record.name,
+    record.functionName,
+    record.function_name,
+    record.toolName,
+    record.tool_name,
+    fnRecord?.name,
+    nestedToolRecord?.name,
+  );
+}
+
+function filterToolsByFrontendAllowlist(
+  tools: UnifiedToolDefinition[],
+  allowedToolNames: Set<string>,
+  logWarn: (payload: Record<string, unknown>, message: string) => void,
+  model: string,
+  route: string,
+  source: "request" | "cache",
+): UnifiedToolDefinition[] {
+  if (allowedToolNames.size === 0 || tools.length === 0) {
+    return tools;
+  }
+
+  const filteredTools: UnifiedToolDefinition[] = [];
+  const droppedToolNames: string[] = [];
+
+  for (const tool of tools) {
+    const toolName = tool.function.name;
+    if (allowedToolNames.has(toolName.toLowerCase())) {
+      filteredTools.push(tool);
+      continue;
+    }
+    droppedToolNames.push(toolName);
+  }
+
+  if (droppedToolNames.length > 0) {
+    logWarn(
+      {
+        model,
+        route,
+        source,
+        allowedToolNames: [...allowedToolNames],
+        droppedToolNames,
+      },
+      "Filtered tools against frontend allowlist.",
+    );
+  }
+
+  return filteredTools;
+}
+
 interface OpenAiRoutesOptions {
   registry: ProviderRegistry;
   n8nApiKeys: Set<string>;
@@ -196,7 +351,17 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
     }
 
     const rawTools = body.tools ?? body.functions ?? [];
-    const tools = normalizeTools(rawTools);
+    const frontendAllowedToolNames = resolveFrontendToolAllowlist(
+      body as Record<string, unknown>,
+    );
+    let tools = filterToolsByFrontendAllowlist(
+      normalizeTools(rawTools),
+      frontendAllowedToolNames,
+      app.log.warn.bind(app.log),
+      body.model,
+      "/responses",
+      "request",
+    );
     if (tools.length === 0 && rawTools.length > 0) {
       app.log.warn(
         {
@@ -213,7 +378,16 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
     } else if (messages.length > 2) {
       const cachedTools = multiTurnToolsCache.get(sessionSig);
       if (cachedTools && cachedTools.length > 0) {
-        tools.push(...cachedTools);
+        tools.push(
+          ...filterToolsByFrontendAllowlist(
+            cachedTools,
+            frontendAllowedToolNames,
+            app.log.warn.bind(app.log),
+            body.model,
+            "/responses",
+            "cache",
+          ),
+        );
         app.log.debug(
           { model: body.model, sessionSig, cachedToolsCount: cachedTools.length },
           "Restored multi-turn tools from cache for /responses request.",
@@ -561,7 +735,17 @@ async function handleChatCompletionsRequest(
   }
 
   const rawTools = body.tools ?? body.functions ?? [];
-  const tools = normalizeTools(rawTools);
+  const frontendAllowedToolNames = resolveFrontendToolAllowlist(
+    body as Record<string, unknown>,
+  );
+  let tools = filterToolsByFrontendAllowlist(
+    normalizeTools(rawTools),
+    frontendAllowedToolNames,
+    reply.log.warn.bind(reply.log),
+    body.model,
+    "/chat/completions",
+    "request",
+  );
   if (tools.length === 0 && rawTools.length > 0) {
     reply.log.warn(
       {
@@ -577,7 +761,16 @@ async function handleChatCompletionsRequest(
   } else if (messages.length > 2) {
     const cachedTools = multiTurnToolsCache.get(sessionSig);
     if (cachedTools && cachedTools.length > 0) {
-      tools.push(...cachedTools);
+      tools.push(
+        ...filterToolsByFrontendAllowlist(
+          cachedTools,
+          frontendAllowedToolNames,
+          reply.log.warn.bind(reply.log),
+          body.model,
+          "/chat/completions",
+          "cache",
+        ),
+      );
       reply.log.debug(
         { model: body.model, sessionSig, cachedToolsCount: cachedTools.length },
         "Restored multi-turn tools from cache for /chat/completions request.",

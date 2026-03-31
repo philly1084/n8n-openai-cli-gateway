@@ -355,14 +355,14 @@ function buildPrompt(request: GatewayRequest): string {
     "Do not use any internal tools, shell commands, filesystem access, web browsing, or MCP tools.",
     "TOOL: messages are outputs from previous tool calls.",
     "When TOOL: messages are present and no more tools are needed, synthesize the final answer for the user in output_text.",
-    'Do not copy placeholder/example text like "Reply to the user directly." into output_text.',
+    'Do not copy placeholder/example text like "__EXAMPLE_FINAL_ANSWER__" into output_text.',
     forcedToolName
       ? `tool_choice is set. You MUST call exactly this function name: ${forcedToolName}.`
       : "If the user asks to use/call a tool and AVAILABLE_TOOLS_JSON is non-empty, you MUST return a tool_calls response.",
     "If a tool is needed, return raw JSON only:",
     '{"output_text":"","tool_calls":[{"id":"call_1","name":"tool_name","arguments":{"arg":"value"}}],"finish_reason":"tool_calls"}',
     "If no tool is needed, return raw JSON only:",
-    '{"output_text":"Reply to the user directly.","finish_reason":"stop"}',
+    '{"output_text":"__EXAMPLE_FINAL_ANSWER__","finish_reason":"stop"}',
   ].join("\n");
 
   return [messageText, "", "AVAILABLE_TOOLS_JSON:", toolJson, "", instruction].join(

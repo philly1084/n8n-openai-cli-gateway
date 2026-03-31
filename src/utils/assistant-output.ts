@@ -16,6 +16,7 @@ const PLACEHOLDER_OUTPUTS = [
   "[assistant reply]",
   "assistant reply",
   "reply to the user directly.",
+  "__example_final_answer__",
   "provide your actual helpful response here.",
 ] as const;
 
