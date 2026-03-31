@@ -69,26 +69,32 @@ if ! grep -q '^  - id: groq-api$' "$providers_file"; then
       - id: groq/compound
         providerModel: groq/compound
         fallbackModels:
+          - gpt-5.4
+          - kimi-for-coding
           - openai/gpt-oss-20b
-          - llama-3.3-70b-versatile
       - id: groq/compound-mini
         providerModel: groq/compound-mini
         fallbackModels:
+          - gpt-5.4
+          - kimi-for-coding
           - openai/gpt-oss-20b
       - id: openai/gpt-oss-120b
         providerModel: openai/gpt-oss-120b
         fallbackModels:
+          - gpt-5.4
+          - kimi-for-coding
           - openai/gpt-oss-20b
-          - llama-3.3-70b-versatile
       - id: openai/gpt-oss-20b
         providerModel: openai/gpt-oss-20b
         fallbackModels:
+          - gpt-5.4
+          - kimi-for-coding
           - llama-3.1-8b-instant
       - id: llama-3.3-70b-versatile
         providerModel: llama-3.3-70b-versatile
         fallbackModels:
-          - openai/gpt-oss-20b
-          - llama-3.1-8b-instant
+          - gpt-5.4
+          - kimi-for-coding
       - id: llama-3.1-8b-instant
         providerModel: llama-3.1-8b-instant
       # Preview models from Groq docs. Uncomment if you want them exposed.
@@ -102,6 +108,13 @@ if ! grep -q '^  - id: groq-api$' "$providers_file"; then
         - -lc
         - |
           REQUEST_JSON="$(cat)"
+          HAS_TOOLS="$(
+            printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const req=JSON.parse(d);const tools=Array.isArray(req.tools)?req.tools:[];process.stdout.write(tools.length>0?"1":"0");}catch{process.stdout.write("0");}});'
+          )"
+          if [ "$HAS_TOOLS" = "1" ]; then
+            echo "Groq CLI provider does not reliably support gateway-managed tool turns. Retry with fallback." >&2
+            exit 86
+          fi
           PAYLOAD="$(
             printf "%s" "$REQUEST_JSON" | node -e 'let d="";const maxChars=Number(process.env.GROQ_MAX_PROMPT_CHARS||120000);process.stdin.on("data",c=>d+=c).on("end",()=>{const norm=v=>typeof v==="string"?v:JSON.stringify(v??"");try{const req=JSON.parse(d);const rawMsgs=Array.isArray(req.messages)?req.messages:[];const allowedRoles=new Set(["system","user","assistant","tool"]);const msgs=rawMsgs.map(m=>{const role=allowedRoles.has(String(m&&m.role||""))?String(m.role):"user";const content=norm(m&&Object.prototype.hasOwnProperty.call(m,"content")?m.content:"").trim();if(!content)return null;const out={role,content};if(role==="tool"&&m&&typeof m==="object"&&typeof m.tool_call_id==="string"&&m.tool_call_id){out.tool_call_id=m.tool_call_id;}if(role==="assistant"&&m&&typeof m==="object"&&Array.isArray(m.tool_calls)&&m.tool_calls.length>0){out.tool_calls=m.tool_calls;}return out;}).filter(Boolean);let total=0;const kept=[];for(let i=msgs.length-1;i>=0;i--){const msg=msgs[i];const cost=msg.content.length+msg.role.length+32;if(kept.length>0&&total+cost>maxChars) continue;kept.unshift(msg);total+=cost;}const firstSystem=msgs.find(m=>m.role==="system");if(firstSystem&&!kept.some(m=>m.role==="system")&&(total+firstSystem.content.length+32)<=maxChars){kept.unshift(firstSystem);total+=firstSystem.content.length+32;}if(kept.length===0){const fallback=(typeof req.prompt==="string"?req.prompt:norm(req.prompt)).trim();kept.push({role:"user",content:fallback.slice(-maxChars)||"Hello"});}process.stdout.write(JSON.stringify({model:"{{provider_model}}",messages:kept,stream:false}));}catch{process.stdout.write(JSON.stringify({model:"{{provider_model}}",messages:[{role:"user",content:"Hello"}],stream:false}));}});'
           )"
