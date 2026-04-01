@@ -22,6 +22,29 @@ const DEFAULT_DISCOVERY_EXCLUDES = [
   "*tts*",
   "*guard*",
 ];
+const REMOTE_SESSION_METADATA_KEYS = [
+  "session_id",
+  "sessionId",
+  "conversation_id",
+  "conversationId",
+  "thread_id",
+  "threadId",
+  "previous_response_id",
+  "previousResponseId",
+  "response_id",
+  "responseId",
+] as const;
+const REMOTE_STRING_METADATA_KEYS = [
+  ...REMOTE_SESSION_METADATA_KEYS,
+  "clientSurface",
+  "taskType",
+  "stickyRemote",
+  "lastRemoteObjective",
+] as const;
+const REMOTE_BOOLEAN_METADATA_KEYS = [
+  "remoteBuildAutonomyApproved",
+  "frontendRemoteBuildAutonomyApproved",
+] as const;
 
 type ApiMessage = {
   role: "system" | "user" | "assistant" | "tool";
@@ -99,6 +122,12 @@ export class OpenAiCompatibleProvider implements Provider {
     copyStringMetadata(body, metadata, "user");
     copyStringMetadata(body, metadata, "reasoning_format");
     copyBooleanMetadata(body, metadata, "include_reasoning");
+    copyStringMetadataKeys(body, metadata, REMOTE_STRING_METADATA_KEYS);
+
+    const forwardedMetadata = extractForwardedMetadata(metadata);
+    if (forwardedMetadata) {
+      body.metadata = forwardedMetadata;
+    }
 
     const groqReasoningEffort = normalizeGroqReasoningEffort(
       this.config.baseUrl,
@@ -655,7 +684,7 @@ function copyNumberMetadata(
   metadata: UnifiedRequest["metadata"],
   key: string,
 ): void {
-  const value = metadata && key in metadata ? metadata[key] : undefined;
+  const value = readMetadataValue(metadata, key);
   if (typeof value === "number") {
     target[key] = value;
   }
@@ -666,7 +695,7 @@ function copyIntegerMetadata(
   metadata: UnifiedRequest["metadata"],
   key: string,
 ): void {
-  const value = metadata && key in metadata ? metadata[key] : undefined;
+  const value = readMetadataValue(metadata, key);
   if (typeof value === "number" && Number.isInteger(value)) {
     target[key] = value;
   }
@@ -677,7 +706,7 @@ function copyStringMetadata(
   metadata: UnifiedRequest["metadata"],
   key: string,
 ): void {
-  const value = metadata && key in metadata ? metadata[key] : undefined;
+  const value = readMetadataValue(metadata, key);
   if (typeof value === "string" && value.trim()) {
     target[key] = value;
   }
@@ -688,10 +717,77 @@ function copyBooleanMetadata(
   metadata: UnifiedRequest["metadata"],
   key: string,
 ): void {
-  const value = metadata && key in metadata ? metadata[key] : undefined;
+  const value = readMetadataValue(metadata, key);
   if (typeof value === "boolean") {
     target[key] = value;
   }
+}
+
+function copyStringMetadataKeys(
+  target: Record<string, unknown>,
+  metadata: UnifiedRequest["metadata"],
+  keys: readonly string[],
+): void {
+  for (const key of keys) {
+    copyStringMetadata(target, metadata, key);
+  }
+}
+
+function extractForwardedMetadata(
+  metadata: UnifiedRequest["metadata"],
+): Record<string, unknown> | undefined {
+  const out: Record<string, unknown> = {};
+
+  for (const key of REMOTE_STRING_METADATA_KEYS) {
+    const value = readMetadataValue(metadata, key);
+    if (typeof value === "string" && value.trim()) {
+      out[key] = value.trim();
+    }
+  }
+
+  for (const key of REMOTE_BOOLEAN_METADATA_KEYS) {
+    const value = readMetadataValue(metadata, key);
+    if (typeof value === "boolean") {
+      out[key] = value;
+    }
+  }
+
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function readMetadataValue(
+  metadata: UnifiedRequest["metadata"],
+  key: string,
+): unknown {
+  if (!metadata || typeof metadata !== "object") {
+    return undefined;
+  }
+
+  if (key in metadata) {
+    return metadata[key];
+  }
+
+  const nestedMetadata = getNestedMetadata(metadata);
+  if (nestedMetadata && key in nestedMetadata) {
+    return nestedMetadata[key];
+  }
+
+  return undefined;
+}
+
+function getNestedMetadata(
+  metadata: UnifiedRequest["metadata"],
+): Record<string, unknown> | undefined {
+  if (!metadata || typeof metadata !== "object") {
+    return undefined;
+  }
+
+  const nested = metadata.metadata;
+  if (!nested || typeof nested !== "object") {
+    return undefined;
+  }
+
+  return nested as Record<string, unknown>;
 }
 
 function normalizeGroqReasoningEffort(

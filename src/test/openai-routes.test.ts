@@ -38,6 +38,28 @@ test("getSessionSignature falls back to prompt content when no session id is pre
   assert.notEqual(getSessionSignature(baseMessages), getSessionSignature(changedMessages));
 });
 
+test("getSessionSignature stays stable across short approval turns when nested thread metadata is present", () => {
+  const originalTurn: ChatMessage[] = [
+    { role: "user", content: "Build the app remotely." },
+  ];
+  const approvalTurn: ChatMessage[] = [
+    { role: "user", content: "you can use remote command" },
+  ];
+
+  const originalSig = getSessionSignature(originalTurn, {
+    metadata: {
+      thread_id: "thread-123",
+    },
+  });
+  const approvalSig = getSessionSignature(approvalTurn, {
+    metadata: {
+      thread_id: "thread-123",
+    },
+  });
+
+  assert.equal(originalSig, approvalSig);
+});
+
 test("normalizeResponsesInput infers assistant role for output_text messages without role", () => {
   const messages = normalizeResponsesInput({
     type: "message",
