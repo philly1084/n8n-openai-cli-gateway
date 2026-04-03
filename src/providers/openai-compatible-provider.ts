@@ -105,6 +105,11 @@ export class OpenAiCompatibleProvider implements Provider {
         `Model ${providerModel} does not reliably support gateway-managed tool calling. Retry with a fallback model.`,
       );
     }
+    if (shouldRejectDeepSeekReasonerToolTurn(this.config.baseUrl, providerModel, request)) {
+      throw new Error(
+        `Model ${providerModel} requires DeepSeek reasoning_content round-tripping during tool use. Retry with deepseek-chat or another fallback model for tool turns.`,
+      );
+    }
     const body: Record<string, unknown> = {
       model: providerModel,
       messages: buildApiMessages(request.messages, {
@@ -479,6 +484,22 @@ function shouldRejectGroqToolTurn(
 
 function isGroqBaseUrl(baseUrl: string): boolean {
   return /api\.groq\.com/i.test(baseUrl);
+}
+
+function shouldRejectDeepSeekReasonerToolTurn(
+  baseUrl: string,
+  providerModel: string,
+  request: UnifiedRequest,
+): boolean {
+  if (!isDeepSeekBaseUrl(baseUrl)) {
+    return false;
+  }
+
+  return request.tools.length > 0 && providerModel.trim() === "deepseek-reasoner";
+}
+
+function isDeepSeekBaseUrl(baseUrl: string): boolean {
+  return /api\.deepseek\.com/i.test(baseUrl);
 }
 
 function normalizeApiToolCalls(raw: unknown): ProviderToolCall[] {

@@ -501,13 +501,11 @@ data:
           - id: deepseek-chat
             providerModel: deepseek-chat
             fallbackModels:
-              - deepseek-coder
-          - id: deepseek-coder
-            providerModel: deepseek-coder
-            fallbackModels:
-              - deepseek-chat
+              - deepseek-reasoner
           - id: deepseek-reasoner
             providerModel: deepseek-reasoner
+            fallbackModels:
+              - deepseek-chat
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

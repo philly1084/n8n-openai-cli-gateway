@@ -99,3 +99,52 @@ test("OpenAiCompatibleProvider forwards remote session metadata and approval fla
     }
   }
 });
+
+test("OpenAiCompatibleProvider rejects deepseek-reasoner tool turns", async () => {
+  const originalApiKey = process.env.TEST_REMOTE_API_KEY;
+  process.env.TEST_REMOTE_API_KEY = "test-key";
+
+  try {
+    const provider = await OpenAiCompatibleProvider.create({
+      id: "deepseek-api",
+      type: "openai",
+      baseUrl: "https://api.deepseek.com",
+      apiKeyEnv: "TEST_REMOTE_API_KEY",
+      models: [
+        {
+          id: "deepseek-reasoner",
+          providerModel: "deepseek-reasoner",
+        },
+      ],
+    });
+
+    await assert.rejects(
+      provider.run({
+        requestId: "req_2",
+        model: "deepseek-reasoner",
+        providerModel: "deepseek-reasoner",
+        messages: [
+          {
+            role: "user",
+            content: "Use the tool if needed.",
+          },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "check_status",
+            },
+          },
+        ],
+      }),
+      /requires DeepSeek reasoning_content round-tripping during tool use/i,
+    );
+  } finally {
+    if (originalApiKey === undefined) {
+      delete process.env.TEST_REMOTE_API_KEY;
+    } else {
+      process.env.TEST_REMOTE_API_KEY = originalApiKey;
+    }
+  }
+});
