@@ -2,14 +2,24 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { OpenAiCompatibleProvider } from "../providers/openai-compatible-provider";
 
+type CapturedRequestBody = {
+  session_id?: string;
+  thread_id?: string;
+  clientSurface?: string;
+  taskType?: string;
+  metadata?: Record<string, unknown>;
+};
+
 test("OpenAiCompatibleProvider forwards remote session metadata and approval flags", async () => {
   const originalFetch = globalThis.fetch;
   const originalApiKey = process.env.TEST_REMOTE_API_KEY;
-  let capturedBody: Record<string, unknown> | null = null;
+  let capturedBody: CapturedRequestBody = {};
+  let didCaptureBody = false;
 
   process.env.TEST_REMOTE_API_KEY = "test-key";
   globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
-    capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    capturedBody = JSON.parse(String(init?.body ?? "{}")) as CapturedRequestBody;
+    didCaptureBody = true;
     return new Response(
       JSON.stringify({
         choices: [
@@ -66,7 +76,9 @@ test("OpenAiCompatibleProvider forwards remote session metadata and approval fla
     });
 
     assert.equal(result.outputText, "ok");
-    assert.ok(capturedBody);
+    if (!didCaptureBody) {
+      throw new Error("Expected provider request body to be captured.");
+    }
     assert.equal(capturedBody.session_id, "session-123");
     assert.equal(capturedBody.thread_id, "thread-456");
     assert.equal(capturedBody.clientSurface, "chatgpt");
