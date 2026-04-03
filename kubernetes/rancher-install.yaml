@@ -492,8 +492,11 @@ data:
             timeoutMs: 15000
 
       - id: deepseek-api
-        type: cli
+        type: openai
         description: DeepSeek API
+        baseUrl: https://api.deepseek.com
+        apiKeyEnv: DEEPSEEK_API_KEY
+        timeoutMs: 120000
         models:
           - id: deepseek-chat
             providerModel: deepseek-chat
@@ -505,25 +508,6 @@ data:
               - deepseek-chat
           - id: deepseek-reasoner
             providerModel: deepseek-reasoner
-        responseCommand:
-          executable: curl
-          args:
-            - -s
-            - https://api.deepseek.com/chat/completions
-            - -H
-            - "Authorization: Bearer $DEEPSEEK_API_KEY"
-            - -H
-            - "Content-Type: application/json"
-            - -d
-            - |
-              {
-                "model": "{{provider_model}}",
-                "messages": [{"role": "user", "content": "{{prompt}}"}],
-                "temperature": 0.7
-              }
-          input: prompt_stdin
-          output: text_contract_final_line
-          timeoutMs: 120000
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

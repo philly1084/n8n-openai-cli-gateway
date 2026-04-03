@@ -232,8 +232,11 @@ providers:
         providerModel: llama-3.1-8b-instant
 
   - id: deepseek-api
-    type: cli
+    type: openai
     description: DeepSeek API - excellent for coding tasks with free tier
+    baseUrl: https://api.deepseek.com
+    apiKeyEnv: DEEPSEEK_API_KEY
+    timeoutMs: 120000
     models:
       - id: deepseek-chat
         providerModel: deepseek-chat
@@ -245,40 +248,6 @@ providers:
           - deepseek-chat
       - id: deepseek-reasoner
         providerModel: deepseek-reasoner
-    responseCommand:
-      executable: curl
-      args:
-        - -s
-        - https://api.deepseek.com/chat/completions
-        - -H
-        - "Authorization: Bearer $DEEPSEEK_API_KEY"
-        - -H
-        - "Content-Type: application/json"
-        - -d
-        - |
-          {
-            "model": "{{provider_model}}",
-            "messages": [{"role": "user", "content": "{{prompt}}"}],
-            "temperature": 0.7
-          }
-      input: prompt_stdin
-      output: text_contract_final_line
-      timeoutMs: 120000
-    auth:
-      statusCommand:
-        executable: sh
-        args:
-          - -c
-          - |
-            if [ -z "$DEEPSEEK_API_KEY" ]; then
-              echo '{"ok":false,"error":"DEEPSEEK_API_KEY not set"}'
-              exit 1
-            fi
-            curl -s -o /dev/null -w "%{http_code}" \
-              https://api.deepseek.com/models \
-              -H "Authorization: Bearer $DEEPSEEK_API_KEY" | grep -q "200" && \
-              echo '{"ok":true}' || echo '{"ok":false,"error":"Invalid API key"}'
-        timeoutMs: 10000
 
   # ============================================================================
   # FREE IMAGE & MULTIMODAL SERVICES
