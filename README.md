@@ -262,7 +262,8 @@ Environment variables for CLI:
 | `MAX_REQUEST_BODY_SIZE` | `10485760` | Max request body size in bytes (10MB) |
 | `OPENAI_REASONING_EFFORT` | provider default | Default reasoning effort for chat/responses requests |
 | `GROQ_API_KEY` | unset | API key for Groq `type: openai` providers |
-| `KIMI_API_KEY` | unset | API key for Kimi For Coding `type: openai` providers |
+
+Kimi is configured through the local `kimi` CLI in the current examples. It does not use `KIMI_API_KEY`; authenticate once in the provider home by running `kimi` in a TTY and then `/setup`.
 
 ### Reasoning flags
 
