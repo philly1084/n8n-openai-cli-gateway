@@ -226,15 +226,15 @@ data:
 
       - id: kimi-code-cli
         type: openai
-        description: Kimi API adapter via Moonshot Open Platform
-        baseUrl: https://api.moonshot.ai/v1
+        description: Kimi For Coding API adapter
+        baseUrl: https://api.kimi.com/coding/v1
         apiKeyEnv: KIMI_API_KEY
         timeoutMs: 240000
         models:
           - id: kimi-for-coding
-            providerModel: kimi-k2-turbo-preview
+            providerModel: kimi-for-coding
           - id: kimi-k2-turbo-preview
-            providerModel: kimi-k2-turbo-preview
+            providerModel: kimi-for-coding
 
       - id: groq-api
         type: cli
@@ -472,11 +472,6 @@ spec:
                   name: n8n-openai-cli-gateway-secrets
                   key: groqApiKey
             - name: KIMI_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: n8n-openai-cli-gateway-secrets
-                  key: kimiApiKey
-            - name: MOONSHOT_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: n8n-openai-cli-gateway-secrets

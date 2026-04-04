@@ -233,15 +233,15 @@ providers:
 
   - id: kimi-code-cli
     type: openai
-    description: Kimi API adapter via Moonshot Open Platform
-    baseUrl: https://api.moonshot.ai/v1
+    description: Kimi For Coding API adapter
+    baseUrl: https://api.kimi.com/coding/v1
     apiKeyEnv: KIMI_API_KEY
     timeoutMs: 120000
     models:
       - id: kimi-for-coding
-        providerModel: kimi-k2-turbo-preview
+        providerModel: kimi-for-coding
       - id: kimi-k2-turbo-preview
-        providerModel: kimi-k2-turbo-preview
+        providerModel: kimi-for-coding
 
   - id: deepseek-api
     type: openai
