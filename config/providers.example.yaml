@@ -231,6 +231,18 @@ providers:
       - id: llama-3.1-8b-instant
         providerModel: llama-3.1-8b-instant
 
+  - id: kimi-code-cli
+    type: openai
+    description: Kimi API adapter via Moonshot Open Platform
+    baseUrl: https://api.moonshot.ai/v1
+    apiKeyEnv: KIMI_API_KEY
+    timeoutMs: 120000
+    models:
+      - id: kimi-for-coding
+        providerModel: kimi-k2-turbo-preview
+      - id: kimi-k2-turbo-preview
+        providerModel: kimi-k2-turbo-preview
+
   - id: deepseek-api
     type: openai
     description: DeepSeek API - excellent for coding tasks with free tier
