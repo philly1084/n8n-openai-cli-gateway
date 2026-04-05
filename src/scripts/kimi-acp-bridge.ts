@@ -74,6 +74,7 @@ class JsonRpcStdioClient {
   private readonly pending = new Map<
     number,
     {
+      method: string;
       resolve: (value: unknown) => void;
       reject: (error: Error) => void;
       timer: NodeJS.Timeout;
@@ -116,7 +117,7 @@ class JsonRpcStdioClient {
         this.pending.delete(id);
         reject(new Error(`JSON-RPC request timed out: ${method}`));
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { method, resolve, reject, timer });
       try {
         this.send({ jsonrpc: "2.0", id, method, params });
       } catch (error) {
@@ -201,7 +202,11 @@ class JsonRpcStdioClient {
             typeof maybeResponse.error.message === "string"
               ? maybeResponse.error.message
               : "Unknown JSON-RPC error.";
-          pending.reject(new Error(message));
+          const detail =
+            typeof maybeResponse.error.data === "undefined"
+              ? ""
+              : ` data=${normalizeValue(maybeResponse.error.data)}`;
+          pending.reject(new Error(`ACP ${pending.method} failed: ${message}${detail}`));
         } else {
           pending.resolve(maybeResponse.result);
         }
@@ -951,6 +956,7 @@ async function run(): Promise<void> {
       "session/new",
       {
         cwd: getWorkingDirectory(),
+        mcpServers: [],
       },
       requestTimeoutMs,
     );
