@@ -399,8 +399,8 @@ The gateway also accepts `responses` follow-up tool input entries of `type: "fun
 
 ### Gemini provider guidance
 
-- Use `gemini-cli` for reliability (text-only baseline via `text_plain`).
-- Use `gemini-cli-tools` for staged tool-call testing (strict final-line contract via `text_contract_final_line`).
+- Use the dedicated Gemini bridge (`dist/scripts/gemini-cli-bridge.js`) for tool turns.
+- The bridge normalizes Gemini `stream-json` output into the same JSON tool-call contract used by the Codex and Kimi adapters.
 
 ### Image generation provider output
 
