@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import process from "node:process";
-import { normalizeToolName } from "../utils/tools";
+import { parseAssistantPayloadText } from "../utils/assistant-output";
+import { normalizeToolAlias, normalizeToolName } from "../utils/tools";
 import { resolveReasoningEffort } from "../utils/reasoning";
 
 interface GatewayMessage {
@@ -270,7 +271,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function extractAllowedToolNames(request: GatewayRequest): Map<string, string> {
+export function extractAllowedToolNames(request: GatewayRequest): Map<string, string> {
   const out = new Map<string, string>();
   const tools = Array.isArray(request.tools) ? request.tools : [];
   for (const item of tools) {
@@ -286,7 +287,58 @@ function extractAllowedToolNames(request: GatewayRequest): Map<string, string> {
   return out;
 }
 
-function buildPrompt(request: GatewayRequest): string {
+function resolveAllowedToolName(rawName: string, allowedToolNames: Map<string, string>): string {
+  const trimmed = rawName.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  if (allowedToolNames.size === 0) {
+    return trimmed;
+  }
+
+  const direct = allowedToolNames.get(normalizeToolName(trimmed));
+  if (direct) {
+    return direct;
+  }
+
+  const alias = normalizeToolAlias(trimmed);
+  for (const allowedName of allowedToolNames.values()) {
+    if (normalizeToolAlias(allowedName) === alias) {
+      return allowedName;
+    }
+  }
+
+  if (allowedToolNames.size === 1) {
+    return allowedToolNames.values().next().value ?? trimmed;
+  }
+
+  return trimmed;
+}
+
+function firstDefined(...candidates: unknown[]): unknown {
+  for (const candidate of candidates) {
+    if (candidate !== undefined) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function firstNonEmptyString(...candidates: unknown[]): string | undefined {
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") {
+      continue;
+    }
+    const trimmed = candidate.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+  return undefined;
+}
+
+export function buildPrompt(request: GatewayRequest): string {
   const promptText =
     typeof request.prompt === "string" && request.prompt.trim()
       ? request.prompt.trim()
@@ -324,6 +376,7 @@ function buildPrompt(request: GatewayRequest): string {
       : "";
 
   const toolJson = JSON.stringify(tools, null, 2);
+  const toolNames = [...extractAllowedToolNames(request).values()].join(", ");
   const instruction = [
     "You are connected through an OpenAI-compatible gateway.",
     "The tools listed in AVAILABLE_TOOLS_JSON are the only tools you can use in this turn.",
@@ -334,16 +387,25 @@ function buildPrompt(request: GatewayRequest): string {
     "Do not copy placeholder or example text into output_text.",
     forcedToolName
       ? `tool_choice is set. You MUST call exactly this function name: ${forcedToolName}.`
-      : "If the user asks to use/call a tool and AVAILABLE_TOOLS_JSON is non-empty, you MUST return a tool_calls response.",
+      : "Use tools only when they are actually needed for external actions or data.",
+    "When calling a tool, the tool name MUST exactly match one value from AVAILABLE_TOOL_NAMES.",
     "Return raw JSON only. Do not wrap JSON in markdown or code fences.",
     "If a tool is needed, respond ONLY with JSON:",
     '{"output_text":"","tool_calls":[{"id":"call_1","name":"tool_name","arguments":{"arg":"value"}}],"finish_reason":"tool_calls"}',
     'If no tool is needed, respond ONLY with valid JSON containing a real user-facing answer in output_text and "finish_reason":"stop".',
   ].join("\n");
 
-  return [messageText, "", "AVAILABLE_TOOLS_JSON:", toolJson, "", instruction].join(
-    "\n",
-  );
+  return [
+    messageText,
+    "",
+    "AVAILABLE_TOOLS_JSON:",
+    toolJson,
+    "",
+    "AVAILABLE_TOOL_NAMES:",
+    toolNames || "(none)",
+    "",
+    instruction,
+  ].join("\n");
 }
 
 function isFinishReason(value: unknown): value is FinishReason {
@@ -355,18 +417,67 @@ function isFinishReason(value: unknown): value is FinishReason {
   );
 }
 
-function asToolCallArguments(value: unknown): string {
-  if (typeof value === "string") {
+function sanitizeValue(value: unknown, depth = 0): unknown {
+  if (depth > 20) {
     return value;
   }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeValue(item, depth + 1));
+  }
+
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  const out: Record<string, unknown> = {};
+  for (const [rawKey, rawVal] of Object.entries(value as Record<string, unknown>)) {
+    const trimmedKey = rawKey.trim();
+    out[trimmedKey || rawKey] = sanitizeValue(rawVal, depth + 1);
+  }
+  return out;
+}
+
+function asToolCallArguments(value: unknown): string {
+  if (typeof value === "string") {
+    let trimmed = value.trim();
+    if (!trimmed) {
+      return "{}";
+    }
+
+    if (trimmed.startsWith("```json")) {
+      trimmed = trimmed.replace(/^```json\s*/i, "").replace(/\s*```$/, "").trim();
+    } else if (trimmed.startsWith("```")) {
+      trimmed = trimmed.replace(/^```\s*/, "").replace(/\s*```$/, "").trim();
+    }
+
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        return JSON.stringify(sanitizeValue(JSON.parse(trimmed)));
+      } catch {
+        try {
+          const repaired = trimmed
+            .replace(/,\s*([}\]])/g, "$1")
+            .replace(/\r/g, "\\r")
+            .replace(/\n/g, "\\n")
+            .replace(/\t/g, "\\t");
+          return JSON.stringify(sanitizeValue(JSON.parse(repaired)));
+        } catch {
+          return trimmed;
+        }
+      }
+    }
+
+    return trimmed;
+  }
   try {
-    return JSON.stringify(value ?? {});
+    return JSON.stringify(sanitizeValue(value ?? {}));
   } catch {
     return "{}";
   }
 }
 
-function normalizeToolCallsFromContract(raw: unknown): NonNullable<JsonContract["tool_calls"]> {
+export function normalizeToolCallsFromContract(raw: unknown): NonNullable<JsonContract["tool_calls"]> {
   if (!Array.isArray(raw) || raw.length === 0) {
     return [];
   }
@@ -378,18 +489,35 @@ function normalizeToolCallsFromContract(raw: unknown): NonNullable<JsonContract[
     }
 
     const fn = isRecord(entry.function) ? entry.function : undefined;
-    const name =
-      (typeof entry.name === "string" && entry.name) ||
-      (fn && typeof fn.name === "string" ? fn.name : "");
+    const functionCall = isRecord(entry.functionCall)
+      ? entry.functionCall
+      : isRecord(entry.function_call)
+        ? entry.function_call
+        : undefined;
+    const merged = functionCall ?? fn;
+    const name = firstNonEmptyString(
+      entry.name,
+      entry.tool_name,
+      entry.toolName,
+      merged?.name,
+    );
     if (!name) {
       continue;
     }
 
     const id =
-      typeof entry.id === "string" && entry.id
-        ? entry.id
-        : `call_${calls.length + 1}`;
-    const argsRaw = entry.arguments ?? (fn ? fn.arguments : undefined);
+      firstNonEmptyString(entry.id, entry.call_id, entry.tool_id, entry.toolId) ??
+      `call_${calls.length + 1}`;
+    const argsRaw = firstDefined(
+      entry.arguments,
+      entry.args,
+      entry.parameters,
+      entry.input,
+      merged?.arguments,
+      merged?.args,
+      merged?.parameters,
+      merged?.input,
+    );
 
     calls.push({
       id,
@@ -401,12 +529,13 @@ function normalizeToolCallsFromContract(raw: unknown): NonNullable<JsonContract[
   return calls;
 }
 
-function parseJsonContractFromText(raw: string): JsonContract | null {
+export function parseJsonContractFromText(raw: string): JsonContract | null {
   const trimmed = raw.trim();
   if (!trimmed) {
     return null;
   }
 
+  let best: JsonContract | null = null;
   const seen = new Set<string>();
   const queue: string[] = [];
   const push = (value: unknown): void => {
@@ -468,11 +597,41 @@ function parseJsonContractFromText(raw: string): JsonContract | null {
       finish_reason: finishReason,
     };
   };
+  const assistantPayloadToContract = (value: string): JsonContract | null => {
+    const parsed = parseAssistantPayloadText(value);
+    if (!parsed.recognized) {
+      return null;
+    }
 
+    const toolCalls = parsed.toolCalls.map((call, index) => ({
+      id: call.id || `call_${index + 1}`,
+      name: call.name,
+      arguments: asToolCallArguments(call.arguments),
+    }));
+    const finishReason: FinishReason =
+      toolCalls.length > 0
+        ? "tool_calls"
+        : isFinishReason(parsed.finishReason)
+          ? parsed.finishReason
+          : "stop";
+
+    return {
+      output_text: parsed.outputText.trim(),
+      tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+      finish_reason: finishReason,
+    };
+  };
+
+  const assistantPayloadContract = assistantPayloadToContract(trimmed);
+  if (assistantPayloadContract?.tool_calls && assistantPayloadContract.tool_calls.length > 0) {
+    return assistantPayloadContract;
+  }
+  if (assistantPayloadContract) {
+    best = assistantPayloadContract;
+  }
   push(trimmed);
   pushDerived(trimmed);
 
-  let best: JsonContract | null = null;
   for (let i = 0; i < queue.length && i < 80; i += 1) {
     const current = queue[i];
     if (typeof current !== "string") {
@@ -504,14 +663,37 @@ function parseJsonContractFromText(raw: string): JsonContract | null {
       }
     }
 
+    const fallbackContract = assistantPayloadToContract(current);
+    if (fallbackContract) {
+      if (!best) {
+        best = fallbackContract;
+      }
+      if (fallbackContract.tool_calls && fallbackContract.tool_calls.length > 0) {
+        return fallbackContract;
+      }
+    }
+
     if (typeof parsed.response === "string") {
       push(parsed.response);
       pushDerived(parsed.response);
     }
     const maybeMessage = parsed.message;
-    if (isRecord(maybeMessage) && typeof maybeMessage.content === "string") {
-      push(maybeMessage.content);
-      pushDerived(maybeMessage.content);
+    if (isRecord(maybeMessage)) {
+      push(normalizeValue(maybeMessage.content));
+      pushDerived(normalizeValue(maybeMessage.content));
+      push(normalizeValue(maybeMessage));
+      pushDerived(normalizeValue(maybeMessage));
+    }
+
+    for (const entry of Object.values(parsed)) {
+      if (typeof entry === "string") {
+        push(entry);
+        pushDerived(entry);
+      } else if (isRecord(entry)) {
+        const serialized = normalizeValue(entry);
+        push(serialized);
+        pushDerived(serialized);
+      }
     }
   }
 
@@ -786,18 +968,54 @@ async function applyConfigOption(
   state.configOptions = extractConfigOptions(result);
 }
 
+function looksLikeToolPayload(value: Record<string, unknown>): boolean {
+  return (
+    "tool_calls" in value ||
+    "finish_reason" in value ||
+    "function" in value ||
+    "function_call" in value ||
+    "functionCall" in value ||
+    ("type" in value &&
+      (value.type === "function" ||
+        value.type === "function_call" ||
+        value.type === "custom_tool_call")) ||
+    (typeof value.name === "string" &&
+      ("arguments" in value || "args" in value || "parameters" in value || "input" in value))
+  );
+}
+
 function collectAgentText(update: Record<string, unknown>): string {
-  const content = isRecord(update.content) ? update.content : null;
-  if (!content) {
-    return "";
+  const candidates: string[] = [];
+  const push = (value: unknown): void => {
+    const text = typeof value === "string" ? value.trim() : "";
+    if (!text) {
+      return;
+    }
+    if (!candidates.includes(text)) {
+      candidates.push(text);
+    }
+  };
+
+  const rawContent = update.content;
+  if (typeof rawContent === "string") {
+    push(rawContent);
   }
 
-  const text =
-    (typeof content.text === "string" && content.text) ||
-    (typeof content.markdown === "string" && content.markdown) ||
-    (typeof content.content === "string" && content.content) ||
-    "";
-  return text.trim();
+  const content = isRecord(rawContent) ? rawContent : null;
+  if (content) {
+    push(content.text);
+    push(content.markdown);
+    push(content.content);
+    if (looksLikeToolPayload(content)) {
+      push(normalizeValue(content));
+    }
+  }
+
+  if (looksLikeToolPayload(update)) {
+    push(normalizeValue(update));
+  }
+
+  return candidates.join("\n");
 }
 
 function appendUniqueTextPart(textParts: string[], candidate: string): void {
@@ -1061,7 +1279,10 @@ async function run(): Promise<void> {
           continue;
         }
 
-        if (update.sessionUpdate === "agent_message_chunk") {
+        if (
+          typeof update.sessionUpdate === "string" &&
+          update.sessionUpdate.includes("agent_message")
+        ) {
           appendUniqueTextPart(textParts, collectAgentText(update));
           continue;
         }
@@ -1091,17 +1312,13 @@ async function run(): Promise<void> {
       if (Array.isArray(parsedContract.tool_calls) && parsedContract.tool_calls.length > 0) {
         const toolCalls = parsedContract.tool_calls
           .map((call) => {
-            const mappedName = allowedToolNames.get(normalizeToolName(call.name));
-            if (!mappedName) {
-              return null;
-            }
             return {
               id: call.id || `call_${randomUUID()}`,
-              name: mappedName,
-              arguments: call.arguments,
+              name: resolveAllowedToolName(call.name, allowedToolNames),
+              arguments: asToolCallArguments(call.arguments),
             };
           })
-          .filter((value): value is NonNullable<typeof value> => value !== null);
+          .filter((value) => typeof value.name === "string" && value.name.trim().length > 0);
 
         if (toolCalls.length > 0) {
           process.stdout.write(
@@ -1114,16 +1331,18 @@ async function run(): Promise<void> {
           return;
         }
       }
+
+      if (finishReason === "tool_calls") {
+        throw new Error(
+          "Kimi ACP returned finish_reason tool_calls without a usable tool_calls payload.",
+        );
+      }
     }
 
     if (!outputText && deniedPermission) {
       throw new Error(
         "Kimi ACP requested local tool permission instead of returning a gateway JSON response.",
       );
-    }
-
-    if (finishReason === "tool_calls") {
-      finishReason = "stop";
     }
 
     process.stdout.write(
@@ -1142,11 +1361,13 @@ async function run(): Promise<void> {
   }
 }
 
-run().catch((error) => {
-  const message =
-    error instanceof Error ? error.message : `Unexpected error: ${String(error)}`;
-  if (message) {
-    process.stderr.write(`${message}\n`);
-  }
-  process.exit(1);
-});
+if (require.main === module) {
+  void run().catch((error) => {
+    const message =
+      error instanceof Error ? error.message : `Unexpected error: ${String(error)}`;
+    if (message) {
+      process.stderr.write(`${message}\n`);
+    }
+    process.exit(1);
+  });
+}

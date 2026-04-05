@@ -705,7 +705,12 @@ function dedupeToolCalls(toolCalls: ParsedToolCall[]): ParsedToolCall[] {
       continue;
     }
 
-    const requestedId = call.id.trim();
+    const requestedId = call.id.trim() || `call_${out.length + 1}`;
+    const dedupeKey = `${requestedId}\u0000${name}\u0000${call.arguments.trim() || "{}"}`;
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+
     const id =
       requestedId && !seenIds.has(requestedId) ? requestedId : `call_${out.length + 1}`;
     const normalized: ParsedToolCall = {
@@ -713,11 +718,7 @@ function dedupeToolCalls(toolCalls: ParsedToolCall[]): ParsedToolCall[] {
       name,
       arguments: call.arguments.trim() || "{}",
     };
-    const key = `${normalized.id}\u0000${normalized.name}\u0000${normalized.arguments}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
+    seen.add(dedupeKey);
     seenIds.add(normalized.id);
     out.push(normalized);
   }

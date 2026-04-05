@@ -28,6 +28,56 @@ import {
 
 // Cache tool definitions for sessions. n8n occasionally drops them on subsequent turns.
 const multiTurnToolsCache = new LruMap<string, UnifiedToolDefinition[]>(100);
+const responseStore = new LruMap<string, StoredResponseRecord>(250);
+
+type ResponseMessageRole = "user" | "assistant" | "system" | "developer" | "tool";
+type ResponseItemStatus = "completed";
+
+interface ResponseTextContent {
+  type: "input_text" | "output_text";
+  text: string;
+}
+
+interface ResponseMessageItem {
+  id: string;
+  type: "message";
+  role: ResponseMessageRole;
+  status: ResponseItemStatus;
+  content: ResponseTextContent[];
+}
+
+interface ResponseFunctionCallItem {
+  id: string;
+  type: "function_call";
+  call_id: string;
+  name: string;
+  arguments: string;
+  status: ResponseItemStatus;
+}
+
+interface ResponseFunctionCallOutputItem {
+  id: string;
+  type: "function_call_output";
+  call_id: string;
+  output: string;
+  status: ResponseItemStatus;
+}
+
+type StoredResponseInputItem = ResponseMessageItem | ResponseFunctionCallOutputItem;
+type StoredResponseOutputItem = ResponseMessageItem | ResponseFunctionCallItem;
+
+interface StoredResponseRecord {
+  id: string;
+  createdAt: number;
+  completedAt: number;
+  model: string;
+  instructions?: string;
+  previousResponseId?: string;
+  conversationId: string;
+  inputItems: StoredResponseInputItem[];
+  outputItems: StoredResponseOutputItem[];
+  outputText: string;
+}
 
 export function getSessionSignature(
   messages: ChatMessage[],
@@ -44,6 +94,11 @@ export function getSessionSignature(
 }
 
 function findSessionIdentifier(metadata?: Record<string, unknown>): string | undefined {
+  const conversationId = findConversationId(metadata);
+  if (conversationId) {
+    return conversationId;
+  }
+
   return findMetadataString(metadata, [
     "session_id",
     "sessionId",
@@ -89,6 +144,256 @@ function findMetadataString(
   }
 
   return undefined;
+}
+
+function findPreviousResponseId(metadata?: Record<string, unknown>): string | undefined {
+  return findMetadataString(metadata, ["previous_response_id", "previousResponseId"]);
+}
+
+function findConversationId(metadata?: Record<string, unknown>): string | undefined {
+  if (!metadata || typeof metadata !== "object") {
+    return undefined;
+  }
+
+  const conversation = metadata.conversation;
+  if (typeof conversation === "string" && conversation.trim()) {
+    return conversation.trim();
+  }
+  if (conversation && typeof conversation === "object") {
+    const record = conversation as Record<string, unknown>;
+    if (typeof record.id === "string" && record.id.trim()) {
+      return record.id.trim();
+    }
+  }
+
+  return findMetadataString(metadata, [
+    "conversation_id",
+    "conversationId",
+    "thread_id",
+    "threadId",
+    "session_id",
+    "sessionId",
+  ]);
+}
+
+function resolveConversationId(
+  metadata: Record<string, unknown> | undefined,
+  previousResponseId: string | undefined,
+): string {
+  const explicitConversationId = findConversationId(metadata);
+  if (explicitConversationId) {
+    return explicitConversationId;
+  }
+
+  if (previousResponseId) {
+    const previous = responseStore.get(previousResponseId);
+    if (previous?.conversationId) {
+      return previous.conversationId;
+    }
+  }
+
+  return makeId("conv");
+}
+
+function shouldHydratePreviousResponses(
+  previousResponseId: string | undefined,
+  inputMessages: ChatMessage[],
+): previousResponseId is string {
+  if (!previousResponseId) {
+    return false;
+  }
+
+  return !inputMessages.some((message) =>
+    message.role === "assistant" ||
+    message.role === "tool" ||
+    message.role === "system",
+  );
+}
+
+function hydrateMessagesFromPreviousResponse(previousResponseId: string): ChatMessage[] {
+  const chain: StoredResponseRecord[] = [];
+  const seen = new Set<string>();
+  let currentId: string | undefined = previousResponseId;
+
+  while (currentId && !seen.has(currentId) && chain.length < 100) {
+    seen.add(currentId);
+    const record = responseStore.get(currentId);
+    if (!record) {
+      break;
+    }
+    chain.push(record);
+    currentId = record.previousResponseId;
+  }
+
+  return chain
+    .reverse()
+    .flatMap((record) => [
+      ...record.inputItems.flatMap(responseInputItemToChatMessages),
+      ...record.outputItems.flatMap(responseOutputItemToChatMessages),
+    ]);
+}
+
+function responseInputItemToChatMessages(item: StoredResponseInputItem): ChatMessage[] {
+  if (item.type === "function_call_output") {
+    return [{
+      role: "tool",
+      content: normalizeResponseText(item.output),
+      tool_call_id: item.call_id,
+    }];
+  }
+
+  const role = normalizeResponseMessageRole(item.role);
+  if (!role) {
+    return [];
+  }
+
+  return [{
+    role,
+    content: extractResponseMessageText(item.content),
+  }];
+}
+
+function responseOutputItemToChatMessages(item: StoredResponseOutputItem): ChatMessage[] {
+  if (item.type === "function_call") {
+    return [{
+      role: "assistant",
+      content: extractToolCallContext({
+        id: item.call_id,
+        name: item.name,
+        arguments: item.arguments,
+      }),
+    }];
+  }
+
+  const role = normalizeResponseMessageRole(item.role);
+  if (!role) {
+    return [];
+  }
+
+  return [{
+    role,
+    content: extractResponseMessageText(item.content),
+  }];
+}
+
+function normalizeResponseMessageRole(
+  role: ResponseMessageRole,
+): ChatMessage["role"] | undefined {
+  if (role === "developer") {
+    return "system";
+  }
+  return asRole(role);
+}
+
+function extractResponseMessageText(content: ResponseTextContent[]): string {
+  return content
+    .map((item) => normalizeResponseText(item.text))
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function normalizeResponseText(value: string): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+export function buildResponseInputItems(messages: ChatMessage[]): StoredResponseInputItem[] {
+  const items: StoredResponseInputItem[] = [];
+
+  for (const message of messages) {
+    if (message.role === "tool") {
+      items.push({
+        id: makeId("fco"),
+        type: "function_call_output",
+        call_id: message.tool_call_id || makeId("call"),
+        output: message.content,
+        status: "completed",
+      });
+      continue;
+    }
+
+    items.push({
+      id: makeId("msg"),
+      type: "message",
+      role: message.role,
+      status: "completed",
+      content: buildResponseTextContent("input_text", message.content),
+    });
+  }
+
+  return items;
+}
+
+export function buildResponseOutputItems(result: ProviderResult): StoredResponseOutputItem[] {
+  const items: StoredResponseOutputItem[] = [];
+
+  if (result.outputText) {
+    items.push({
+      id: makeId("msg"),
+      type: "message",
+      role: "assistant",
+      status: "completed",
+      content: buildResponseTextContent("output_text", result.outputText),
+    });
+  }
+
+  for (const call of result.toolCalls) {
+    items.push({
+      id: makeId("fc"),
+      type: "function_call",
+      call_id: call.id,
+      name: call.name,
+      arguments: call.arguments,
+      status: "completed",
+    });
+  }
+
+  return items;
+}
+
+function buildResponseTextContent(
+  type: ResponseTextContent["type"],
+  text: string,
+): ResponseTextContent[] {
+  const normalized = normalizeResponseText(text);
+  if (!normalized) {
+    return [];
+  }
+
+  return [{
+    type,
+    text: normalized,
+  }];
+}
+
+function storeResponseRecord(record: StoredResponseRecord): StoredResponseRecord {
+  responseStore.set(record.id, record);
+  return record;
+}
+
+function buildStoredResponse(
+  record: StoredResponseRecord,
+): Record<string, unknown> {
+  return {
+    id: record.id,
+    object: "response",
+    created_at: record.createdAt,
+    completed_at: record.completedAt,
+    status: "completed",
+    model: record.model,
+    conversation: {
+      id: record.conversationId,
+    },
+    previous_response_id: record.previousResponseId,
+    instructions: record.instructions,
+    input: record.inputItems,
+    output_text: record.outputText,
+    output: record.outputItems,
+    usage: {
+      input_tokens: 0,
+      output_tokens: 0,
+      total_tokens: 0,
+    },
+  };
 }
 
 function resolveFrontendToolAllowlist(metadata?: Record<string, unknown>): Set<string> {
@@ -273,6 +578,63 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
     })),
   }));
 
+  app.get("/responses/:responseId", async (request, reply) => {
+    const responseId =
+      typeof (request.params as { responseId?: string }).responseId === "string"
+        ? (request.params as { responseId: string }).responseId
+        : "";
+    const stored = responseStore.get(responseId);
+    if (!stored) {
+      return sendOpenAiError(reply, 404, `Unknown response: ${responseId}`, "not_found");
+    }
+    return buildStoredResponse(stored);
+  });
+
+  app.get("/responses/:responseId/input_items", async (request, reply) => {
+    const responseId =
+      typeof (request.params as { responseId?: string }).responseId === "string"
+        ? (request.params as { responseId: string }).responseId
+        : "";
+    const stored = responseStore.get(responseId);
+    if (!stored) {
+      return sendOpenAiError(reply, 404, `Unknown response: ${responseId}`, "not_found");
+    }
+
+    const query = (request.query ?? {}) as Record<string, unknown>;
+    const limitValue = typeof query.limit === "number"
+      ? query.limit
+      : typeof query.limit === "string"
+        ? Number.parseInt(query.limit, 10)
+        : 20;
+    const limit = Number.isFinite(limitValue)
+      ? Math.max(1, Math.min(100, Math.trunc(limitValue)))
+      : 20;
+    const order = query.order === "asc" ? "asc" : "desc";
+    const after = typeof query.after === "string" && query.after.trim()
+      ? query.after.trim()
+      : undefined;
+
+    let items = [...stored.inputItems];
+    if (order === "desc") {
+      items.reverse();
+    }
+    if (after) {
+      const afterIndex = items.findIndex((item) => item.id === after);
+      if (afterIndex >= 0) {
+        items = items.slice(afterIndex + 1);
+      }
+    }
+
+    const data = items.slice(0, limit);
+    return {
+      object: "list",
+      data,
+      first_id: data[0]?.id,
+      last_id: data[data.length - 1]?.id,
+      has_more: items.length > data.length,
+    };
+  });
+
   app.post("/chat/completions", async (request, reply) => {
     const validationResult = validateBody(request.body, chatCompletionsRequestSchema);
     if (!validationResult.success) {
@@ -340,8 +702,13 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
 
     const inputMessages = normalizeResponsesInput(body.input);
     const instructions = sanitizeInstructions(body.instructions);
+    const previousResponseId = findPreviousResponseId(body as Record<string, unknown>);
+    const priorMessages = shouldHydratePreviousResponses(previousResponseId, inputMessages)
+      ? hydrateMessagesFromPreviousResponse(previousResponseId)
+      : [];
 
     const messages: ChatMessage[] = [];
+    messages.push(...priorMessages);
     if (instructions) {
       messages.push({
         role: "system",
@@ -425,20 +792,13 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
         metadata: body as Record<string, unknown>,
       }));
       logBlankAssistantResult(app.log.warn.bind(app.log), body.model, result, "/responses");
-
-      const output: unknown[] = [];
-      if (result.outputText) {
-        output.push({
-          type: "message",
-          role: "assistant",
-          content: [
-            {
-              type: "output_text",
-              text: result.outputText,
-            },
-          ],
-        });
-      }
+      const createdAt = Math.floor(Date.now() / 1000);
+      const conversationId = resolveConversationId(
+        body as Record<string, unknown>,
+        previousResponseId,
+      );
+      const inputItems = buildResponseInputItems(inputMessages);
+      const outputItems = buildResponseOutputItems(result);
 
       for (const call of result.toolCalls) {
         // Log tool calls for debugging
@@ -450,14 +810,22 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
           },
           "Returning tool call"
         );
-        output.push({
-          type: "function_call",
-          id: call.id,
-          call_id: call.id,
-          name: call.name,
-          arguments: call.arguments,
-        });
       }
+
+      const responseId = makeId("resp");
+      const storedResponse = storeResponseRecord({
+        id: responseId,
+        createdAt,
+        completedAt: createdAt,
+        model: body.model,
+        instructions: instructions || undefined,
+        previousResponseId,
+        conversationId,
+        inputItems,
+        outputItems,
+        outputText: result.outputText,
+      });
+      const responsePayload = buildStoredResponse(storedResponse);
 
       if (isStream) {
         reply.raw.setHeader("Content-Type", "text/event-stream");
@@ -465,13 +833,17 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
         reply.raw.setHeader("Connection", "keep-alive");
 
         const chunkData = {
-          id: makeId("resp"),
+          id: responseId,
           object: "response.chunk",
-          created_at: Math.floor(Date.now() / 1000),
+          created_at: createdAt,
           status: "completed",
           model: body.model,
+          previous_response_id: previousResponseId,
+          conversation: {
+            id: conversationId,
+          },
           output_text: result.outputText,
-          output,
+          output: outputItems,
         };
 
         reply.raw.write(`data: ${JSON.stringify(chunkData)}\n\n`);
@@ -480,20 +852,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
         return reply;
       }
 
-      return {
-        id: makeId("resp"),
-        object: "response",
-        created_at: Math.floor(Date.now() / 1000),
-        status: "completed",
-        model: body.model,
-        output_text: result.outputText,
-        output,
-        usage: {
-          input_tokens: 0,
-          output_tokens: 0,
-          total_tokens: 0,
-        },
-      };
+      return responsePayload;
     } catch (error) {
       return handleModelError(reply, error);
     }
@@ -1059,13 +1418,17 @@ export function normalizeChatMessages(raw: unknown[]): ChatMessage[] {
     ) {
       continue;
     }
-    messages.push({
+    const message: ChatMessage = {
       role,
       content,
-      name: typeof record.name === "string" ? record.name : undefined,
-      tool_call_id:
-        typeof record.tool_call_id === "string" ? record.tool_call_id : undefined,
-    });
+    };
+    if (typeof record.name === "string") {
+      message.name = record.name;
+    }
+    if (typeof record.tool_call_id === "string") {
+      message.tool_call_id = record.tool_call_id;
+    }
+    messages.push(message);
   }
   return messages;
 }
