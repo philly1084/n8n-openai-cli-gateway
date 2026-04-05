@@ -284,6 +284,11 @@ providers:
         providerModel: deepseek-chat
         fallbackModels:
           - deepseek-reasoner
+      - id: deepseek-coder
+        providerModel: deepseek-chat
+        description: Backward-compatible DeepSeek coding alias mapped to deepseek-chat
+        fallbackModels:
+          - deepseek-reasoner
       - id: deepseek-reasoner
         providerModel: deepseek-reasoner
         fallbackModels:
