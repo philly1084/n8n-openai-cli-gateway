@@ -398,7 +398,7 @@ spec:
       initContainers:
         - name: gemini-bootstrap
           image: ghcr.io/philly1084/n8n-openai-cli-gateway:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           command:
             - sh
             - -lc
@@ -426,7 +426,7 @@ spec:
               mountPath: /var/lib/gateway-home
         - name: kimi-bootstrap
           image: ghcr.io/philly1084/n8n-openai-cli-gateway:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           command:
             - sh
             - -lc
@@ -459,7 +459,7 @@ spec:
               mountPath: /var/lib/gateway-home
         - name: gemini-auth-bootstrap
           image: ghcr.io/philly1084/n8n-openai-cli-gateway:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           command:
             - sh
             - -lc
@@ -499,7 +499,7 @@ spec:
       containers:
         - name: gateway
           image: ghcr.io/philly1084/n8n-openai-cli-gateway:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false
