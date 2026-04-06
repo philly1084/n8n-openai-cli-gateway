@@ -756,10 +756,6 @@ function parseRequestTimeoutMs(totalTimeoutMs: number): number {
   return Math.min(120_000, totalTimeoutMs);
 }
 
-function shouldEnableThinking(reasoningEffort: string | undefined): boolean {
-  return reasoningEffort === "high" || reasoningEffort === "xhigh";
-}
-
 function getWorkingDirectory(): string {
   if (
     typeof process.env.KIMI_ACP_CWD === "string" &&
@@ -770,12 +766,8 @@ function getWorkingDirectory(): string {
   return process.cwd();
 }
 
-function candidateCommands(reasoningEffort: string | undefined): Array<{ args: string[] }> {
-  const thinking = shouldEnableThinking(reasoningEffort);
-  const commands: Array<{ args: string[] }> = [];
-  commands.push({ args: thinking ? ["acp", "--thinking"] : ["acp"] });
-  commands.push({ args: thinking ? ["--acp", "--thinking"] : ["--acp"] });
-  return commands;
+function candidateCommands(): Array<{ args: string[] }> {
+  return [{ args: ["acp"] }];
 }
 
 function formatSpawnError(args: string[], stderr: string): string {
@@ -1077,7 +1069,6 @@ function shutdownChild(child: ReturnType<typeof spawn>): void {
 }
 
 async function initializeKimiAcp(
-  reasoningEffort: string | undefined,
   initializeTimeoutMs: number,
 ): Promise<{
   child: ReturnType<typeof spawn>;
@@ -1086,7 +1077,7 @@ async function initializeKimiAcp(
 }> {
   let lastError: Error | null = null;
 
-  for (const candidate of candidateCommands(reasoningEffort)) {
+  for (const candidate of candidateCommands()) {
     const { child, rpc, childStderrRef } = startKimiAcpProcess(candidate.args);
 
     try {
@@ -1164,10 +1155,7 @@ async function run(): Promise<void> {
   const prompt = buildPrompt(request);
   const reasoningEffort = resolveReasoningEffort(request);
 
-  const { child, rpc, childStderrRef } = await initializeKimiAcp(
-    reasoningEffort,
-    initializeTimeoutMs,
-  );
+  const { child, rpc, childStderrRef } = await initializeKimiAcp(initializeTimeoutMs);
 
   try {
     const sessionResult = await rpc.request(
