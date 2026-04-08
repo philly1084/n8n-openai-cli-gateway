@@ -188,6 +188,41 @@ providers:
       timeoutMs: 300000
     # No auth needed for local Ollama
 
+  - id: ollama-gemma4-cpu
+    type: cli
+    description: Local Ollama CPU-focused Gemma stack with Gemma 4 E4B primary and smaller fallbacks
+    models:
+      - id: gemma4-e4b
+        providerModel: gemma4:e4b
+        fallbackModels:
+          - gemma4-e2b
+          - gemma3-1b
+      - id: gemma4-e2b
+        providerModel: gemma4:e2b
+        fallbackModels:
+          - gemma3-1b
+      - id: gemma3-1b
+        providerModel: gemma3:1b
+    responseCommand:
+      executable: node
+      args:
+        - dist/scripts/ollama-api-bridge.js
+        - --model
+        - "{{provider_model}}"
+      env:
+        OLLAMA_BASE_URL: http://127.0.0.1:11434/api
+        OLLAMA_NUM_CTX: "8192"
+        OLLAMA_KEEP_ALIVE: "30m"
+        OLLAMA_HTTP_TIMEOUT_MS: "540000"
+      input: request_json_stdin
+      output: json_contract
+      timeoutMs: 600000
+    # Recommended Ollama server settings for CPU-only use:
+    #   OLLAMA_NUM_PARALLEL=1
+    #   OLLAMA_MAX_LOADED_MODELS=1
+    #   OLLAMA_CONTEXT_LENGTH=8192
+    # No auth needed for local Ollama unless you secure it behind a proxy.
+
   - id: groq-api
     type: openai
     description: Groq API - auto-discovers chat-usable models at startup
