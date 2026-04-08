@@ -350,7 +350,7 @@ spec:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: ollama-models
+  name: ollama-models-gemma4
   namespace: n8n-openai-gateway
 spec:
   accessModes:
@@ -448,7 +448,7 @@ spec:
       volumes:
         - name: ollama-models
           persistentVolumeClaim:
-            claimName: ollama-models
+            claimName: ollama-models-gemma4
 ---
 apiVersion: apps/v1
 kind: Deployment
