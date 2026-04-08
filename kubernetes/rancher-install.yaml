@@ -210,6 +210,36 @@ data:
                 exit 1
             timeoutMs: 30000
 
+      - id: ollama-gemma4-cpu
+        type: cli
+        description: Local Ollama CPU-focused Gemma stack with Gemma 4 E4B primary and smaller fallbacks
+        models:
+          - id: gemma4-e4b
+            providerModel: gemma4:e4b
+            fallbackModels:
+              - gemma4-e2b
+              - gemma3-1b
+          - id: gemma4-e2b
+            providerModel: gemma4:e2b
+            fallbackModels:
+              - gemma3-1b
+          - id: gemma3-1b
+            providerModel: gemma3:1b
+        responseCommand:
+          executable: node
+          args:
+            - dist/scripts/ollama-api-bridge.js
+            - --model
+            - "{{provider_model}}"
+          env:
+            OLLAMA_BASE_URL: http://ollama:11434/api
+            OLLAMA_NUM_CTX: "8192"
+            OLLAMA_KEEP_ALIVE: "30m"
+            OLLAMA_HTTP_TIMEOUT_MS: "540000"
+          input: request_json_stdin
+          output: json_contract
+          timeoutMs: 600000
+
       - id: groq-api
         type: cli
         description: Groq API via curl using Groq production chat models
@@ -316,6 +346,109 @@ spec:
   resources:
     requests:
       storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-models
+  namespace: n8n-openai-gateway
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  namespace: n8n-openai-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: ollama
+          image: ollama/ollama:0.17.7
+          imagePullPolicy: Always
+          command:
+            - /bin/sh
+            - -lc
+            - |
+              set -eu
+              trap 'kill -TERM "$OLLAMA_PID"; wait "$OLLAMA_PID"' TERM INT
+
+              ollama serve &
+              OLLAMA_PID=$!
+
+              until ollama list >/dev/null 2>&1; do
+                sleep 2
+              done
+
+              ollama pull gemma4:e4b
+              ollama pull gemma4:e2b
+              ollama pull gemma3:1b
+
+              touch /tmp/models-ready
+              wait "$OLLAMA_PID"
+          ports:
+            - name: http
+              containerPort: 11434
+          env:
+            - name: OLLAMA_HOST
+              value: 0.0.0.0:11434
+            - name: OLLAMA_NO_CLOUD
+              value: "1"
+            - name: OLLAMA_NUM_PARALLEL
+              value: "1"
+            - name: OLLAMA_MAX_LOADED_MODELS
+              value: "1"
+            - name: OLLAMA_MAX_QUEUE
+              value: "64"
+            - name: OLLAMA_CONTEXT_LENGTH
+              value: "8192"
+            - name: OLLAMA_KEEP_ALIVE
+              value: "30m"
+          volumeMounts:
+            - name: ollama-models
+              mountPath: /root/.ollama
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -lc
+                - test -f /tmp/models-ready
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 18
+          livenessProbe:
+            httpGet:
+              path: /api/tags
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: "4"
+              memory: 20Gi
+            limits:
+              cpu: "8"
+              memory: 24Gi
+      volumes:
+        - name: ollama-models
+          persistentVolumeClaim:
+            claimName: ollama-models
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -530,6 +663,23 @@ spec:
           secret:
             secretName: n8n-openai-cli-gateway-gemini-auth
             optional: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  namespace: n8n-openai-gateway
+  labels:
+    app: ollama
+spec:
+  type: ClusterIP
+  selector:
+    app: ollama
+  ports:
+    - name: http
+      port: 11434
+      targetPort: 11434
+      protocol: TCP
 ---
 apiVersion: v1
 kind: Service
