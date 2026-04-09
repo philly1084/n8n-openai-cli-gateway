@@ -11,32 +11,36 @@ on:
         description: Upstream ollama/ollama ref to build
         required: false
         default: main
-      platforms:
-        description: Docker target platforms
-        required: false
-        default: linux/amd64,linux/arm64
+
+concurrency:
+  group: build-ollama-upstream
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/ollama-upstream
 
 jobs:
-  build:
-    name: Build and Push Ollama Upstream
+  prepare:
+    name: Resolve upstream revision
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+    outputs:
+      ollama_ref: ${{ steps.inputs.outputs.ollama_ref }}
+      upstream_sha: ${{ steps.upstream.outputs.sha }}
+      upstream_short_sha: ${{ steps.upstream.outputs.short_sha }}
 
     steps:
-      - name: Checkout this repository
-        uses: actions/checkout@v4
+      - name: Resolve requested upstream ref
+        id: inputs
+        run: echo "ollama_ref=${{ github.event.inputs.ollama_ref || 'main' }}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout upstream Ollama source
         uses: actions/checkout@v4
         with:
           repository: ollama/ollama
-          ref: ${{ github.event.inputs.ollama_ref || 'main' }}
+          ref: ${{ steps.inputs.outputs.ollama_ref }}
           path: vendor/ollama-upstream
           fetch-depth: 1
 
@@ -46,8 +50,35 @@ jobs:
           echo "sha=$(git -C vendor/ollama-upstream rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "short_sha=$(git -C vendor/ollama-upstream rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            artifact_name: digests-amd64
+            cache_scope: ollama-upstream-amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            artifact_name: digests-arm64
+            cache_scope: ollama-upstream-arm64
+
+    steps:
+      - name: Checkout upstream Ollama source
+        uses: actions/checkout@v4
+        with:
+          repository: ollama/ollama
+          ref: ${{ needs.prepare.outputs.ollama_ref }}
+          path: vendor/ollama-upstream
+          fetch-depth: 1
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -55,33 +86,82 @@ jobs:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract image metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=main
-            type=raw,value=sha-${{ steps.upstream.outputs.short_sha }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=Custom Ollama image built from ollama/ollama upstream
-            org.opencontainers.image.revision=${{ steps.upstream.outputs.sha }}
-
-      - name: Build and push upstream Ollama image
+      - name: Build and push by digest
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: vendor/ollama-upstream
           file: vendor/ollama-upstream/Dockerfile
-          push: true
-          platforms: ${{ github.event.inputs.platforms || 'linux/amd64,linux/arm64' }}
+          platforms: ${{ matrix.platform }}
           build-args: |
             FLAVOR=cpu
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=ollama-upstream
-          cache-to: type=gha,mode=max,scope=ollama-upstream
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Custom Ollama image built from ollama/ollama upstream
+            org.opencontainers.image.revision=${{ needs.prepare.outputs.upstream_sha }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.cache_scope }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.cache_scope }}
+
+      - name: Export image digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Publish multi-arch manifest
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Download digest artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create manifest list
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          SHORT_SHA: ${{ needs.prepare.outputs.upstream_short_sha }}
+        run: |
+          sources=()
+          for digest_file in /tmp/digests/*; do
+            sources+=("$IMAGE@sha256:$(basename "$digest_file")")
+          done
+
+          docker buildx imagetools create \
+            -t "$IMAGE:main" \
+            -t "$IMAGE:sha-$SHORT_SHA" \
+            "${sources[@]}"
+
+      - name: Inspect published manifest
+        run: docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main
