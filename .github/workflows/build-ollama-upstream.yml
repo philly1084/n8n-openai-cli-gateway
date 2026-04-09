@@ -64,10 +64,12 @@ jobs:
         include:
           - platform: linux/amd64
             runner: ubuntu-latest
+            tag_suffix: amd64
             artifact_name: digests-amd64
             cache_scope: ollama-upstream-amd64
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
+            tag_suffix: arm64
             artifact_name: digests-arm64
             cache_scope: ollama-upstream-arm64
 
@@ -112,6 +114,18 @@ jobs:
           mkdir -p /tmp/digests
           digest="${{ steps.build.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Publish single-arch fallback tags
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          SHORT_SHA: ${{ needs.prepare.outputs.upstream_short_sha }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAG_SUFFIX: ${{ matrix.tag_suffix }}
+        run: |
+          docker buildx imagetools create \
+            -t "$IMAGE:main-$TAG_SUFFIX" \
+            -t "$IMAGE:sha-$SHORT_SHA-$TAG_SUFFIX" \
+            "$IMAGE@$DIGEST"
 
       - name: Upload digest artifact
         uses: actions/upload-artifact@v4
