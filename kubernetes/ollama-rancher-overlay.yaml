@@ -25,10 +25,12 @@ spec:
       labels:
         app: ollama
     spec:
+      imagePullSecrets:
+        - name: ghcr-secret
       terminationGracePeriodSeconds: 120
       containers:
         - name: ollama
-          image: ollama/ollama:0.17.7
+          image: ghcr.io/philly1084/ollama-upstream:main
           imagePullPolicy: Always
           command:
             - /bin/sh
