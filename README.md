@@ -104,6 +104,7 @@ Optional environment variables:
 
 - `CODEX_APPSERVER_MODEL_PROVIDER` (default `openai`)
 - `CODEX_APPSERVER_TIMEOUT_MS` (default `240000`)
+- `CODEX_APPSERVER_DEBUG_RPC` (`1`/`true` to log raw Codex app-server JSON-RPC methods to stderr)
 - `OPENAI_REASONING_EFFORT` default reasoning effort when requests omit it
 
 ### Groq API with model discovery
@@ -275,6 +276,45 @@ The gateway accepts these request forms:
 - `reasoning: { "effort": "medium" }`
 
 Supported values are `low`, `medium`, `high`, and `xhigh`. For `/v1/chat/completions`, use `reasoning_effort` or `reasoningEffort`. For `/v1/responses`, all three forms are accepted.
+
+## Frontend Chat Endpoint
+
+For web and app clients, standardize on:
+
+- `POST /v1/chat/completions`
+
+Recommended request shape:
+
+```json
+{
+  "model": "your-codex-model",
+  "stream": true,
+  "messages": [
+    { "role": "user", "content": "Hello" }
+  ],
+  "reasoning_effort": "medium"
+}
+```
+
+Streaming contract:
+
+- Content type is `text/event-stream`
+- Each SSE frame is a `chat.completion.chunk`
+- Read assistant text from `choices[0].delta.content`
+- Read reasoning from `choices[0].delta.reasoning`
+- Read tool calls from `choices[0].delta.tool_calls`
+- Stop on `data: [DONE]`
+
+Non-streaming contract:
+
+- Final assistant text is `choices[0].message.content`
+- Final reasoning is `choices[0].message.reasoning`
+
+Notes:
+
+- True incremental streaming is currently implemented for Codex-backed stream-capable models. Other providers may still return a single final SSE chunk.
+- The gateway now emits an immediate SSE prelude comment (`: stream-open`) so clients can detect that the stream opened before model output arrives.
+- If you need debugging for Codex app-server event flow, start the gateway with `CODEX_APPSERVER_DEBUG_RPC=1`.
 
 ## 6) Request Tracing
 
