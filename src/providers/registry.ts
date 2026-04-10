@@ -1,4 +1,4 @@
-import type { ProviderConfig, ProviderResult, UnifiedRequest } from "../types";
+import type { ProviderConfig, ProviderResult, ProviderStreamEvent, UnifiedRequest } from "../types";
 import type {
   ModelStatsModelSnapshot,
   ModelStatsSnapshot,
@@ -207,6 +207,68 @@ export class ProviderRegistry {
     throw new Error(
       `Model execution failed after fallback chain: ${attempted.join(" -> ")}.\nLast error: ${lastErrorMessage}`,
     );
+  }
+
+  canStreamModel(modelId: string): boolean {
+    const binding = this.models.get(modelId);
+    return Boolean(binding?.provider.runStream && (binding.provider.supportsStreaming?.() ?? true));
+  }
+
+  async *runModelStream(
+    modelId: string,
+    request: Omit<UnifiedRequest, "model" | "providerModel">,
+  ): AsyncIterable<ProviderStreamEvent> {
+    const binding = this.models.get(modelId);
+    if (!binding) {
+      throw new Error(`Unknown model: ${modelId}`);
+    }
+    if (!binding.provider.runStream) {
+      throw new Error(`Model ${modelId} does not support streaming.`);
+    }
+    if (binding.provider.supportsStreaming && !binding.provider.supportsStreaming()) {
+      throw new Error(`Model ${modelId} does not support streaming.`);
+    }
+
+    const attemptIndex = 0;
+    const startedAt = Date.now();
+    this.modelStats.recordAttempt({
+      modelId: binding.modelId,
+      requestedModelId: modelId,
+      providerId: binding.provider.id,
+      providerModel: binding.providerModel,
+      attemptIndex,
+    });
+
+    try {
+      for await (const event of binding.provider.runStream({
+        ...request,
+        model: binding.modelId,
+        providerModel: binding.providerModel,
+      })) {
+        yield event;
+      }
+      this.modelStats.recordSuccess({
+        modelId: binding.modelId,
+        requestedModelId: modelId,
+        providerId: binding.provider.id,
+        providerModel: binding.providerModel,
+        attemptIndex,
+        durationMs: Date.now() - startedAt,
+      });
+      trackProvider(binding.provider.id, binding.modelId, true, Date.now() - startedAt);
+    } catch (error) {
+      this.modelStats.recordFailure({
+        modelId: binding.modelId,
+        requestedModelId: modelId,
+        providerId: binding.provider.id,
+        providerModel: binding.providerModel,
+        attemptIndex,
+        durationMs: Date.now() - startedAt,
+        error,
+      });
+      trackProvider(binding.provider.id, binding.modelId, false, Date.now() - startedAt);
+      throw error;
+    }
   }
 }
 

@@ -63,8 +63,15 @@ interface ResponseFunctionCallOutputItem {
   status: ResponseItemStatus;
 }
 
+interface ResponseReasoningItem {
+  id: string;
+  type: "reasoning";
+  text: string;
+  status: ResponseItemStatus;
+}
+
 type StoredResponseInputItem = ResponseMessageItem | ResponseFunctionCallOutputItem;
-type StoredResponseOutputItem = ResponseMessageItem | ResponseFunctionCallItem;
+type StoredResponseOutputItem = ResponseMessageItem | ResponseFunctionCallItem | ResponseReasoningItem;
 
 interface StoredResponseRecord {
   id: string;
@@ -265,6 +272,10 @@ function responseOutputItemToChatMessages(item: StoredResponseOutputItem): ChatM
     }];
   }
 
+  if (item.type === "reasoning") {
+    return [];
+  }
+
   const role = normalizeResponseMessageRole(item.role);
   if (!role) {
     return [];
@@ -336,6 +347,15 @@ export function buildResponseOutputItems(result: ProviderResult): StoredResponse
     });
   }
 
+  if (result.reasoningText) {
+    items.push({
+      id: makeId("rsn"),
+      type: "reasoning",
+      text: normalizeResponseText(result.reasoningText),
+      status: "completed",
+    });
+  }
+
   for (const call of result.toolCalls) {
     items.push({
       id: makeId("fc"),
@@ -394,6 +414,33 @@ function buildStoredResponse(
       total_tokens: 0,
     },
   };
+}
+
+function buildChatCompletionToolCalls(result: ProviderResult): Array<Record<string, unknown>> {
+  return result.toolCalls.map((call) => ({
+    id: call.id,
+    type: "function",
+    function: {
+      name: call.name,
+      arguments: call.arguments,
+    },
+  }));
+}
+
+function buildChatCompletionMessage(result: ProviderResult): Record<string, unknown> {
+  const message: Record<string, unknown> = {
+    role: "assistant",
+    content: result.outputText || null,
+    tool_calls: buildChatCompletionToolCalls(result),
+  };
+  if (result.reasoningText) {
+    message.reasoning = result.reasoningText;
+  }
+  return message;
+}
+
+function writeSseData(reply: FastifyReply, payload: unknown): void {
+  reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
 function resolveFrontendToolAllowlist(metadata?: Record<string, unknown>): Set<string> {
@@ -784,24 +831,143 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
 
     try {
       const reasoningEffort = resolveReasoningEffort(body, options.defaultReasoningEffort);
-      const result = normalizeAssistantResult(await options.registry.runModel(body.model, {
-        requestId: makeId("req"),
-        messages,
-        tools,
-        reasoningEffort,
-        metadata: body as Record<string, unknown>,
-      }));
-      logBlankAssistantResult(app.log.warn.bind(app.log), body.model, result, "/responses");
       const createdAt = Math.floor(Date.now() / 1000);
       const conversationId = resolveConversationId(
         body as Record<string, unknown>,
         previousResponseId,
       );
       const inputItems = buildResponseInputItems(inputMessages);
+      const responseId = makeId("resp");
+      const runRequest = {
+        requestId: makeId("req"),
+        messages,
+        tools,
+        stream: isStream,
+        requestKind: "responses",
+        reasoningEffort,
+        metadata: body as Record<string, unknown>,
+      };
+
+      if (isStream && options.registry.canStreamModel(body.model)) {
+        const streamedResult: ProviderResult = {
+          outputText: "",
+          reasoningText: "",
+          toolCalls: [],
+          finishReason: "stop",
+        };
+        let streamInitialized = false;
+        const ensureStreamHeaders = () => {
+          if (streamInitialized) {
+            return;
+          }
+          streamInitialized = true;
+          reply.raw.setHeader("Content-Type", "text/event-stream");
+          reply.raw.setHeader("Cache-Control", "no-cache");
+          reply.raw.setHeader("Connection", "keep-alive");
+        };
+
+        try {
+          for await (const event of options.registry.runModelStream(body.model, runRequest)) {
+            ensureStreamHeaders();
+            if (event.type === "output_text_delta") {
+              streamedResult.outputText += event.delta;
+              writeSseData(reply, {
+                id: responseId,
+                object: "response.chunk",
+                created_at: createdAt,
+                status: "in_progress",
+                model: body.model,
+                previous_response_id: previousResponseId,
+                conversation: {
+                  id: conversationId,
+                },
+                output_text_delta: event.delta,
+              });
+              continue;
+            }
+            if (event.type === "reasoning_delta") {
+              streamedResult.reasoningText = `${streamedResult.reasoningText || ""}${event.delta}`;
+              writeSseData(reply, {
+                id: responseId,
+                object: "response.chunk",
+                created_at: createdAt,
+                status: "in_progress",
+                model: body.model,
+                previous_response_id: previousResponseId,
+                conversation: {
+                  id: conversationId,
+                },
+                reasoning_delta: event.delta,
+              });
+              continue;
+            }
+            if (event.type === "tool_call") {
+              streamedResult.toolCalls.push(event.toolCall);
+              writeSseData(reply, {
+                id: responseId,
+                object: "response.chunk",
+                created_at: createdAt,
+                status: "in_progress",
+                model: body.model,
+                previous_response_id: previousResponseId,
+                conversation: {
+                  id: conversationId,
+                },
+                output: [
+                  {
+                    id: makeId("fc"),
+                    type: "function_call",
+                    call_id: event.toolCall.id,
+                    name: event.toolCall.name,
+                    arguments: event.toolCall.arguments,
+                    status: "completed",
+                  },
+                ],
+              });
+              continue;
+            }
+            streamedResult.finishReason = event.finishReason;
+          }
+        } catch (error) {
+          if (!streamInitialized) {
+            throw error;
+          }
+          writeSseData(reply, {
+            object: "error",
+            error: error instanceof Error ? error.message : String(error),
+          });
+          reply.raw.write("data: [DONE]\n\n");
+          reply.raw.end();
+          return reply;
+        }
+
+        logBlankAssistantResult(app.log.warn.bind(app.log), body.model, streamedResult, "/responses");
+        const outputItems = buildResponseOutputItems(streamedResult);
+        const storedResponse = storeResponseRecord({
+          id: responseId,
+          createdAt,
+          completedAt: createdAt,
+          model: body.model,
+          instructions: instructions || undefined,
+          previousResponseId,
+          conversationId,
+          inputItems,
+          outputItems,
+          outputText: streamedResult.outputText,
+        });
+        const responsePayload = buildStoredResponse(storedResponse);
+        ensureStreamHeaders();
+        writeSseData(reply, responsePayload);
+        reply.raw.write("data: [DONE]\n\n");
+        reply.raw.end();
+        return reply;
+      }
+
+      const result = normalizeAssistantResult(await options.registry.runModel(body.model, runRequest));
+      logBlankAssistantResult(app.log.warn.bind(app.log), body.model, result, "/responses");
       const outputItems = buildResponseOutputItems(result);
 
       for (const call of result.toolCalls) {
-        // Log tool calls for debugging
         app.log.debug(
           {
             tool_call_id: call.id,
@@ -812,7 +978,6 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
         );
       }
 
-      const responseId = makeId("resp");
       const storedResponse = storeResponseRecord({
         id: responseId,
         createdAt,
@@ -878,10 +1043,11 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
         requestId: makeId("req"),
         messages: [{ role: "user", content: prompt }],
         tools: [],
+        requestKind: "images_generations",
         metadata: body as Record<string, unknown>,
       });
 
-      const images = parseImageGenerations(result.outputText);
+      const images = parseImageGenerationsFromResult(result);
       if (images.length === 0) {
         return sendOpenAiError(
           reply,
@@ -920,6 +1086,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
         requestId: makeId("req"),
         messages: [{ role: "user", content: prompt }],
         tools: [],
+        requestKind: "documents_generations",
         metadata: body as Record<string, unknown>,
       }));
 
@@ -963,6 +1130,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
         requestId: makeId("req"),
         messages: [{ role: "user", content: body.input }],
         tools: [],
+        requestKind: "audio_speech",
         metadata: body as Record<string, unknown>,
       });
 
@@ -1008,6 +1176,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
         requestId: makeId("req"),
         messages: [{ role: "user", content: body.file }],
         tools: [],
+        requestKind: "audio_transcriptions",
         metadata: body as Record<string, unknown>,
       });
 
@@ -1040,6 +1209,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
         requestId: makeId("req"),
         messages: [{ role: "user", content: body.file }],
         tools: [],
+        requestKind: "audio_translations",
         metadata: { ...body, task: "translate" } as Record<string, unknown>,
       });
 
@@ -1162,13 +1332,141 @@ async function handleChatCompletionsRequest(
 
   try {
     const reasoningEffort = resolveReasoningEffort(body, defaultReasoningEffort);
-    const result = normalizeAssistantResult(await registry.runModel(body.model, {
+    const runRequest = {
       requestId: makeId("req"),
       messages,
       tools,
+      stream: isStream,
+      requestKind: "chat_completions",
       reasoningEffort,
       metadata: body as Record<string, unknown>,
-    }));
+    };
+
+    if (isStream && registry.canStreamModel(body.model)) {
+      const respId = makeId("chatcmpl");
+      const created = Math.floor(Date.now() / 1000);
+      const streamedResult: ProviderResult = {
+        outputText: "",
+        reasoningText: "",
+        toolCalls: [],
+        finishReason: "stop",
+      };
+      let streamInitialized = false;
+      const ensureStreamHeaders = () => {
+        if (streamInitialized) {
+          return;
+        }
+        streamInitialized = true;
+        reply.raw.setHeader("Content-Type", "text/event-stream");
+        reply.raw.setHeader("Cache-Control", "no-cache");
+        reply.raw.setHeader("Connection", "keep-alive");
+      };
+
+      try {
+        for await (const event of registry.runModelStream(body.model, runRequest)) {
+          ensureStreamHeaders();
+          if (event.type === "output_text_delta") {
+            streamedResult.outputText += event.delta;
+            writeSseData(reply, {
+              id: respId,
+              object: "chat.completion.chunk",
+              created,
+              model: body.model,
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    content: event.delta,
+                  },
+                  finish_reason: null,
+                },
+              ],
+            });
+            continue;
+          }
+          if (event.type === "reasoning_delta") {
+            streamedResult.reasoningText = `${streamedResult.reasoningText || ""}${event.delta}`;
+            writeSseData(reply, {
+              id: respId,
+              object: "chat.completion.chunk",
+              created,
+              model: body.model,
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    reasoning: event.delta,
+                  },
+                  finish_reason: null,
+                },
+              ],
+            });
+            continue;
+          }
+          if (event.type === "tool_call") {
+            streamedResult.toolCalls.push(event.toolCall);
+            writeSseData(reply, {
+              id: respId,
+              object: "chat.completion.chunk",
+              created,
+              model: body.model,
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    tool_calls: [
+                      {
+                        id: event.toolCall.id,
+                        type: "function",
+                        function: {
+                          name: event.toolCall.name,
+                          arguments: event.toolCall.arguments,
+                        },
+                      },
+                    ],
+                  },
+                  finish_reason: null,
+                },
+              ],
+            });
+            continue;
+          }
+          streamedResult.finishReason = event.finishReason;
+        }
+      } catch (error) {
+        if (!streamInitialized) {
+          throw error;
+        }
+        writeSseData(reply, {
+          object: "error",
+          error: error instanceof Error ? error.message : String(error),
+        });
+        reply.raw.write("data: [DONE]\n\n");
+        reply.raw.end();
+        return reply;
+      }
+
+      ensureStreamHeaders();
+      writeSseData(reply, {
+        id: respId,
+        object: "chat.completion.chunk",
+        created,
+        model: body.model,
+        choices: [
+          {
+            index: 0,
+            delta: {},
+            finish_reason:
+              streamedResult.toolCalls.length > 0 ? "tool_calls" : streamedResult.finishReason,
+          },
+        ],
+      });
+      reply.raw.write("data: [DONE]\n\n");
+      reply.raw.end();
+      return reply;
+    }
+
+    const result = normalizeAssistantResult(await registry.runModel(body.model, runRequest));
     logBlankAssistantResult(reply.log.warn.bind(reply.log), body.model, result, "/chat/completions");
 
     // Log tool calls for debugging
@@ -1204,14 +1502,8 @@ async function handleChatCompletionsRequest(
             delta: {
               role: "assistant",
               content: result.outputText || null,
-              tool_calls: result.toolCalls.map((call) => ({
-                id: call.id,
-                type: "function",
-                function: {
-                  name: call.name,
-                  arguments: call.arguments,
-                },
-              })),
+              reasoning: result.reasoningText,
+              tool_calls: buildChatCompletionToolCalls(result),
             },
             finish_reason: result.toolCalls.length > 0 ? "tool_calls" : result.finishReason,
           },
@@ -1224,30 +1516,19 @@ async function handleChatCompletionsRequest(
       return reply;
     }
 
-    return {
-      id: makeId("chatcmpl"),
-      object: "chat.completion",
-      created: Math.floor(Date.now() / 1000),
-      model: body.model,
-      choices: [
-        {
-          index: 0,
-          message: {
-            role: "assistant",
-            content: result.outputText || null,
-            tool_calls: result.toolCalls.map((call) => ({
-              id: call.id,
-              type: "function",
-              function: {
-                name: call.name,
-                arguments: call.arguments,
-              },
-            })),
+      return {
+        id: makeId("chatcmpl"),
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: body.model,
+        choices: [
+          {
+            index: 0,
+            message: buildChatCompletionMessage(result),
+            finish_reason:
+              result.toolCalls.length > 0 ? "tool_calls" : result.finishReason,
           },
-          finish_reason:
-            result.toolCalls.length > 0 ? "tool_calls" : result.finishReason,
-        },
-      ],
+        ],
       usage: {
         prompt_tokens: 0,
         completion_tokens: 0,
@@ -1507,6 +1788,10 @@ export function normalizeResponsesInput(raw: unknown, depth = 0): ChatMessage[] 
         content: toolCallText,
       },
     ];
+  }
+
+  if (record.type === "reasoning") {
+    return [];
   }
 
   // Handle tool role directly (n8n sometimes sends this)
@@ -1892,6 +2177,19 @@ function parseImageGenerations(text: string): OpenAiImageItem[] {
     if (parsed.length > 0) {
       return parsed;
     }
+  }
+
+  return [];
+}
+
+function parseImageGenerationsFromResult(result: ProviderResult): OpenAiImageItem[] {
+  const fromText = parseImageGenerations(result.outputText);
+  if (fromText.length > 0) {
+    return fromText;
+  }
+
+  if (result.raw !== undefined) {
+    return normalizeImagePayload(result.raw);
   }
 
   return [];

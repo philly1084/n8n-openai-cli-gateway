@@ -8,12 +8,13 @@ import type {
   LoginJobSummary,
   ProviderRateLimits,
   ProviderResult,
+  ProviderStreamEvent,
   ProviderToolCall,
   RateLimitInfo,
   UnifiedRequest,
   UnifiedToolDefinition,
 } from "../types";
-import { runCommand, resolveCommand } from "../utils/command";
+import { runCommand, runCommandStream, resolveCommand } from "../utils/command";
 import { buildPrompt } from "../utils/prompt";
 import { normalizeToolName, normalizeToolAlias, normalizeArgumentKey } from "../utils/tools";
 import { normalizeAssistantResult } from "../utils/assistant-output";
@@ -23,9 +24,28 @@ interface JsonContract {
   output_text?: string;
   text?: string;
   content?: string;
+  reasoning?: unknown;
   tool_calls?: unknown[];
   finish_reason?: "stop" | "tool_calls" | "length" | "error";
 }
+
+type JsonStreamContract =
+  | {
+    type: "reasoning_delta";
+    delta?: unknown;
+  }
+  | {
+    type: "output_text_delta";
+    delta?: unknown;
+  }
+  | {
+    type: "tool_call";
+    tool_call?: unknown;
+  }
+  | {
+    type: "done";
+    finish_reason?: unknown;
+  };
 
 export class CliProvider implements Provider {
   readonly id: string;
@@ -40,7 +60,84 @@ export class CliProvider implements Provider {
     this.models = config.models;
   }
 
+  supportsStreaming(): boolean {
+    return this.config.responseCommand.args.some((arg) => arg.includes("codex-appserver-bridge.js"));
+  }
+
   async run(request: UnifiedRequest): Promise<ProviderResult> {
+    const prepared = await this.prepareCommandExecution(request);
+    try {
+      const output = await runCommand(prepared.resolved, prepared.stdinPayload);
+      if (output.timedOut) {
+        throw new Error(`Provider command timed out after ${prepared.resolved.timeoutMs}ms.`);
+      }
+
+      if (output.exitCode !== 0) {
+        throw new Error(
+          [
+            `Provider command exited with code ${output.exitCode}.`,
+            output.stderr ? `stderr: ${output.stderr.trim()}` : "",
+            output.stdout ? `stdout: ${output.stdout.trim()}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        );
+      }
+      const parsed = this.parseOutput(output.stdout);
+      return normalizeResultToolCalls(parsed, request.tools);
+    } finally {
+      await rm(prepared.tmpDir, { recursive: true, force: true });
+    }
+  }
+
+  async *runStream(request: UnifiedRequest): AsyncIterable<ProviderStreamEvent> {
+    if (!this.supportsStreaming()) {
+      throw new Error(`Provider ${this.id} does not support live streaming.`);
+    }
+    if (this.config.responseCommand.output !== "json_contract") {
+      throw new Error(`Provider ${this.id} does not support streaming for output mode ${this.config.responseCommand.output}.`);
+    }
+
+    const allowedTools = extractAllowedTools(request.tools);
+    const prepared = await this.prepareCommandExecution({
+      ...request,
+      stream: true,
+    });
+
+    try {
+      let pendingStdout = "";
+      for await (const event of runCommandStream(prepared.resolved, prepared.stdinPayload)) {
+        if (event.stream !== "stdout") {
+          continue;
+        }
+
+        pendingStdout += event.chunk;
+        let newlineIndex = pendingStdout.indexOf("\n");
+        while (newlineIndex !== -1) {
+          const line = pendingStdout.slice(0, newlineIndex).trim();
+          pendingStdout = pendingStdout.slice(newlineIndex + 1);
+          const parsedEvent = parseJsonStreamEvent(line);
+          if (parsedEvent) {
+            yield normalizeStreamToolEvent(parsedEvent, allowedTools);
+          }
+          newlineIndex = pendingStdout.indexOf("\n");
+        }
+      }
+
+      const trailingEvent = parseJsonStreamEvent(pendingStdout.trim());
+      if (trailingEvent) {
+        yield normalizeStreamToolEvent(trailingEvent, allowedTools);
+      }
+    } finally {
+      await rm(prepared.tmpDir, { recursive: true, force: true });
+    }
+  }
+
+  private async prepareCommandExecution(request: UnifiedRequest): Promise<{
+    tmpDir: string;
+    resolved: ReturnType<typeof resolveCommand>;
+    stdinPayload: string;
+  }> {
     const modelConfig = this.models.find((model) => model.id === request.model);
     if (!modelConfig) {
       throw new Error(`Provider ${this.id} does not expose model ${request.model}.`);
@@ -75,12 +172,7 @@ export class CliProvider implements Provider {
       request_file: requestFile,
     };
 
-    // When the prompt is too large to fit in command-line args (OS ARG_MAX
-    // is typically ~128KB), rewrite args templates to read from the prompt
-    // file instead. We modify the *template strings* (not the vars) so that
-    // {{prompt_file}} is substituted instead of {{prompt}}, avoiding the
-    // shell-escaping that applyTemplate applies to {{prompt}}.
-    const MAX_ARG_PROMPT_BYTES = 100_000; // ~100KB, well under typical ARG_MAX
+    const MAX_ARG_PROMPT_BYTES = 100_000;
     const argsUsePrompt = this.config.responseCommand.args.some(
       (arg) => arg.includes("{{prompt}}"),
     );
@@ -91,48 +183,26 @@ export class CliProvider implements Provider {
         this.config.responseCommand.executable === "sh" ||
         this.config.responseCommand.executable === "bash" ||
         this.config.responseCommand.executable === "zsh";
-      // Rewrite the arg templates: replace {{prompt}} with file-based reading
       const rewrittenArgs = this.config.responseCommand.args.map((arg) => {
-        if (!arg.includes("{{prompt}}")) return arg;
+        if (!arg.includes("{{prompt}}")) {
+          return arg;
+        }
         if (isShellCommand) {
-          // In shell scripts, use command substitution to read the file
           return arg.replace(/\{\{\s*prompt\s*\}\}/g, "$(cat '{{prompt_file}}')");
         }
-        // For direct executables, pass the file path instead
         return arg.replace(/\{\{\s*prompt\s*\}\}/g, "{{prompt_file}}");
       });
       commandSpec = { ...this.config.responseCommand, args: rewrittenArgs };
     }
 
-    try {
-      const resolved = resolveCommand(commandSpec, vars);
-      const stdinPayload =
+    return {
+      tmpDir,
+      resolved: resolveCommand(commandSpec, vars),
+      stdinPayload:
         this.config.responseCommand.input === "request_json_stdin"
           ? JSON.stringify(requestPayload)
-          : prompt;
-
-      const output = await runCommand(resolved, stdinPayload);
-      if (output.timedOut) {
-        throw new Error(`Provider command timed out after ${resolved.timeoutMs}ms.`);
-      }
-
-      if (output.exitCode !== 0) {
-        throw new Error(
-          [
-            `Provider command exited with code ${output.exitCode}.`,
-            output.stderr ? `stderr: ${output.stderr.trim()}` : "",
-            output.stdout ? `stdout: ${output.stdout.trim()}` : "",
-          ]
-            .filter(Boolean)
-            .join("\n"),
-        );
-      }
-
-      const parsed = this.parseOutput(output.stdout);
-      return normalizeResultToolCalls(parsed, request.tools);
-    } finally {
-      await rm(tmpDir, { recursive: true, force: true });
-    }
+          : prompt,
+    };
   }
 
   async startLoginJob(jobManager: JobManager): Promise<LoginJobSummary> {
@@ -370,6 +440,7 @@ export class CliProvider implements Provider {
         const toolCalls = normalizeToolCalls(contract.tool_calls);
         return normalizeAssistantResult({
           outputText: (contract.output_text ?? contract.text ?? contract.content ?? "").trim(),
+          reasoningText: normalizeReasoningText(contract.reasoning),
           toolCalls,
           finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
           raw: contract,
@@ -390,6 +461,7 @@ export class CliProvider implements Provider {
         const toolCalls = normalizeToolCalls(contract.tool_calls);
         return normalizeAssistantResult({
           outputText: (contract.output_text ?? contract.text ?? contract.content ?? "").trim(),
+          reasoningText: normalizeReasoningText(contract.reasoning),
           toolCalls,
           finishReason:
             contract.finish_reason ?? (toolCalls.length > 0 ? "tool_calls" : "stop"),
@@ -406,6 +478,7 @@ export class CliProvider implements Provider {
 
     const json = tryParseJsonContract(stdout);
     const toolCalls = normalizeToolCalls(json.tool_calls);
+    const reasoningText = normalizeReasoningText(json.reasoning);
 
     const outputText = (json.output_text ?? json.text ?? json.content ?? "").trim();
     const finishReason =
@@ -428,9 +501,12 @@ export class CliProvider implements Provider {
       const promotedFinishReason =
         nestedContract.finish_reason ??
         (promotedToolCalls.length > 0 ? "tool_calls" : finishReason);
+      const promotedReasoningText =
+        normalizeReasoningText(nestedContract.reasoning) ?? reasoningText;
 
       return normalizeAssistantResult({
         outputText: promotedOutputText,
+        reasoningText: promotedReasoningText,
         toolCalls: promotedToolCalls,
         finishReason: promotedFinishReason,
         raw: json,
@@ -439,11 +515,57 @@ export class CliProvider implements Provider {
 
     return normalizeAssistantResult({
       outputText,
+      reasoningText,
       toolCalls,
       finishReason,
       raw: json,
     });
   }
+}
+
+function parseJsonStreamEvent(line: string): ProviderStreamEvent | null {
+  if (!line) {
+    return null;
+  }
+
+  let parsed: JsonStreamContract;
+  try {
+    parsed = JSON.parse(line) as JsonStreamContract;
+  } catch {
+    return null;
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || typeof parsed.type !== "string") {
+    return null;
+  }
+
+  if (parsed.type === "reasoning_delta" || parsed.type === "output_text_delta") {
+    return typeof parsed.delta === "string" && parsed.delta
+      ? {
+        type: parsed.type,
+        delta: parsed.delta,
+      }
+      : null;
+  }
+
+  if (parsed.type === "tool_call") {
+    const toolCall = normalizeSingleToolCall(parsed.tool_call);
+    return toolCall
+      ? {
+        type: "tool_call",
+        toolCall,
+      }
+      : null;
+  }
+
+  if (parsed.type === "done") {
+    return {
+      type: "done",
+      finishReason: normalizeFinishReasonValue(parsed.finish_reason),
+    };
+  }
+
+  return null;
 }
 
 function normalizeResultToolCalls(
@@ -486,6 +608,33 @@ function normalizeResultToolCalls(
         : result.finishReason === "tool_calls"
           ? "stop"
           : result.finishReason,
+  };
+}
+
+function normalizeStreamToolEvent(
+  event: ProviderStreamEvent,
+  allowedTools: Map<string, AllowedToolMeta>,
+): ProviderStreamEvent {
+  if (event.type !== "tool_call") {
+    return event;
+  }
+
+  if (allowedTools.size === 0) {
+    return event;
+  }
+
+  const toolMeta = resolveAllowedToolMeta(event.toolCall.name, allowedTools);
+  if (!toolMeta) {
+    return event;
+  }
+
+  return {
+    type: "tool_call",
+    toolCall: {
+      ...event.toolCall,
+      name: toolMeta.name,
+      arguments: canonicalizeArgumentsForTool(event.toolCall.arguments, toolMeta.argumentKeyMap),
+    },
   };
 }
 
@@ -735,6 +884,7 @@ function normalizeContract(value: unknown): JsonContract {
       typeof source.output_text === "string" ? source.output_text : undefined,
     text: typeof source.text === "string" ? source.text : undefined,
     content: typeof source.content === "string" ? source.content : undefined,
+    reasoning: source.reasoning,
     tool_calls: Array.isArray(source.tool_calls) ? source.tool_calls : undefined,
     finish_reason:
       source.finish_reason === "stop" ||
@@ -809,6 +959,53 @@ function normalizeToolCalls(rawToolCalls: unknown[] | undefined): ProviderToolCa
   }
 
   return calls;
+}
+
+function normalizeSingleToolCall(value: unknown): ProviderToolCall | null {
+  const normalized = normalizeToolCalls(Array.isArray(value) ? value : value ? [value] : undefined);
+  return normalized[0] ?? null;
+}
+
+function normalizeFinishReasonValue(value: unknown): ProviderResult["finishReason"] {
+  return value === "tool_calls" || value === "length" || value === "error" ? value : "stop";
+}
+
+function normalizeReasoningText(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed || undefined;
+  }
+
+  if (Array.isArray(value)) {
+    const joined = value
+      .map((entry) => normalizeReasoningText(entry))
+      .filter((entry): entry is string => Boolean(entry))
+      .join("\n\n")
+      .trim();
+    return joined || undefined;
+  }
+
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const candidates = [
+    record.text,
+    record.content,
+    record.reasoning,
+    record.summary,
+    record.summary_text,
+    record.reasoning_text,
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeReasoningText(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return undefined;
 }
 
 function sanitizeArgumentKeys(value: unknown, depth = 0): unknown {

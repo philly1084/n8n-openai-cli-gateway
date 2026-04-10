@@ -13,6 +13,8 @@ interface GatewayRequest {
   prompt?: unknown;
   messages?: unknown;
   tools?: unknown;
+  stream?: unknown;
+  requestKind?: unknown;
   reasoningEffort?: unknown;
   metadata?: unknown;
 }
@@ -43,6 +45,7 @@ type FinishReason = "stop" | "tool_calls" | "length" | "error";
 
 interface JsonContract {
   output_text: string;
+  reasoning?: string;
   tool_calls?: Array<{
     id: string;
     name: string;
@@ -323,6 +326,19 @@ function buildPrompt(request: GatewayRequest): string {
       })
       .join("\n\n");
 
+  if (request.requestKind === "images_generations") {
+    return [
+      messageText,
+      "",
+      "You are connected through an OpenAI-compatible gateway images endpoint.",
+      "If you can generate or return image output, respond with raw JSON only in one of these shapes:",
+      '{"data":[{"b64_json":"<base64>","revised_prompt":"optional"}]}',
+      '{"data":[{"url":"https://example.com/image.png","revised_prompt":"optional"}]}',
+      "Do not wrap the JSON in markdown.",
+      "Do not return explanatory prose before or after the JSON.",
+    ].join("\n");
+  }
+
   const tools = Array.isArray(request.tools) ? request.tools : [];
   if (tools.length === 0) {
     return messageText;
@@ -417,51 +433,129 @@ function parseToolCallFromRawItem(item: unknown):
   };
 }
 
-function collectAssistantTextFromRawItem(item: unknown): string {
+function collectAssistantContentFromRawItem(item: unknown): {
+  outputText: string;
+  reasoningText: string;
+} {
   if (!item || typeof item !== "object") {
-    return "";
+    return { outputText: "", reasoningText: "" };
   }
   const record = item as Record<string, unknown>;
   if (record.type !== "message" || record.role !== "assistant") {
-    return "";
+    return { outputText: "", reasoningText: "" };
   }
   const content = Array.isArray(record.content) ? record.content : [];
-  const parts: string[] = [];
+  const outputParts: string[] = [];
+  const reasoningParts: string[] = [];
   for (const entry of content) {
     if (!entry || typeof entry !== "object") {
       continue;
     }
     const part = entry as Record<string, unknown>;
+    const partType = typeof part.type === "string" ? part.type.toLowerCase() : "";
+    const reasoningCandidate = collectReasoningText(part);
+    const isReasoningPart =
+      partType.includes("reason") ||
+      partType.includes("summary") ||
+      partType.includes("thinking");
+    if (reasoningCandidate && isReasoningPart) {
+      reasoningParts.push(reasoningCandidate);
+      continue;
+    }
     if (typeof part.text === "string" && part.text) {
-      parts.push(part.text);
+      outputParts.push(part.text);
       continue;
     }
     if (typeof part.output_text === "string" && part.output_text) {
-      parts.push(part.output_text);
+      outputParts.push(part.output_text);
+      continue;
+    }
+    if (reasoningCandidate) {
+      reasoningParts.push(reasoningCandidate);
     }
   }
-  return parts.join("\n").trim();
+  return {
+    outputText: outputParts.join("\n").trim(),
+    reasoningText: reasoningParts.join("\n").trim(),
+  };
 }
 
-function collectAssistantTextFromThreadItem(item: unknown): string {
+function collectAssistantContentFromThreadItem(item: unknown): {
+  outputText: string;
+  reasoningText: string;
+} {
   if (!item || typeof item !== "object") {
-    return "";
+    return { outputText: "", reasoningText: "" };
   }
   const record = item as Record<string, unknown>;
   if (record.type !== "agentMessage") {
-    return "";
+    return { outputText: "", reasoningText: "" };
   }
-  return typeof record.text === "string" ? record.text.trim() : "";
+  const partType = typeof record.kind === "string"
+    ? record.kind.toLowerCase()
+    : typeof record.subtype === "string"
+      ? record.subtype.toLowerCase()
+      : "";
+  const text = typeof record.text === "string" ? record.text.trim() : "";
+  if (partType.includes("reason") || partType.includes("summary") || partType.includes("thinking")) {
+    return {
+      outputText: "",
+      reasoningText: text,
+    };
+  }
+  return {
+    outputText: text,
+    reasoningText: collectReasoningText(record),
+  };
 }
 
 function normalizeTextForComparison(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
-function appendUniqueTextPart(textParts: string[], candidate: string): void {
+function collectReasoningText(value: unknown, depth = 0): string {
+  if (depth > 6 || value === null || value === undefined) {
+    return "";
+  }
+
+  if (typeof value === "string") {
+    return value.trim();
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => collectReasoningText(entry, depth + 1))
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+  }
+
+  if (!isObjectRecord(value)) {
+    return "";
+  }
+
+  const candidates = [
+    value.reasoning,
+    value.summary,
+    value.summary_text,
+    value.reasoning_text,
+    value.text,
+    value.content,
+  ];
+  for (const candidate of candidates) {
+    const extracted = collectReasoningText(candidate, depth + 1);
+    if (extracted) {
+      return extracted;
+    }
+  }
+
+  return "";
+}
+
+function appendUniqueTextPart(textParts: string[], candidate: string): boolean {
   const trimmed = candidate.trim();
   if (!trimmed) {
-    return;
+    return false;
   }
 
   const previous = textParts[textParts.length - 1];
@@ -469,10 +563,11 @@ function appendUniqueTextPart(textParts: string[], candidate: string): void {
     typeof previous === "string" &&
     normalizeTextForComparison(previous) === normalizeTextForComparison(trimmed)
   ) {
-    return;
+    return false;
   }
 
   textParts.push(trimmed);
+  return true;
 }
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
@@ -586,6 +681,7 @@ function parseJsonContractFromText(raw: string): JsonContract | null {
 
     return {
       output_text: outputText.trim(),
+      reasoning: collectReasoningText(value.reasoning),
       tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
       finish_reason: finishReason,
     };
@@ -742,6 +838,10 @@ function delay(ms: number): Promise<void> {
   });
 }
 
+function writeStreamEvent(value: Record<string, unknown>): void {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+
 async function run(): Promise<void> {
   const model = parseModelArg(process.argv.slice(2));
   const timeoutMs = parseTimeoutMs();
@@ -763,6 +863,9 @@ async function run(): Promise<void> {
   const dynamicTools = extractDynamicTools(request);
   const prompt = buildPrompt(request);
   const reasoningEffort = resolveReasoningEffort(request);
+  const shouldStream =
+    request.stream === true &&
+    (request.requestKind === "chat_completions" || request.requestKind === "responses");
 
   const appServer = spawn("codex", ["app-server", "--listen", "stdio://"], {
     stdio: ["pipe", "pipe", "pipe"],
@@ -890,6 +993,7 @@ async function run(): Promise<void> {
     const toolCalls: NonNullable<JsonContract["tool_calls"]> = [];
     const toolCallIds = new Set<string>();
     const textParts: string[] = [];
+    const reasoningParts: string[] = [];
     let turnCompleted = false;
     let turnFailedMessage = "";
     let toolCallSeenAt = 0;
@@ -924,9 +1028,16 @@ async function run(): Promise<void> {
         const mappedName = allowedToolNames.get(normalizedName);
         const isAllowed = Boolean(mappedName);
         if (isAllowed && !toolCallIds.has(callId)) {
+          const toolCall = { id: callId, name: mappedName!, arguments: args };
           toolCallIds.add(callId);
-          toolCalls.push({ id: callId, name: mappedName!, arguments: args });
+          toolCalls.push(toolCall);
           toolCallSeenAt = Date.now();
+          if (shouldStream) {
+            writeStreamEvent({
+              type: "tool_call",
+              tool_call: toolCall,
+            });
+          }
         }
         if (Object.prototype.hasOwnProperty.call(message, "id")) {
           rpc.respond(message.id, {
@@ -960,14 +1071,32 @@ async function run(): Promise<void> {
         const call = parseToolCallFromRawItem(params.item);
         const mappedName = call ? allowedToolNames.get(normalizeToolName(call.name)) : undefined;
         if (call && mappedName && !toolCallIds.has(call.id)) {
+          const toolCall = { ...call, name: mappedName };
           toolCallIds.add(call.id);
-          toolCalls.push({ ...call, name: mappedName });
+          toolCalls.push(toolCall);
           toolCallSeenAt = Date.now();
+          if (shouldStream) {
+            writeStreamEvent({
+              type: "tool_call",
+              tool_call: toolCall,
+            });
+          }
           continue;
         }
 
-        const text = collectAssistantTextFromRawItem(params.item);
-        appendUniqueTextPart(textParts, text);
+        const content = collectAssistantContentFromRawItem(params.item);
+        if (appendUniqueTextPart(reasoningParts, content.reasoningText) && shouldStream) {
+          writeStreamEvent({
+            type: "reasoning_delta",
+            delta: content.reasoningText.trim(),
+          });
+        }
+        if (appendUniqueTextPart(textParts, content.outputText) && shouldStream) {
+          writeStreamEvent({
+            type: "output_text_delta",
+            delta: content.outputText.trim(),
+          });
+        }
         continue;
       }
 
@@ -982,8 +1111,19 @@ async function run(): Promise<void> {
         if (turnId && incomingTurnId && incomingTurnId !== turnId) {
           continue;
         }
-        const text = collectAssistantTextFromThreadItem(params.item);
-        appendUniqueTextPart(textParts, text);
+        const content = collectAssistantContentFromThreadItem(params.item);
+        if (appendUniqueTextPart(reasoningParts, content.reasoningText) && shouldStream) {
+          writeStreamEvent({
+            type: "reasoning_delta",
+            delta: content.reasoningText.trim(),
+          });
+        }
+        if (appendUniqueTextPart(textParts, content.outputText) && shouldStream) {
+          writeStreamEvent({
+            type: "output_text_delta",
+            delta: content.outputText.trim(),
+          });
+        }
         continue;
       }
 
@@ -1045,11 +1185,23 @@ async function run(): Promise<void> {
     }
 
     let outputText = textParts.join("\n").trim();
+    let reasoningText = reasoningParts.join("\n").trim();
     let finishReason: FinishReason = "stop";
 
     const parsedContract = parseJsonContractFromText(outputText);
     if (parsedContract) {
       outputText = parsedContract.output_text || outputText;
+      if (appendUniqueTextPart(reasoningParts, parsedContract.reasoning ?? "")) {
+        reasoningText = reasoningParts.join("\n").trim();
+        if (shouldStream) {
+          writeStreamEvent({
+            type: "reasoning_delta",
+            delta: parsedContract.reasoning,
+          });
+        }
+      } else {
+        reasoningText = reasoningParts.join("\n").trim();
+      }
       finishReason = parsedContract.finish_reason;
 
       const parsedToolCalls = Array.isArray(parsedContract.tool_calls)
@@ -1058,15 +1210,30 @@ async function run(): Promise<void> {
       for (const call of parsedToolCalls) {
         const mappedName = allowedToolNames.get(normalizeToolName(call.name));
         if (mappedName && !toolCallIds.has(call.id)) {
+          const toolCall = { ...call, name: mappedName };
           toolCallIds.add(call.id);
-          toolCalls.push({ ...call, name: mappedName });
+          toolCalls.push(toolCall);
+          if (shouldStream) {
+            writeStreamEvent({
+              type: "tool_call",
+              tool_call: toolCall,
+            });
+          }
         }
       }
     }
 
     if (toolCalls.length > 0) {
+      if (shouldStream) {
+        writeStreamEvent({
+          type: "done",
+          finish_reason: "tool_calls",
+        });
+        return;
+      }
       const out: JsonContract = {
         output_text: outputText,
+        reasoning: reasoningText || undefined,
         tool_calls: toolCalls,
         finish_reason: "tool_calls",
       };
@@ -1082,8 +1249,17 @@ async function run(): Promise<void> {
       finishReason = "stop";
     }
 
+    if (shouldStream) {
+      writeStreamEvent({
+        type: "done",
+        finish_reason: finishReason,
+      });
+      return;
+    }
+
     const out: JsonContract = {
       output_text: outputText,
+      reasoning: reasoningText || undefined,
       finish_reason: finishReason,
     };
     process.stdout.write(JSON.stringify(out));

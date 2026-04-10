@@ -24,6 +24,8 @@ export interface UnifiedRequest {
   providerModel: string;
   messages: ChatMessage[];
   tools: UnifiedToolDefinition[];
+  stream?: boolean;
+  requestKind?: string;
   reasoningEffort?: ReasoningEffort;
   metadata?: Record<string, unknown>;
 }
@@ -38,8 +40,27 @@ export interface ProviderResult {
   outputText: string;
   toolCalls: ProviderToolCall[];
   finishReason: "stop" | "tool_calls" | "length" | "error";
+  reasoningText?: string;
   raw?: unknown;
 }
+
+export type ProviderStreamEvent =
+  | {
+    type: "reasoning_delta";
+    delta: string;
+  }
+  | {
+    type: "output_text_delta";
+    delta: string;
+  }
+  | {
+    type: "tool_call";
+    toolCall: ProviderToolCall;
+  }
+  | {
+    type: "done";
+    finishReason: ProviderResult["finishReason"];
+  };
 
 export type CommandOutputMode =
   | "text"

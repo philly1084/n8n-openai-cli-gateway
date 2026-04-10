@@ -453,6 +453,7 @@ function parseChatCompletionResponse(payload: unknown): ProviderResult {
 
   return normalizeAssistantResult({
     outputText: extractMessageText(payload, choice, message),
+    reasoningText: extractReasoningText(message?.reasoning),
     toolCalls,
     finishReason,
     raw: payload,
@@ -561,6 +562,11 @@ function extractMessageText(
 
 function extractTextCandidate(content: unknown): string {
   return extractTextCandidateRecursive(content, 0);
+}
+
+function extractReasoningText(content: unknown): string | undefined {
+  const extracted = extractTextCandidate(content).trim();
+  return extracted || undefined;
 }
 
 function extractTextCandidateRecursive(content: unknown, depth: number): string {

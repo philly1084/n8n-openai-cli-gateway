@@ -18,6 +18,11 @@ export interface CommandOutput {
   timedOut: boolean;
 }
 
+export interface CommandStreamEvent {
+  stream: "stdout" | "stderr";
+  chunk: string;
+}
+
 export interface ResolveCommandOptions extends TemplateOptions {
   /** Optional logger for shell safety warnings */
   logger?: {
@@ -130,4 +135,143 @@ export async function runCommand(
     }
     child.stdin.end();
   });
+}
+
+export async function* runCommandStream(
+  command: ResolvedCommand,
+  stdinData?: string,
+): AsyncGenerator<CommandStreamEvent, void, void> {
+  const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10MB cap per stream
+  const child = spawn(command.executable, command.args, {
+    env: {
+      ...process.env,
+      ...command.env,
+    },
+    cwd: command.cwd,
+    stdio: "pipe",
+  });
+
+  const queue: CommandStreamEvent[] = [];
+  let stdout = "";
+  let stderr = "";
+  let finished = false;
+  let timedOut = false;
+  let exitCode: number | null = null;
+  let signal: NodeJS.Signals | null = null;
+  let streamError: Error | null = null;
+  let wake: (() => void) | undefined;
+  let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const notify = () => {
+    const resolver = wake;
+    wake = undefined;
+    resolver?.();
+  };
+
+  const timer = setTimeout(() => {
+    timedOut = true;
+    child.kill("SIGTERM");
+    sigkillTimer = setTimeout(() => child.kill("SIGKILL"), 2000);
+  }, command.timeoutMs);
+
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+
+  child.stdout.on("data", (chunk: string) => {
+    if (stdout.length < MAX_OUTPUT_BYTES) {
+      stdout += chunk;
+    }
+    queue.push({
+      stream: "stdout",
+      chunk,
+    });
+    notify();
+  });
+
+  child.stderr.on("data", (chunk: string) => {
+    if (stderr.length < MAX_OUTPUT_BYTES) {
+      stderr += chunk;
+    }
+    queue.push({
+      stream: "stderr",
+      chunk,
+    });
+    notify();
+  });
+
+  child.on("error", (err) => {
+    if (finished) {
+      return;
+    }
+    streamError = err;
+    finished = true;
+    clearTimeout(timer);
+    if (sigkillTimer) {
+      clearTimeout(sigkillTimer);
+    }
+    notify();
+  });
+
+  child.on("close", (closeExitCode, closeSignal) => {
+    if (finished) {
+      return;
+    }
+
+    finished = true;
+    exitCode = closeExitCode;
+    signal = closeSignal;
+    clearTimeout(timer);
+    if (sigkillTimer) {
+      clearTimeout(sigkillTimer);
+    }
+    notify();
+  });
+
+  child.stdin.on("error", () => { /* ignore EPIPE */ });
+
+  if (stdinData !== undefined) {
+    child.stdin.write(stdinData);
+  }
+  child.stdin.end();
+
+  try {
+    while (!finished || queue.length > 0) {
+      if (queue.length === 0) {
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
+        continue;
+      }
+
+      const next = queue.shift();
+      if (next) {
+        yield next;
+      }
+    }
+  } finally {
+    if (!finished) {
+      child.kill("SIGTERM");
+    }
+  }
+
+  if (streamError) {
+    throw streamError;
+  }
+
+  if (timedOut) {
+    throw new Error(`Provider command timed out after ${command.timeoutMs}ms.`);
+  }
+
+  if (exitCode !== 0) {
+    throw new Error(
+      [
+        `Provider command exited with code ${exitCode}.`,
+        stderr ? `stderr: ${stderr.trim()}` : "",
+        stdout ? `stdout: ${stdout.trim()}` : "",
+        signal ? `signal: ${signal}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    );
+  }
 }

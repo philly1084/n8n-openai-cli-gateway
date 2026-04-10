@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { ChatMessage } from "../types";
-import type { AppConfig, ProviderResult, UnifiedRequest } from "../types";
+import type { AppConfig, ProviderResult, ProviderStreamEvent, UnifiedRequest } from "../types";
 import type { ProviderRegistry } from "../providers/registry";
 import { buildServer } from "../server";
 import {
@@ -166,6 +166,20 @@ test("buildResponseOutputItems emits assistant text before tool calls", () => {
   assert.equal(items[1]?.call_id, "call_1");
 });
 
+test("buildResponseOutputItems includes reasoning blocks when available", () => {
+  const items = buildResponseOutputItems({
+    outputText: "Answer",
+    reasoningText: "Checked the prior tool outputs before answering.",
+    toolCalls: [],
+    finishReason: "stop",
+  });
+
+  assert.equal(items.length, 2);
+  assert.equal(items[0]?.type, "message");
+  assert.equal(items[1]?.type, "reasoning");
+  assert.equal((items[1] as { text?: string }).text, "Checked the prior tool outputs before answering.");
+});
+
 test("responses route stores ordered input items and hydrates previous_response_id state", async () => {
   const capturedRequests: Array<Omit<UnifiedRequest, "model" | "providerModel">> = [];
   let callCount = 0;
@@ -246,11 +260,160 @@ test("responses route stores ordered input items and hydrates previous_response_
   }
 });
 
+test("chat completions response includes reasoning when provider returns it", async () => {
+  const server = createTestServer(async () => ({
+    outputText: "Final answer",
+    reasoningText: "Reasoned carefully first.",
+    toolCalls: [],
+    finishReason: "stop",
+  }));
+
+  try {
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: {
+        authorization: "Bearer test-key",
+      },
+      payload: {
+        model: "demo-model",
+        messages: [{ role: "user", content: "Hi" }],
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    const body = response.json() as Record<string, unknown>;
+    const choices = body.choices as Array<Record<string, unknown>>;
+    const message = choices[0]?.message as Record<string, unknown>;
+    assert.equal(message.reasoning, "Reasoned carefully first.");
+  } finally {
+    await server.close();
+  }
+});
+
+test("chat completions stream emits incremental Codex chunks", async () => {
+  const server = createTestServer(
+    async () => ({
+      outputText: "",
+      toolCalls: [],
+      finishReason: "stop",
+    }),
+    async function* () {
+      yield { type: "reasoning_delta", delta: "Think 1. " } satisfies ProviderStreamEvent;
+      yield { type: "output_text_delta", delta: "Hello" } satisfies ProviderStreamEvent;
+      yield { type: "output_text_delta", delta: " world" } satisfies ProviderStreamEvent;
+      yield { type: "done", finishReason: "stop" } satisfies ProviderStreamEvent;
+    },
+  );
+
+  try {
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: {
+        authorization: "Bearer test-key",
+      },
+      payload: {
+        model: "demo-model",
+        stream: true,
+        messages: [{ role: "user", content: "Hi" }],
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.match(response.payload, /"reasoning":"Think 1\. "/);
+    assert.match(response.payload, /"content":"Hello"/);
+    assert.match(response.payload, /"content":" world"/);
+    assert.match(response.payload, /"finish_reason":"stop"/);
+    assert.match(response.payload, /\[DONE\]/);
+  } finally {
+    await server.close();
+  }
+});
+
+test("responses stream emits incremental chunks and stores reasoning in final output", async () => {
+  const server = createTestServer(
+    async () => ({
+      outputText: "",
+      toolCalls: [],
+      finishReason: "stop",
+    }),
+    async function* () {
+      yield { type: "reasoning_delta", delta: "Plan first. " } satisfies ProviderStreamEvent;
+      yield { type: "output_text_delta", delta: "Done" } satisfies ProviderStreamEvent;
+      yield { type: "done", finishReason: "stop" } satisfies ProviderStreamEvent;
+    },
+  );
+
+  try {
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/v1/responses",
+      headers: {
+        authorization: "Bearer test-key",
+      },
+      payload: {
+        model: "demo-model",
+        stream: true,
+        input: "Hi",
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.match(response.payload, /"reasoning_delta":"Plan first\. "/);
+    assert.match(response.payload, /"output_text_delta":"Done"/);
+    assert.match(response.payload, /"type":"reasoning"/);
+    assert.match(response.payload, /\[DONE\]/);
+  } finally {
+    await server.close();
+  }
+});
+
+test("images route parses image data from provider raw payload", async () => {
+  const server = createTestServer(async () => ({
+    outputText: "",
+    toolCalls: [],
+    finishReason: "stop",
+    raw: {
+      data: [
+        {
+          url: "https://example.com/image.png",
+        },
+      ],
+    },
+  }));
+
+  try {
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/v1/images/generations",
+      headers: {
+        authorization: "Bearer test-key",
+      },
+      payload: {
+        model: "demo-model",
+        prompt: "A lighthouse",
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    const body = response.json() as Record<string, unknown>;
+    const data = body.data as Array<Record<string, unknown>>;
+    assert.equal(data[0]?.url, "https://example.com/image.png");
+  } finally {
+    await server.close();
+  }
+});
+
 function createTestServer(
   runModel: (
     modelId: string,
     request: Omit<UnifiedRequest, "model" | "providerModel">,
   ) => Promise<ProviderResult>,
+  runModelStream?: (
+    modelId: string,
+    request: Omit<UnifiedRequest, "model" | "providerModel">,
+  ) => AsyncIterable<ProviderStreamEvent>,
 ) {
   const registry = {
     listModels: () => [
@@ -263,6 +426,8 @@ function createTestServer(
     ],
     listProviders: () => [],
     runModel,
+    canStreamModel: () => Boolean(runModelStream),
+    runModelStream: runModelStream ?? (async function* () {}) ,
   } as unknown as ProviderRegistry;
 
   const config: AppConfig = {
