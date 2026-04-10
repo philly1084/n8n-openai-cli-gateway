@@ -60,6 +60,8 @@ export type ProviderStreamEvent =
   | {
     type: "done";
     finishReason: ProviderResult["finishReason"];
+    outputText?: string;
+    reasoningText?: string;
   };
 
 export type CommandOutputMode =

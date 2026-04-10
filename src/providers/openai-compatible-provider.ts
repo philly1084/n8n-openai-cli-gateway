@@ -96,6 +96,10 @@ export class OpenAiCompatibleProvider implements Provider {
     }
 
     const providerModel = modelConfig.providerModel || request.providerModel;
+    if (request.requestKind === "images_generations") {
+      return await this.runImageGeneration(providerModel, request);
+    }
+
     const suppressGroqLocalToolCalling = shouldSuppressGroqLocalToolCalling(
       this.config.baseUrl,
       providerModel,
@@ -157,6 +161,42 @@ export class OpenAiCompatibleProvider implements Provider {
     });
 
     return parseChatCompletionResponse(response);
+  }
+
+  private async runImageGeneration(
+    providerModel: string,
+    request: UnifiedRequest,
+  ): Promise<ProviderResult> {
+    const prompt = buildImageGenerationPrompt(request);
+    if (!prompt) {
+      throw new Error("Image generation prompt is required.");
+    }
+
+    const body: Record<string, unknown> = {
+      model: providerModel,
+      prompt,
+    };
+
+    copyIntegerMetadata(body, request.metadata, "n");
+    copyStringMetadata(body, request.metadata, "size");
+    copyStringMetadata(body, request.metadata, "quality");
+    copyStringMetadata(body, request.metadata, "style");
+    copyStringMetadata(body, request.metadata, "background");
+    copyStringMetadata(body, request.metadata, "output_format");
+    copyStringMetadata(body, request.metadata, "response_format");
+    copyStringMetadata(body, request.metadata, "user");
+
+    const response = await this.requestJson("/images/generations", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+
+    return {
+      outputText: "",
+      toolCalls: [],
+      finishReason: "stop",
+      raw: response,
+    };
   }
 
   async startLoginJob(_jobManager: JobManager): Promise<LoginJobSummary> {
@@ -780,6 +820,19 @@ function extractForwardedMetadata(
   }
 
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function buildImageGenerationPrompt(request: UnifiedRequest): string {
+  const promptFromMetadata = extractTextContent(readMetadataValue(request.metadata, "prompt")).trim();
+  if (promptFromMetadata) {
+    return promptFromMetadata;
+  }
+
+  return request.messages
+    .map((message) => message.content.trim())
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
 }
 
 function readMetadataValue(

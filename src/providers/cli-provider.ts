@@ -45,7 +45,17 @@ type JsonStreamContract =
   | {
     type: "done";
     finish_reason?: unknown;
+    output_text?: unknown;
+    reasoning?: unknown;
   };
+
+function isTruthyEnv(value: string | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
 
 export class CliProvider implements Provider {
   readonly id: string;
@@ -68,6 +78,9 @@ export class CliProvider implements Provider {
     const prepared = await this.prepareCommandExecution(request);
     try {
       const output = await runCommand(prepared.resolved, prepared.stdinPayload);
+      if (isTruthyEnv(process.env.CODEX_APPSERVER_DEBUG_RPC) && output.stderr.trim()) {
+        process.stderr.write(output.stderr);
+      }
       if (output.timedOut) {
         throw new Error(`Provider command timed out after ${prepared.resolved.timeoutMs}ms.`);
       }
@@ -108,6 +121,9 @@ export class CliProvider implements Provider {
       let pendingStdout = "";
       for await (const event of runCommandStream(prepared.resolved, prepared.stdinPayload)) {
         if (event.stream !== "stdout") {
+          if (isTruthyEnv(process.env.CODEX_APPSERVER_DEBUG_RPC) && event.chunk) {
+            process.stderr.write(event.chunk);
+          }
           continue;
         }
 
@@ -562,6 +578,11 @@ function parseJsonStreamEvent(line: string): ProviderStreamEvent | null {
     return {
       type: "done",
       finishReason: normalizeFinishReasonValue(parsed.finish_reason),
+      outputText:
+        typeof parsed.output_text === "string" && parsed.output_text
+          ? parsed.output_text
+          : undefined,
+      reasoningText: normalizeReasoningText(parsed.reasoning),
     };
   }
 

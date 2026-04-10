@@ -154,6 +154,25 @@ providers:
       #         jq '{limitType: "credits", remaining: .total_available, maxAllowed: .total_granted}'
       #   timeoutMs: 30000
 
+  - id: openai-image-api
+    type: openai
+    description: OpenAI Images API
+    baseUrl: https://api.openai.com/v1
+    apiKeyEnv: OPENAI_API_KEY
+    timeoutMs: 240000
+    models:
+      - id: gpt-image-1.5
+        providerModel: gpt-image-1.5
+        fallbackModels:
+          - gpt-image-1
+          - gpt-image-1-mini
+      - id: gpt-image-1
+        providerModel: gpt-image-1
+        fallbackModels:
+          - gpt-image-1-mini
+      - id: gpt-image-1-mini
+        providerModel: gpt-image-1-mini
+
   # ============================================================================
   # FREE AI SERVICES
   # ============================================================================

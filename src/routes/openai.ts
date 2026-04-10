@@ -439,8 +439,33 @@ function buildChatCompletionMessage(result: ProviderResult): Record<string, unkn
   return message;
 }
 
+function startSseStream(reply: FastifyReply): void {
+  reply.hijack();
+  reply.raw.setHeader("Content-Type", "text/event-stream");
+  reply.raw.setHeader("Cache-Control", "no-cache, no-transform");
+  reply.raw.setHeader("Connection", "keep-alive");
+  reply.raw.setHeader("X-Accel-Buffering", "no");
+  if (typeof reply.raw.flushHeaders === "function") {
+    reply.raw.flushHeaders();
+  }
+  reply.raw.write(": stream-open\n\n");
+}
+
 function writeSseData(reply: FastifyReply, payload: unknown): void {
   reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function computeMonotonicDelta(previousText: string, nextText: string): string {
+  if (!nextText) {
+    return "";
+  }
+  if (!previousText) {
+    return nextText;
+  }
+  if (!nextText.startsWith(previousText)) {
+    return "";
+  }
+  return nextText.slice(previousText.length);
 }
 
 function resolveFrontendToolAllowlist(metadata?: Record<string, unknown>): Set<string> {
@@ -855,20 +880,9 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
           toolCalls: [],
           finishReason: "stop",
         };
-        let streamInitialized = false;
-        const ensureStreamHeaders = () => {
-          if (streamInitialized) {
-            return;
-          }
-          streamInitialized = true;
-          reply.raw.setHeader("Content-Type", "text/event-stream");
-          reply.raw.setHeader("Cache-Control", "no-cache");
-          reply.raw.setHeader("Connection", "keep-alive");
-        };
-
+        startSseStream(reply);
         try {
           for await (const event of options.registry.runModelStream(body.model, runRequest)) {
-            ensureStreamHeaders();
             if (event.type === "output_text_delta") {
               streamedResult.outputText += event.delta;
               writeSseData(reply, {
@@ -926,12 +940,52 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
               });
               continue;
             }
-            streamedResult.finishReason = event.finishReason;
+            if (event.type === "done") {
+              if (typeof event.reasoningText === "string") {
+                const delta = computeMonotonicDelta(streamedResult.reasoningText || "", event.reasoningText);
+                if (delta) {
+                  streamedResult.reasoningText = event.reasoningText;
+                  writeSseData(reply, {
+                    id: responseId,
+                    object: "response.chunk",
+                    created_at: createdAt,
+                    status: "in_progress",
+                    model: body.model,
+                    previous_response_id: previousResponseId,
+                    conversation: {
+                      id: conversationId,
+                    },
+                    reasoning_delta: delta,
+                  });
+                } else {
+                  streamedResult.reasoningText = event.reasoningText;
+                }
+              }
+              if (typeof event.outputText === "string") {
+                const delta = computeMonotonicDelta(streamedResult.outputText, event.outputText);
+                if (delta) {
+                  streamedResult.outputText = event.outputText;
+                  writeSseData(reply, {
+                    id: responseId,
+                    object: "response.chunk",
+                    created_at: createdAt,
+                    status: "in_progress",
+                    model: body.model,
+                    previous_response_id: previousResponseId,
+                    conversation: {
+                      id: conversationId,
+                    },
+                    output_text_delta: delta,
+                  });
+                } else {
+                  streamedResult.outputText = event.outputText;
+                }
+              }
+              streamedResult.finishReason = event.finishReason;
+              continue;
+            }
           }
         } catch (error) {
-          if (!streamInitialized) {
-            throw error;
-          }
           writeSseData(reply, {
             object: "error",
             error: error instanceof Error ? error.message : String(error),
@@ -956,7 +1010,6 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
           outputText: streamedResult.outputText,
         });
         const responsePayload = buildStoredResponse(storedResponse);
-        ensureStreamHeaders();
         writeSseData(reply, responsePayload);
         reply.raw.write("data: [DONE]\n\n");
         reply.raw.end();
@@ -993,9 +1046,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
       const responsePayload = buildStoredResponse(storedResponse);
 
       if (isStream) {
-        reply.raw.setHeader("Content-Type", "text/event-stream");
-        reply.raw.setHeader("Cache-Control", "no-cache");
-        reply.raw.setHeader("Connection", "keep-alive");
+        startSseStream(reply);
 
         const chunkData = {
           id: responseId,
@@ -1351,20 +1402,9 @@ async function handleChatCompletionsRequest(
         toolCalls: [],
         finishReason: "stop",
       };
-      let streamInitialized = false;
-      const ensureStreamHeaders = () => {
-        if (streamInitialized) {
-          return;
-        }
-        streamInitialized = true;
-        reply.raw.setHeader("Content-Type", "text/event-stream");
-        reply.raw.setHeader("Cache-Control", "no-cache");
-        reply.raw.setHeader("Connection", "keep-alive");
-      };
-
+      startSseStream(reply);
       try {
         for await (const event of registry.runModelStream(body.model, runRequest)) {
-          ensureStreamHeaders();
           if (event.type === "output_text_delta") {
             streamedResult.outputText += event.delta;
             writeSseData(reply, {
@@ -1431,12 +1471,58 @@ async function handleChatCompletionsRequest(
             });
             continue;
           }
-          streamedResult.finishReason = event.finishReason;
+          if (event.type === "done") {
+            if (typeof event.reasoningText === "string") {
+              const delta = computeMonotonicDelta(streamedResult.reasoningText || "", event.reasoningText);
+              if (delta) {
+                streamedResult.reasoningText = event.reasoningText;
+                writeSseData(reply, {
+                  id: respId,
+                  object: "chat.completion.chunk",
+                  created,
+                  model: body.model,
+                  choices: [
+                    {
+                      index: 0,
+                      delta: {
+                        reasoning: delta,
+                      },
+                      finish_reason: null,
+                    },
+                  ],
+                });
+              } else {
+                streamedResult.reasoningText = event.reasoningText;
+              }
+            }
+            if (typeof event.outputText === "string") {
+              const delta = computeMonotonicDelta(streamedResult.outputText, event.outputText);
+              if (delta) {
+                streamedResult.outputText = event.outputText;
+                writeSseData(reply, {
+                  id: respId,
+                  object: "chat.completion.chunk",
+                  created,
+                  model: body.model,
+                  choices: [
+                    {
+                      index: 0,
+                      delta: {
+                        content: delta,
+                      },
+                      finish_reason: null,
+                    },
+                  ],
+                });
+              } else {
+                streamedResult.outputText = event.outputText;
+              }
+            }
+            streamedResult.finishReason = event.finishReason;
+            continue;
+          }
         }
       } catch (error) {
-        if (!streamInitialized) {
-          throw error;
-        }
         writeSseData(reply, {
           object: "error",
           error: error instanceof Error ? error.message : String(error),
@@ -1446,7 +1532,6 @@ async function handleChatCompletionsRequest(
         return reply;
       }
 
-      ensureStreamHeaders();
       writeSseData(reply, {
         id: respId,
         object: "chat.completion.chunk",
@@ -1484,9 +1569,7 @@ async function handleChatCompletionsRequest(
     }
 
     if (isStream) {
-      reply.raw.setHeader("Content-Type", "text/event-stream");
-      reply.raw.setHeader("Cache-Control", "no-cache");
-      reply.raw.setHeader("Connection", "keep-alive");
+      startSseStream(reply);
 
       const respId = makeId("chatcmpl");
       const created = Math.floor(Date.now() / 1000);

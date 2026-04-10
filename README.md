@@ -261,6 +261,7 @@ Environment variables for CLI:
 | `RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window (milliseconds) |
 | `MAX_REQUEST_BODY_SIZE` | `10485760` | Max request body size in bytes (10MB) |
 | `OPENAI_REASONING_EFFORT` | provider default | Default reasoning effort for chat/responses requests |
+| `OPENAI_API_KEY` | unset | API key for OpenAI `type: openai` providers, including image generation |
 | `GROQ_API_KEY` | unset | API key for Groq `type: openai` providers |
 
 Kimi is configured through the local `kimi` CLI via an ACP bridge in the current examples. It does not use `KIMI_API_KEY`; authenticate once in the provider home by running `kimi` in a TTY and then `/login` (some older CLI builds still use `/setup`).
@@ -404,7 +405,9 @@ The gateway also accepts `responses` follow-up tool input entries of `type: "fun
 
 ### Image generation provider output
 
-`POST /v1/images/generations` runs the selected CLI model and maps provider output to OpenAI image response format.
+`POST /v1/images/generations` runs the selected model and maps provider output to OpenAI image response format.
+
+For real OpenAI-hosted image generation, prefer a `type: openai` provider pointed at `https://api.openai.com/v1` with `gpt-image-1.5`, `gpt-image-1`, or `gpt-image-1-mini`. Codex CLI models are useful for coding/chat, but not as the primary backend for the Images API.
 
 Accepted provider output patterns:
 

@@ -239,6 +239,89 @@ function normalizeValue(value: unknown): string {
   }
 }
 
+function isTruthyEnv(value: string | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function writeDebugLog(label: string, payload?: Record<string, unknown>): void {
+  const suffix = payload ? ` ${JSON.stringify(payload)}` : "";
+  process.stderr.write(`[codex-appserver-bridge] ${label}${suffix}\n`);
+}
+
+function summarizeRpcParams(params?: Record<string, unknown>): Record<string, unknown> {
+  if (!params) {
+    return {};
+  }
+
+  const summary: Record<string, unknown> = {
+    keys: Object.keys(params).slice(0, 12),
+  };
+  if (typeof params.threadId === "string") {
+    summary.threadId = params.threadId;
+  }
+  if (typeof params.turnId === "string") {
+    summary.turnId = params.turnId;
+  }
+  if (typeof params.callId === "string") {
+    summary.callId = params.callId;
+  }
+  if (typeof params.tool === "string") {
+    summary.tool = params.tool;
+  }
+  if (typeof params.willRetry === "boolean") {
+    summary.willRetry = params.willRetry;
+  }
+
+  const item = isObjectRecord(params.item) ? params.item : undefined;
+  if (item) {
+    if (typeof item.type === "string") {
+      summary.itemType = item.type;
+    }
+    if (typeof item.kind === "string") {
+      summary.itemKind = item.kind;
+    }
+    if (typeof item.role === "string") {
+      summary.itemRole = item.role;
+    }
+    if (Array.isArray(item.content)) {
+      summary.contentTypes = item.content
+        .filter((entry): entry is Record<string, unknown> => isObjectRecord(entry))
+        .map((entry) => (typeof entry.type === "string" ? entry.type : ""))
+        .filter(Boolean)
+        .slice(0, 12);
+    }
+  }
+
+  const turn = isObjectRecord(params.turn) ? params.turn : undefined;
+  if (turn) {
+    if (typeof turn.id === "string") {
+      summary.turnObjectId = turn.id;
+    }
+    if (typeof turn.status === "string") {
+      summary.turnStatus = turn.status;
+    }
+  }
+
+  return summary;
+}
+
+function computeMonotonicDelta(previousText: string, nextText: string): string {
+  if (!nextText) {
+    return "";
+  }
+  if (!previousText) {
+    return nextText;
+  }
+  if (!nextText.startsWith(previousText)) {
+    return "";
+  }
+  return nextText.slice(previousText.length);
+}
+
 function parseRequest(input: string): GatewayRequest {
   return JSON.parse(input) as GatewayRequest;
 }
@@ -863,6 +946,7 @@ async function run(): Promise<void> {
   const dynamicTools = extractDynamicTools(request);
   const prompt = buildPrompt(request);
   const reasoningEffort = resolveReasoningEffort(request);
+  const debugRpc = isTruthyEnv(process.env.CODEX_APPSERVER_DEBUG_RPC);
   const shouldStream =
     request.stream === true &&
     (request.requestKind === "chat_completions" || request.requestKind === "responses");
@@ -994,9 +1078,47 @@ async function run(): Promise<void> {
     const toolCallIds = new Set<string>();
     const textParts: string[] = [];
     const reasoningParts: string[] = [];
+    let streamedOutputText = "";
+    let streamedReasoningText = "";
     let turnCompleted = false;
     let turnFailedMessage = "";
     let toolCallSeenAt = 0;
+    const streamAggregateText = (
+      eventType: "output_text_delta" | "reasoning_delta",
+      nextText: string,
+    ): void => {
+      if (!shouldStream) {
+        if (eventType === "output_text_delta") {
+          streamedOutputText = nextText;
+        } else {
+          streamedReasoningText = nextText;
+        }
+        return;
+      }
+
+      const previousText = eventType === "output_text_delta"
+        ? streamedOutputText
+        : streamedReasoningText;
+      const delta = computeMonotonicDelta(previousText, nextText);
+      if (delta) {
+        writeStreamEvent({
+          type: eventType,
+          delta,
+        });
+      } else if (nextText !== previousText && debugRpc) {
+        writeDebugLog("non_monotonic_stream_update", {
+          eventType,
+          previousLength: previousText.length,
+          nextLength: nextText.length,
+        });
+      }
+
+      if (eventType === "output_text_delta") {
+        streamedOutputText = nextText;
+      } else {
+        streamedReasoningText = nextText;
+      }
+    };
 
     while (Date.now() - startedAt < timeoutMs) {
       const incoming = await rpc.nextMessage(1000);
@@ -1013,8 +1135,16 @@ async function run(): Promise<void> {
         message.params && typeof message.params === "object"
           ? (message.params as Record<string, unknown>)
           : undefined;
+      let handledMethod = false;
+      if (debugRpc && method) {
+        writeDebugLog("rpc", {
+          method,
+          ...summarizeRpcParams(params),
+        });
+      }
 
       if (method === "item/tool/call" && params) {
+        handledMethod = true;
         const callId =
           typeof params.callId === "string" && params.callId
             ? params.callId
@@ -1056,6 +1186,7 @@ async function run(): Promise<void> {
       }
 
       if (method === "rawResponseItem/completed" && params) {
+        handledMethod = true;
         const incomingThreadId =
           typeof params.threadId === "string" ? params.threadId : "";
         if (incomingThreadId && incomingThreadId !== threadId) {
@@ -1085,22 +1216,17 @@ async function run(): Promise<void> {
         }
 
         const content = collectAssistantContentFromRawItem(params.item);
-        if (appendUniqueTextPart(reasoningParts, content.reasoningText) && shouldStream) {
-          writeStreamEvent({
-            type: "reasoning_delta",
-            delta: content.reasoningText.trim(),
-          });
+        if (appendUniqueTextPart(reasoningParts, content.reasoningText)) {
+          streamAggregateText("reasoning_delta", reasoningParts.join("\n").trim());
         }
-        if (appendUniqueTextPart(textParts, content.outputText) && shouldStream) {
-          writeStreamEvent({
-            type: "output_text_delta",
-            delta: content.outputText.trim(),
-          });
+        if (appendUniqueTextPart(textParts, content.outputText)) {
+          streamAggregateText("output_text_delta", textParts.join("\n").trim());
         }
         continue;
       }
 
       if (method === "item/completed" && params) {
+        handledMethod = true;
         const incomingThreadId =
           typeof params.threadId === "string" ? params.threadId : "";
         if (incomingThreadId && incomingThreadId !== threadId) {
@@ -1112,22 +1238,17 @@ async function run(): Promise<void> {
           continue;
         }
         const content = collectAssistantContentFromThreadItem(params.item);
-        if (appendUniqueTextPart(reasoningParts, content.reasoningText) && shouldStream) {
-          writeStreamEvent({
-            type: "reasoning_delta",
-            delta: content.reasoningText.trim(),
-          });
+        if (appendUniqueTextPart(reasoningParts, content.reasoningText)) {
+          streamAggregateText("reasoning_delta", reasoningParts.join("\n").trim());
         }
-        if (appendUniqueTextPart(textParts, content.outputText) && shouldStream) {
-          writeStreamEvent({
-            type: "output_text_delta",
-            delta: content.outputText.trim(),
-          });
+        if (appendUniqueTextPart(textParts, content.outputText)) {
+          streamAggregateText("output_text_delta", textParts.join("\n").trim());
         }
         continue;
       }
 
       if (method === "error" && params) {
+        handledMethod = true;
         const incomingTurnId =
           typeof params.turnId === "string" ? params.turnId : "";
         if (turnId && incomingTurnId && incomingTurnId !== turnId) {
@@ -1149,6 +1270,7 @@ async function run(): Promise<void> {
       }
 
       if (method === "turn/completed" && params) {
+        handledMethod = true;
         const incomingThreadId =
           typeof params.threadId === "string" ? params.threadId : "";
         if (incomingThreadId && incomingThreadId !== threadId) {
@@ -1176,6 +1298,13 @@ async function run(): Promise<void> {
         turnCompleted = true;
       }
 
+      if (debugRpc && method && !handledMethod) {
+        writeDebugLog("unhandled_rpc", {
+          method,
+          ...summarizeRpcParams(params),
+        });
+      }
+
       if (toolCallSeenAt && Date.now() - toolCallSeenAt > 1200) {
         break;
       }
@@ -1191,14 +1320,10 @@ async function run(): Promise<void> {
     const parsedContract = parseJsonContractFromText(outputText);
     if (parsedContract) {
       outputText = parsedContract.output_text || outputText;
+      streamAggregateText("output_text_delta", outputText);
       if (appendUniqueTextPart(reasoningParts, parsedContract.reasoning ?? "")) {
         reasoningText = reasoningParts.join("\n").trim();
-        if (shouldStream) {
-          writeStreamEvent({
-            type: "reasoning_delta",
-            delta: parsedContract.reasoning,
-          });
-        }
+        streamAggregateText("reasoning_delta", reasoningText);
       } else {
         reasoningText = reasoningParts.join("\n").trim();
       }
@@ -1228,6 +1353,8 @@ async function run(): Promise<void> {
         writeStreamEvent({
           type: "done",
           finish_reason: "tool_calls",
+          output_text: outputText,
+          reasoning: reasoningText || undefined,
         });
         return;
       }
@@ -1253,6 +1380,8 @@ async function run(): Promise<void> {
       writeStreamEvent({
         type: "done",
         finish_reason: finishReason,
+        output_text: outputText,
+        reasoning: reasoningText || undefined,
       });
       return;
     }

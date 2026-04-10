@@ -321,6 +321,7 @@ test("chat completions stream emits incremental Codex chunks", async () => {
     });
 
     assert.equal(response.statusCode, 200);
+    assert.match(response.payload, /: stream-open/);
     assert.match(response.payload, /"reasoning":"Think 1\. "/);
     assert.match(response.payload, /"content":"Hello"/);
     assert.match(response.payload, /"content":" world"/);
@@ -360,10 +361,51 @@ test("responses stream emits incremental chunks and stores reasoning in final ou
     });
 
     assert.equal(response.statusCode, 200);
+    assert.match(response.payload, /: stream-open/);
     assert.match(response.payload, /"reasoning_delta":"Plan first\. "/);
     assert.match(response.payload, /"output_text_delta":"Done"/);
     assert.match(response.payload, /"type":"reasoning"/);
     assert.match(response.payload, /\[DONE\]/);
+  } finally {
+    await server.close();
+  }
+});
+
+test("chat completions stream can flush final snapshots from done events", async () => {
+  const server = createTestServer(
+    async () => ({
+      outputText: "",
+      toolCalls: [],
+      finishReason: "stop",
+    }),
+    async function* () {
+      yield {
+        type: "done",
+        finishReason: "stop",
+        outputText: "Hello world",
+        reasoningText: "Planned first.",
+      } satisfies ProviderStreamEvent;
+    },
+  );
+
+  try {
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: {
+        authorization: "Bearer test-key",
+      },
+      payload: {
+        model: "demo-model",
+        stream: true,
+        messages: [{ role: "user", content: "Hi" }],
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.match(response.payload, /"reasoning":"Planned first\."/);
+    assert.match(response.payload, /"content":"Hello world"/);
+    assert.match(response.payload, /"finish_reason":"stop"/);
   } finally {
     await server.close();
   }
