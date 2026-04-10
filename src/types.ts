@@ -70,6 +70,15 @@ export type CommandOutputMode =
   | "text_contract_final_line"
   | "json_contract";
 export type CommandInputMode = "prompt_stdin" | "request_json_stdin";
+export type SessionPtyMode = "auto" | "pipe" | "script";
+export type ProviderSessionMode = "interactive" | "login";
+export type ProviderSessionStatus =
+  | "starting"
+  | "running"
+  | "completed"
+  | "failed"
+  | "terminated"
+  | "timed_out";
 
 export interface CommandSpec {
   executable: string;
@@ -77,6 +86,20 @@ export interface CommandSpec {
   env?: Record<string, string>;
   cwd?: string;
   timeoutMs: number;
+}
+
+export interface SessionCommandConfig {
+  executable: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  loginArgs?: string[];
+  supportsModelSelection?: boolean;
+  modelFlag?: string;
+  supportsWorkingDirectory?: boolean;
+  idleTimeoutMs?: number;
+  maxLifetimeMs?: number;
+  ptyMode?: SessionPtyMode;
 }
 
 export interface AuthConfig {
@@ -108,6 +131,7 @@ export interface CliProviderConfig {
     output: CommandOutputMode;
     input: CommandInputMode;
   };
+  sessionCommand?: SessionCommandConfig;
   auth?: AuthConfig;
 }
 
@@ -133,6 +157,8 @@ export interface AppConfig {
   port: number;
   n8nApiKeys: Set<string>;
   adminApiKey: string;
+  frontendApiKeys: Set<string>;
+  frontendAllowedCwds: string[];
   providersPath: string;
   logLevel: "trace" | "debug" | "info" | "warn" | "error" | "fatal";
   maxJobLogLines: number;
@@ -203,3 +229,55 @@ export interface ProviderRateLimits {
   /** When all limits were last checked */
   lastCheckedAt?: string;
 }
+
+export interface ProviderSessionCapability {
+  providerId: string;
+  providerDescription?: string;
+  providerType: ProviderConfig["type"];
+  supportsSessions: boolean;
+  supportsLoginSessions: boolean;
+  supportsModelSelection: boolean;
+  supportsWorkingDirectory: boolean;
+  ptyMode?: SessionPtyMode;
+  models: ProviderModelConfig[];
+}
+
+export interface ProviderSessionSummary {
+  id: string;
+  providerId: string;
+  providerDescription?: string;
+  mode: ProviderSessionMode;
+  status: ProviderSessionStatus;
+  model?: string;
+  cwd?: string;
+  cols: number;
+  rows: number;
+  createdAt: string;
+  startedAt: string;
+  lastActivityAt: string;
+  finishedAt?: string;
+  exitCode?: number | null;
+  supportsResize: boolean;
+  streamToken: string;
+}
+
+export type ProviderSessionEvent =
+  | {
+    type: "output";
+    cursor: number;
+    ts: string;
+    data: string;
+  }
+  | {
+    type: "status";
+    cursor: number;
+    ts: string;
+    status: ProviderSessionStatus;
+    message?: string;
+  }
+  | {
+    type: "exit";
+    cursor: number;
+    ts: string;
+    exitCode: number | null;
+  };

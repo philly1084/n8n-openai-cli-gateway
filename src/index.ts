@@ -55,6 +55,8 @@ async function main(): Promise<void> {
       rateLimitMax: config.rateLimitMax,
       rateLimitWindowMs: config.rateLimitWindowMs,
       maxRequestBodySize: config.maxRequestBodySize,
+      frontendApiKeysConfigured: config.frontendApiKeys.size,
+      frontendAllowedCwds: config.frontendAllowedCwds,
       shutdownTimeoutMs: config.shutdownTimeoutMs,
       defaultReasoningEffort: config.defaultReasoningEffort,
     },

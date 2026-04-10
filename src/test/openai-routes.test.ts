@@ -477,6 +477,8 @@ function createTestServer(
     port: 0,
     n8nApiKeys: new Set(["test-key"]),
     adminApiKey: "admin-key",
+    frontendApiKeys: new Set(),
+    frontendAllowedCwds: [],
     providersPath: "config/providers.yaml",
     logLevel: "error",
     maxJobLogLines: 10,

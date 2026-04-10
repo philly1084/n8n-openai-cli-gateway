@@ -37,6 +37,15 @@ providers:
       input: prompt_stdin
       output: text
       timeoutMs: 240000
+    sessionCommand:
+      executable: opencode
+      args: []
+      env:
+        TERM: xterm-256color
+      supportsWorkingDirectory: true
+      idleTimeoutMs: 1800000
+      maxLifetimeMs: 14400000
+      ptyMode: auto
     auth:
       loginCommand:
         executable: opencode
@@ -128,6 +137,18 @@ providers:
       input: request_json_stdin
       output: json_contract
       timeoutMs: 240000
+    sessionCommand:
+      executable: codex
+      args: []
+      loginArgs:
+        - login
+        - --no-browser
+      env:
+        TERM: xterm-256color
+      supportsWorkingDirectory: true
+      idleTimeoutMs: 1800000
+      maxLifetimeMs: 14400000
+      ptyMode: auto
     auth:
       loginCommand:
         executable: codex
@@ -302,6 +323,15 @@ providers:
       input: request_json_stdin
       output: json_contract
       timeoutMs: 240000
+    sessionCommand:
+      executable: kimi
+      args: []
+      env:
+        TERM: xterm-256color
+      supportsWorkingDirectory: true
+      idleTimeoutMs: 1800000
+      maxLifetimeMs: 14400000
+      ptyMode: auto
     auth:
       loginCommand:
         executable: sh

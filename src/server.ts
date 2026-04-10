@@ -2,7 +2,9 @@ import Fastify from "fastify";
 import type { AppConfig } from "./types";
 import { adminRoutes } from "./routes/admin";
 import { openAiRoutes } from "./routes/openai";
+import { providerSessionRoutes } from "./routes/provider-sessions";
 import { JobManager } from "./jobs/job-manager";
+import { ProviderSessionManager } from "./jobs/provider-session-manager";
 import { ProviderRegistry } from "./providers/registry";
 import { LruMap } from "./utils/lru-map";
 import { makeId } from "./utils/ids";
@@ -81,6 +83,9 @@ export function buildServer(config: AppConfig, registry: ProviderRegistry) {
   });
 
   const jobManager = new JobManager(config.maxJobLogLines);
+  const providerSessionManager = new ProviderSessionManager({
+    allowedCwds: config.frontendAllowedCwds,
+  });
 
   // Rate limit store scoped to this server instance
   const rateLimitStore = new LruMap<string, RateLimitEntry>(RATE_LIMIT_STORE_MAX_SIZE);
@@ -186,6 +191,14 @@ export function buildServer(config: AppConfig, registry: ProviderRegistry) {
     adminApiKey: config.adminApiKey,
   });
 
+  app.register(providerSessionRoutes, {
+    prefix: "/admin",
+    registry,
+    sessionManager: providerSessionManager,
+    adminApiKey: config.adminApiKey,
+    frontendApiKeys: config.frontendApiKeys,
+  });
+
   app.setErrorHandler((error, request, reply) => {
     const requestId = request.headers["x-request-id"];
     request.log.error({ error, requestId }, "Request error");
@@ -230,6 +243,7 @@ export function buildServer(config: AppConfig, registry: ProviderRegistry) {
 
       // Clear the rate limit cleanup interval
       clearInterval(rateLimitCleanupInterval);
+      await providerSessionManager.close();
 
       app.log.info("Graceful shutdown complete.");
     },

@@ -60,6 +60,7 @@ Each provider defines:
 
 - `models` exposed to n8n.
 - `responseCommand` to run model inference.
+- optional `sessionCommand` to expose the provider's interactive CLI to a trusted frontend client.
 - optional `auth.loginCommand`, `auth.statusCommand`, and `auth.rateLimitCommand`.
 - optional per-model `fallbackModels` list of model ids to try when a provider command fails.
 
@@ -106,6 +107,8 @@ Optional environment variables:
 - `CODEX_APPSERVER_TIMEOUT_MS` (default `240000`)
 - `CODEX_APPSERVER_DEBUG_RPC` (`1`/`true` to log raw Codex app-server JSON-RPC methods to stderr)
 - `OPENAI_REASONING_EFFORT` default reasoning effort when requests omit it
+- `FRONTEND_API_KEY` / `FRONTEND_API_KEYS` dedicated keys for trusted frontend session clients
+- `FRONTEND_ALLOWED_CWDS` comma-separated working-directory roots that frontend session clients may request
 
 ### Groq API with model discovery
 
@@ -178,6 +181,52 @@ List recent login jobs:
 curl "http://localhost:8080/admin/jobs?limit=20" \
   -H "x-admin-key: replace-me-admin"
 ```
+
+## 4) Frontend provider sessions
+
+Use provider sessions when you want a trusted frontend CLI to drive the full interactive provider CLI instead of the stateless `/v1/*` adapter surface.
+
+Provider requirements:
+
+- The provider must be `type: cli`.
+- The provider must define `sessionCommand`.
+- DeepSeek in the default config remains API-backed, so it does not expose an interactive session CLI.
+
+Recommended environment:
+
+```powershell
+$env:FRONTEND_API_KEY="replace-me-frontend"
+$env:FRONTEND_ALLOWED_CWDS="C:\repos,C:\work"
+```
+
+Session lifecycle:
+
+```bash
+# List interactive-session capabilities
+curl http://localhost:8080/admin/provider-capabilities \
+  -H "Authorization: Bearer replace-me-frontend"
+
+# Create a Gemini session
+curl -X POST http://localhost:8080/admin/provider-sessions \
+  -H "Authorization: Bearer replace-me-frontend" \
+  -H "Content-Type: application/json" \
+  -d '{"providerId":"gemini-cli","cwd":"C:\\repos\\my-app","cols":120,"rows":40}'
+
+# Send input to the running session
+curl -X POST http://localhost:8080/admin/provider-sessions/<session_id>/input \
+  -H "Authorization: Bearer replace-me-frontend" \
+  -H "Content-Type: application/json" \
+  -d '{"data":"hello\n"}'
+
+# Fetch transcript snapshots
+curl http://localhost:8080/admin/provider-sessions/<session_id>/transcript \
+  -H "Authorization: Bearer replace-me-frontend"
+```
+
+Streaming output:
+
+- `GET /admin/provider-sessions/:id/stream` returns an SSE stream.
+- The session creation response includes a `streamUrl` with a short-lived attach token so the frontend can open the stream without reusing the main auth key on every reconnect.
 
 Check auth status:
 

@@ -37,6 +37,21 @@ const cliProviderSchema = z.object({
       .default("text"),
     input: z.enum(["prompt_stdin", "request_json_stdin"]).default("prompt_stdin"),
   }),
+  sessionCommand: z
+    .object({
+      executable: z.string().min(1),
+      args: z.array(z.string()).optional(),
+      env: z.record(z.string()).optional(),
+      cwd: z.string().optional(),
+      loginArgs: z.array(z.string()).optional(),
+      supportsModelSelection: z.boolean().optional(),
+      modelFlag: z.string().min(1).optional(),
+      supportsWorkingDirectory: z.boolean().optional(),
+      idleTimeoutMs: z.number().int().positive().optional(),
+      maxLifetimeMs: z.number().int().positive().optional(),
+      ptyMode: z.enum(["auto", "pipe", "script"]).optional(),
+    })
+    .optional(),
   auth: z
     .object({
       loginCommand: commandSchema.optional(),
@@ -66,14 +81,26 @@ const providersFileSchema = z.object({
 const reasoningEffortSchema = z.enum(REASONING_EFFORT_VALUES);
 
 function parseApiKeys(): Set<string> {
+  return parseApiKeysFromEnv("N8N_API_KEY", "N8N_API_KEYS", true);
+}
+
+function parseFrontendApiKeys(): Set<string> {
+  return parseApiKeysFromEnv("FRONTEND_API_KEY", "FRONTEND_API_KEYS", false);
+}
+
+function parseApiKeysFromEnv(
+  singleEnvKey: string,
+  multiEnvKey: string,
+  required: boolean,
+): Set<string> {
   const keys = new Set<string>();
 
-  const single = process.env.N8N_API_KEY?.trim();
+  const single = process.env[singleEnvKey]?.trim();
   if (single) {
     keys.add(single);
   }
 
-  const multi = process.env.N8N_API_KEYS;
+  const multi = process.env[multiEnvKey];
   if (multi) {
     for (const key of multi.split(",")) {
       const value = key.trim();
@@ -83,11 +110,24 @@ function parseApiKeys(): Set<string> {
     }
   }
 
-  if (keys.size === 0) {
-    throw new Error("Set N8N_API_KEY or N8N_API_KEYS.");
+  if (required && keys.size === 0) {
+    throw new Error(`Set ${singleEnvKey} or ${multiEnvKey}.`);
   }
 
   return keys;
+}
+
+function parseFrontendAllowedCwds(): string[] {
+  const raw = process.env.FRONTEND_ALLOWED_CWDS?.trim();
+  if (!raw) {
+    return [];
+  }
+
+  return raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => path.resolve(process.cwd(), entry));
 }
 
 export function loadAppConfig(): AppConfig {
@@ -159,6 +199,8 @@ export function loadAppConfig(): AppConfig {
     providersPath,
     n8nApiKeys: parseApiKeys(),
     adminApiKey,
+    frontendApiKeys: parseFrontendApiKeys(),
+    frontendAllowedCwds: parseFrontendAllowedCwds(),
     logLevel,
     maxJobLogLines,
     shutdownTimeoutMs,

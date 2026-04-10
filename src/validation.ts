@@ -141,6 +141,28 @@ export const audioTranslationsRequestSchema = z.object({
   user: z.string().optional(),
 });
 
+export const providerSessionCreateRequestSchema = z.object({
+  providerId: z.string().min(1, "providerId is required"),
+  mode: z.enum(["interactive", "login"]).default("interactive"),
+  model: z.string().min(1).optional(),
+  cwd: z.string().min(1).optional(),
+  cols: z.number().int().min(20).max(400).default(120),
+  rows: z.number().int().min(5).max(200).default(40),
+}).passthrough();
+
+export const providerSessionInputRequestSchema = z.object({
+  data: z.string().min(1, "data is required"),
+}).passthrough();
+
+export const providerSessionResizeRequestSchema = z.object({
+  cols: z.number().int().min(20).max(400),
+  rows: z.number().int().min(5).max(200),
+}).passthrough();
+
+export const providerSessionSignalRequestSchema = z.object({
+  signal: z.enum(["SIGINT", "SIGTERM", "SIGKILL"]).default("SIGINT"),
+}).passthrough();
+
 export type ChatCompletionsRequest = z.infer<typeof chatCompletionsRequestSchema>;
 export type ResponsesRequest = z.infer<typeof responsesRequestSchema>;
 export type ImageGenerationsRequest = z.infer<typeof imageGenerationsRequestSchema>;
@@ -148,3 +170,7 @@ export type DocumentGenerationsRequest = z.infer<typeof documentGenerationsReque
 export type AudioSpeechRequest = z.infer<typeof audioSpeechRequestSchema>;
 export type AudioTranscriptionsRequest = z.infer<typeof audioTranscriptionsRequestSchema>;
 export type AudioTranslationsRequest = z.infer<typeof audioTranslationsRequestSchema>;
+export type ProviderSessionCreateRequest = z.infer<typeof providerSessionCreateRequestSchema>;
+export type ProviderSessionInputRequest = z.infer<typeof providerSessionInputRequestSchema>;
+export type ProviderSessionResizeRequest = z.infer<typeof providerSessionResizeRequestSchema>;
+export type ProviderSessionSignalRequest = z.infer<typeof providerSessionSignalRequestSchema>;
