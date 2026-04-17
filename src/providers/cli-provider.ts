@@ -575,6 +575,7 @@ function parseJsonStreamEvent(line: string): ProviderStreamEvent | null {
   }
 
   if (parsed.type === "done") {
+    const parsedRecord = parsed as Record<string, unknown>;
     return {
       type: "done",
       finishReason: normalizeFinishReasonValue(parsed.finish_reason),
@@ -582,7 +583,7 @@ function parseJsonStreamEvent(line: string): ProviderStreamEvent | null {
         typeof parsed.output_text === "string" && parsed.output_text
           ? parsed.output_text
           : undefined,
-      reasoningText: normalizeReasoningText(parsed.reasoning),
+      reasoningText: normalizeReasoningText(extractReasoningValue(parsedRecord)),
     };
   }
 
@@ -780,11 +781,13 @@ function buildPromptWithTools(prompt: string, tools: UnifiedToolDefinition[]): s
     "TOOL: messages are outputs from previous tool calls.",
     "When TOOL: messages are present and no more tools are needed, answer the user in output_text.",
     "Do not copy placeholder or example text into output_text.",
+    "When possible, include a concise public reasoning summary in the optional reasoning field.",
+    "Do not reveal private chain-of-thought; use reasoning only for a short high-level summary.",
     "",
     "If a tool is needed, respond ONLY with valid JSON in this exact shape:",
-    '{"output_text":"","tool_calls":[{"id":"call_1","name":"tool_name","arguments":"{\\"key\\":\\"value\\"}"}],"finish_reason":"tool_calls"}',
+    '{"output_text":"","reasoning":"brief public reasoning summary","tool_calls":[{"id":"call_1","name":"tool_name","arguments":"{\\"key\\":\\"value\\"}"}],"finish_reason":"tool_calls"}',
     "",
-    'If no tool is needed, respond ONLY with valid JSON containing a real user-facing answer in output_text and "finish_reason":"stop".',
+    'If no tool is needed, respond ONLY with valid JSON containing a real user-facing answer in output_text, optional reasoning, and "finish_reason":"stop".',
   ].join("\n");
 }
 
@@ -905,7 +908,7 @@ function normalizeContract(value: unknown): JsonContract {
       typeof source.output_text === "string" ? source.output_text : undefined,
     text: typeof source.text === "string" ? source.text : undefined,
     content: typeof source.content === "string" ? source.content : undefined,
-    reasoning: source.reasoning,
+    reasoning: extractReasoningValue(source),
     tool_calls: Array.isArray(source.tool_calls) ? source.tool_calls : undefined,
     finish_reason:
       source.finish_reason === "stop" ||
@@ -991,6 +994,25 @@ function normalizeFinishReasonValue(value: unknown): ProviderResult["finishReaso
   return value === "tool_calls" || value === "length" || value === "error" ? value : "stop";
 }
 
+function extractReasoningValue(record: Record<string, unknown>): unknown {
+  const candidates = [
+    record.reasoning,
+    record.reasoning_content,
+    record.reasoningContent,
+    record.reasoning_text,
+    record.reasoningText,
+    record.summary,
+    record.summary_text,
+    record.summaryText,
+  ];
+  for (const candidate of candidates) {
+    if (candidate !== undefined) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
 function normalizeReasoningText(value: unknown): string | undefined {
   if (typeof value === "string") {
     const trimmed = value.trim();
@@ -1012,12 +1034,16 @@ function normalizeReasoningText(value: unknown): string | undefined {
 
   const record = value as Record<string, unknown>;
   const candidates = [
-    record.text,
-    record.content,
     record.reasoning,
+    record.reasoning_content,
+    record.reasoningContent,
+    record.reasoning_text,
+    record.reasoningText,
     record.summary,
     record.summary_text,
-    record.reasoning_text,
+    record.summaryText,
+    record.text,
+    record.content,
   ];
   for (const candidate of candidates) {
     const normalized = normalizeReasoningText(candidate);

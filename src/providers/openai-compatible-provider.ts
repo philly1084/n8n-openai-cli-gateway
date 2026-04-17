@@ -493,7 +493,7 @@ function parseChatCompletionResponse(payload: unknown): ProviderResult {
 
   return normalizeAssistantResult({
     outputText: extractMessageText(payload, choice, message),
-    reasoningText: extractReasoningText(message?.reasoning),
+    reasoningText: extractResponseReasoningText(payload, choice, message),
     toolCalls,
     finishReason,
     raw: payload,
@@ -607,6 +607,73 @@ function extractTextCandidate(content: unknown): string {
 function extractReasoningText(content: unknown): string | undefined {
   const extracted = extractTextCandidate(content).trim();
   return extracted || undefined;
+}
+
+function extractResponseReasoningText(
+  payload: unknown,
+  choice: Record<string, unknown>,
+  message?: Record<string, unknown>,
+): string | undefined {
+  for (const candidate of [
+    ...extractReasoningCandidates(message),
+    ...extractReasoningCandidates(choice),
+    ...(payload && typeof payload === "object"
+      ? extractReasoningCandidates(payload as Record<string, unknown>)
+      : []),
+  ]) {
+    const extracted = extractReasoningText(candidate);
+    if (extracted) {
+      return extracted;
+    }
+  }
+
+  return extractReasoningTextFromContentParts(message?.content);
+}
+
+function extractReasoningCandidates(record?: Record<string, unknown>): unknown[] {
+  if (!record) {
+    return [];
+  }
+
+  return [
+    record.reasoning,
+    record.reasoning_content,
+    record.reasoningContent,
+    record.reasoning_text,
+    record.reasoningText,
+    record.summary,
+    record.summary_text,
+    record.summaryText,
+  ];
+}
+
+function extractReasoningTextFromContentParts(content: unknown): string | undefined {
+  if (!Array.isArray(content)) {
+    return undefined;
+  }
+
+  const parts = content
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return "";
+      }
+
+      const record = item as Record<string, unknown>;
+      const partType = typeof record.type === "string" ? record.type.toLowerCase() : "";
+      if (
+        !partType.includes("reason") &&
+        !partType.includes("summary") &&
+        !partType.includes("thinking")
+      ) {
+        return "";
+      }
+
+      return extractTextCandidate(item);
+    })
+    .filter(Boolean);
+
+  const joined = parts.join("\n\n").trim();
+  return joined || undefined;
 }
 
 function extractTextCandidateRecursive(content: unknown, depth: number): string {

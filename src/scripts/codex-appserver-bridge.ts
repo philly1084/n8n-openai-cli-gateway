@@ -424,7 +424,20 @@ function buildPrompt(request: GatewayRequest): string {
 
   const tools = Array.isArray(request.tools) ? request.tools : [];
   if (tools.length === 0) {
-    return messageText;
+    if (request.stream === true) {
+      return messageText;
+    }
+
+    return [
+      messageText,
+      "",
+      "You are connected through an OpenAI-compatible gateway.",
+      "Return raw JSON only with keys output_text, optional reasoning, and finish_reason.",
+      "When possible, include a concise public reasoning summary in reasoning.",
+      "Do not reveal private chain-of-thought; use reasoning only for a short high-level summary.",
+      'If no tool is needed, return raw JSON only in this shape: {"output_text":"user-facing answer","reasoning":"brief public reasoning summary","finish_reason":"stop"}',
+      "Do not wrap the JSON in markdown or explanatory prose.",
+    ].join("\n");
   }
 
   const metadata =
@@ -455,17 +468,38 @@ function buildPrompt(request: GatewayRequest): string {
     "TOOL: messages are outputs from previous tool calls.",
     "When TOOL: messages are present and no more tools are needed, synthesize the final answer for the user in output_text.",
     "Do not copy placeholder or example text into output_text.",
+    "When possible, include a concise public reasoning summary in reasoning.",
+    "Do not reveal private chain-of-thought; use reasoning only for a short high-level summary.",
     forcedToolName
       ? `tool_choice is set. You MUST call exactly this function name: ${forcedToolName}.`
       : "If the user asks to use/call a tool and AVAILABLE_TOOLS_JSON is non-empty, you MUST return a tool_calls response.",
     "If a tool is needed, return raw JSON only:",
-    '{"output_text":"","tool_calls":[{"id":"call_1","name":"tool_name","arguments":{"arg":"value"}}],"finish_reason":"tool_calls"}',
-    'If no tool is needed, return raw JSON only with a real user-facing answer in "output_text" and "finish_reason":"stop".',
+    '{"output_text":"","reasoning":"brief public reasoning summary","tool_calls":[{"id":"call_1","name":"tool_name","arguments":{"arg":"value"}}],"finish_reason":"tool_calls"}',
+    'If no tool is needed, return raw JSON only with a real user-facing answer in "output_text", optional reasoning, and "finish_reason":"stop".',
   ].join("\n");
 
   return [messageText, "", "AVAILABLE_TOOLS_JSON:", toolJson, "", instruction].join(
     "\n",
   );
+}
+
+function extractReasoningValue(record: Record<string, unknown>): unknown {
+  const candidates = [
+    record.reasoning,
+    record.reasoning_content,
+    record.reasoningContent,
+    record.reasoning_text,
+    record.reasoningText,
+    record.summary,
+    record.summary_text,
+    record.summaryText,
+  ];
+  for (const candidate of candidates) {
+    if (candidate !== undefined) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 function asToolCallArguments(value: unknown): string {
@@ -617,13 +651,11 @@ function collectReasoningText(value: unknown, depth = 0): string {
     return "";
   }
 
+  const record = value as Record<string, unknown>;
   const candidates = [
-    value.reasoning,
-    value.summary,
-    value.summary_text,
-    value.reasoning_text,
-    value.text,
-    value.content,
+    extractReasoningValue(record),
+    record.text,
+    record.content,
   ];
   for (const candidate of candidates) {
     const extracted = collectReasoningText(candidate, depth + 1);
@@ -764,7 +796,7 @@ function parseJsonContractFromText(raw: string): JsonContract | null {
 
     return {
       output_text: outputText.trim(),
-      reasoning: collectReasoningText(value.reasoning),
+      reasoning: collectReasoningText(extractReasoningValue(value)),
       tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
       finish_reason: finishReason,
     };

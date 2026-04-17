@@ -155,6 +155,76 @@ test("OpenAiCompatibleProvider rejects deepseek-reasoner tool turns", async () =
   }
 });
 
+test("OpenAiCompatibleProvider normalizes reasoning_content into reasoningText", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.TEST_REMOTE_API_KEY;
+
+  process.env.TEST_REMOTE_API_KEY = "test-key";
+  globalThis.fetch = (async () => {
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: "ok",
+              reasoning_content: [
+                {
+                  type: "summary_text",
+                  text: "Checked the provider payload before answering.",
+                },
+              ],
+            },
+            finish_reason: "stop",
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      },
+    );
+  }) as typeof fetch;
+
+  try {
+    const provider = await OpenAiCompatibleProvider.create({
+      id: "remote-router",
+      type: "openai",
+      baseUrl: "https://example.invalid",
+      apiKeyEnv: "TEST_REMOTE_API_KEY",
+      models: [
+        {
+          id: "gpt-remote",
+        },
+      ],
+    });
+
+    const result = await provider.run({
+      requestId: "req_reasoning_1",
+      model: "gpt-remote",
+      providerModel: "gpt-remote",
+      messages: [
+        {
+          role: "user",
+          content: "hi",
+        },
+      ],
+      tools: [],
+    });
+
+    assert.equal(result.outputText, "ok");
+    assert.equal(result.reasoningText, "Checked the provider payload before answering.");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalApiKey === undefined) {
+      delete process.env.TEST_REMOTE_API_KEY;
+    } else {
+      process.env.TEST_REMOTE_API_KEY = originalApiKey;
+    }
+  }
+});
+
 test("OpenAiCompatibleProvider routes image generation requests to /images/generations", async () => {
   const originalFetch = globalThis.fetch;
   const originalApiKey = process.env.TEST_REMOTE_API_KEY;

@@ -3017,9 +3017,9 @@ function extractProviderDebugData(payload: unknown): {
     ? message.executed_tools
     : undefined;
   const reasoning =
-    message && Object.prototype.hasOwnProperty.call(message, "reasoning")
-      ? message.reasoning
-      : undefined;
+    extractProviderReasoningValue(message) ??
+    extractProviderReasoningValue(choice) ??
+    extractProviderReasoningValue(record);
 
   return {
     responseId: typeof record.id === "string" ? record.id : undefined,
@@ -3031,6 +3031,54 @@ function extractProviderDebugData(payload: unknown): {
     reasoning,
     payloadKeys: Object.keys(record).slice(0, 20),
   };
+}
+
+function extractProviderReasoningValue(record?: Record<string, unknown>): unknown {
+  if (!record) {
+    return undefined;
+  }
+
+  const candidates = [
+    record.reasoning,
+    record.reasoning_content,
+    record.reasoningContent,
+    record.reasoning_text,
+    record.reasoningText,
+    record.summary,
+    record.summary_text,
+    record.summaryText,
+  ];
+  for (const candidate of candidates) {
+    if (candidate !== undefined) {
+      return candidate;
+    }
+  }
+
+  if (!Array.isArray(record.content)) {
+    return undefined;
+  }
+
+  const parts = record.content
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return "";
+      }
+
+      const part = item as Record<string, unknown>;
+      const type = typeof part.type === "string" ? part.type.toLowerCase() : "";
+      if (
+        !type.includes("reason") &&
+        !type.includes("summary") &&
+        !type.includes("thinking")
+      ) {
+        return "";
+      }
+
+      return extractTextContent(part).trim();
+    })
+    .filter(Boolean);
+
+  return parts.length > 0 ? parts.join("\n\n") : undefined;
 }
 
 function summarizeContentShape(value: unknown): unknown {
