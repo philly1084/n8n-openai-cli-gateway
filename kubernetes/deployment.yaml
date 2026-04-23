@@ -100,6 +100,8 @@ spec:
               value: "info"
             - name: PROVIDERS_CONFIG_PATH
               value: /app/config/providers.yaml
+            - name: CODEX_EXECUTABLE
+              value: codex
             - name: HOME
               value: /var/lib/gateway-home
             - name: PATH

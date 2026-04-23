@@ -154,7 +154,7 @@ providers:
       args: []
       loginArgs:
         - login
-        - --no-browser
+        - --device-auth
       env:
         TERM: xterm-256color
       supportsWorkingDirectory: true
@@ -166,13 +166,13 @@ providers:
         executable: "{{codex_executable}}"
         args:
           - login
-          - --no-browser
+          - --device-auth
         timeoutMs: 900000
       statusCommand:
         executable: "{{codex_executable}}"
         args:
-          - whoami
-          - --json
+          - login
+          - status
         timeoutMs: 30000
       # Example: OpenAI rate limit check
       # This would call the OpenAI API to check usage/limits

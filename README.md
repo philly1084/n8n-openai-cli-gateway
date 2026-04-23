@@ -661,6 +661,34 @@ After updating the Secret, restart the deployment if you want a fresh PVC to be 
 kubectl rollout restart deployment/n8n-openai-cli-gateway -n n8n-openai-gateway
 ```
 
+### Codex on Kubernetes
+
+The runtime image already installs `@openai/codex`, and the Kubernetes manifests set `CODEX_EXECUTABLE=codex`
+so the gateway, admin auth commands, and Codex app-server bridge all resolve the Linux CLI path consistently.
+
+For a new cluster or a new PVC, authenticate Codex once after deploy:
+
+```bash
+curl -X POST http://<gateway-host>:8080/admin/providers/codex-cli/login \
+  -H "x-admin-key: <admin-key>"
+```
+
+This now runs `codex login --device-auth`. The resulting auth state is stored under
+`/var/lib/gateway-home` on the PVC, so pod restarts reuse it.
+
+Verify status with:
+
+```bash
+curl -X POST http://<gateway-host>:8080/admin/providers/codex-cli/status \
+  -H "x-admin-key: <admin-key>"
+```
+
+If you prefer to log in directly inside the pod, use:
+
+```bash
+kubectl -n n8n-openai-gateway exec -it deploy/n8n-openai-cli-gateway -- codex login --device-auth
+```
+
 ## Build image
 
 ```bash

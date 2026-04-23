@@ -172,16 +172,16 @@ data:
           timeoutMs: 240000
         auth:
           loginCommand:
-            executable: codex
+            executable: "{{codex_executable}}"
             args:
               - login
-              - --no-browser
+              - --device-auth
             timeoutMs: 900000
           statusCommand:
-            executable: codex
+            executable: "{{codex_executable}}"
             args:
-              - whoami
-              - --json
+              - login
+              - status
             timeoutMs: 30000
 
       - id: kimi-code-cli
@@ -622,6 +622,8 @@ spec:
               value: "500"
             - name: PROVIDERS_CONFIG_PATH
               value: /app/config/providers.yaml
+            - name: CODEX_EXECUTABLE
+              value: codex
             - name: HOME
               value: /var/lib/gateway-home
             - name: PATH
