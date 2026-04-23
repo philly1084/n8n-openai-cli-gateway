@@ -86,6 +86,38 @@ test("normalizeResponsesInput infers assistant role for output_text messages wit
   ]);
 });
 
+test("normalizeResponsesInput maps developer role to system", () => {
+  const messages = normalizeResponsesInput({
+    type: "message",
+    role: "developer",
+    content: "Follow the repo conventions strictly.",
+  });
+
+  assert.deepStrictEqual(messages, [
+    {
+      role: "system",
+      content: "Follow the repo conventions strictly.",
+    },
+  ]);
+});
+
+test("normalizeResponsesInput preserves assistant phase", () => {
+  const messages = normalizeResponsesInput({
+    type: "message",
+    role: "assistant",
+    phase: "final_answer",
+    content: "Completed response.",
+  });
+
+  assert.deepStrictEqual(messages, [
+    {
+      role: "assistant",
+      phase: "final_answer",
+      content: "Completed response.",
+    },
+  ]);
+});
+
 test("normalizeChatMessages drops synthetic assistant failure history", () => {
   const messages = normalizeChatMessages([
     {
@@ -132,7 +164,7 @@ test("buildResponseInputItems preserves user and tool item ordering", () => {
   const items = buildResponseInputItems([
     { role: "user", content: "Question one" },
     { role: "tool", content: "{\"ok\":true}", tool_call_id: "call_123" },
-    { role: "assistant", content: "Existing answer" },
+    { role: "assistant", phase: "commentary", content: "Existing answer" },
   ]);
 
   assert.equal(items.length, 3);
@@ -143,6 +175,7 @@ test("buildResponseInputItems preserves user and tool item ordering", () => {
   assert.equal(items[1]?.call_id, "call_123");
   assert.equal(items[2]?.type, "message");
   assert.equal(items[2]?.role, "assistant");
+  assert.equal(items[2]?.phase, "commentary");
 });
 
 test("buildResponseOutputItems emits assistant text before tool calls", () => {
@@ -161,6 +194,7 @@ test("buildResponseOutputItems emits assistant text before tool calls", () => {
   assert.equal(items.length, 2);
   assert.equal(items[0]?.type, "message");
   assert.equal(items[0]?.role, "assistant");
+  assert.equal(items[0]?.phase, "commentary");
   assert.deepEqual(items[0]?.content, [{ type: "output_text", text: "Answer" }]);
   assert.equal(items[1]?.type, "function_call");
   assert.equal(items[1]?.call_id, "call_1");
@@ -176,6 +210,7 @@ test("buildResponseOutputItems includes reasoning blocks when available", () => 
 
   assert.equal(items.length, 2);
   assert.equal(items[0]?.type, "message");
+  assert.equal(items[0]?.phase, "final_answer");
   assert.equal(items[1]?.type, "reasoning");
   assert.equal((items[1] as { text?: string }).text, "Checked the prior tool outputs before answering.");
 });
@@ -447,6 +482,61 @@ test("images route parses image data from provider raw payload", async () => {
   }
 });
 
+test("images route prefers Codex-backed models when available", async () => {
+  let capturedModelId = "";
+
+  const server = createTestServer(
+    async (modelId) => {
+      capturedModelId = modelId;
+      return {
+        outputText: "",
+        toolCalls: [],
+        finishReason: "stop",
+        raw: {
+          data: [{ url: "https://example.com/codex-image.png" }],
+        },
+      };
+    },
+    undefined,
+    {
+      models: [
+        {
+          id: "gpt-image-1.5",
+          providerId: "openai-image-api",
+          providerModel: "gpt-image-1.5",
+          fallbackModels: [],
+        },
+        {
+          id: "codex-latest",
+          providerId: "codex-cli",
+          providerModel: "codex-latest",
+          fallbackModels: [],
+        },
+      ],
+      resolvePreferredImageGenerationModel: () => "codex-latest",
+    },
+  );
+
+  try {
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/v1/images/generations",
+      headers: {
+        authorization: "Bearer test-key",
+      },
+      payload: {
+        model: "gpt-image-1.5",
+        prompt: "A lighthouse",
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(capturedModelId, "codex-latest");
+  } finally {
+    await server.close();
+  }
+});
+
 function createTestServer(
   runModel: (
     modelId: string,
@@ -456,17 +546,30 @@ function createTestServer(
     modelId: string,
     request: Omit<UnifiedRequest, "model" | "providerModel">,
   ) => AsyncIterable<ProviderStreamEvent>,
+  options?: {
+    models?: Array<{
+      id: string;
+      providerId: string;
+      providerModel: string;
+      fallbackModels: string[];
+    }>;
+    resolvePreferredImageGenerationModel?: (requestedModelId?: string) => string | undefined;
+  },
 ) {
   const registry = {
-    listModels: () => [
-      {
-        id: "demo-model",
-        providerId: "demo-provider",
-        providerModel: "demo-model",
-        fallbackModels: [],
-      },
-    ],
+    listModels: () =>
+      options?.models ?? [
+        {
+          id: "demo-model",
+          providerId: "demo-provider",
+          providerModel: "demo-model",
+          fallbackModels: [],
+        },
+      ],
     listProviders: () => [],
+    resolvePreferredImageGenerationModel:
+      options?.resolvePreferredImageGenerationModel ??
+      ((requestedModelId?: string) => requestedModelId),
     runModel,
     canStreamModel: () => Boolean(runModelStream),
     runModelStream: runModelStream ?? (async function* () {}) ,

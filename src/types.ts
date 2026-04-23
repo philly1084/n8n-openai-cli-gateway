@@ -1,10 +1,19 @@
 export type ChatRole = "system" | "user" | "assistant" | "tool";
-export const REASONING_EFFORT_VALUES = ["low", "medium", "high", "xhigh"] as const;
+export type AssistantPhase = "commentary" | "final_answer";
+export const REASONING_EFFORT_VALUES = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORT_VALUES)[number];
 
 export interface ChatMessage {
   role: ChatRole;
   content: string;
+  phase?: AssistantPhase;
   name?: string;
   tool_call_id?: string;
 }

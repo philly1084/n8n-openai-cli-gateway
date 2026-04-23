@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import process from "node:process";
 import { normalizeToolName } from "../utils/tools";
 import { resolveReasoningEffort } from "../utils/reasoning";
+import { getCodexExecutableCandidates } from "../utils/runtime-template-vars";
 
 interface GatewayMessage {
   role?: unknown;
@@ -67,11 +68,13 @@ class JsonRpcStdioClient {
   private readonly queue: unknown[] = [];
   private readonly waiters: Array<(value: unknown | null) => void> = [];
   private readonly child: ReturnType<typeof spawn>;
+  private readonly decorateError: (error: Error) => Error;
   private buffer = "";
   private ended = false;
 
-  constructor(child: ReturnType<typeof spawn>) {
+  constructor(child: ReturnType<typeof spawn>, decorateError?: (error: Error) => Error) {
     this.child = child;
+    this.decorateError = decorateError ?? ((error) => error);
 
     if (!child.stdout || !child.stdin) {
       throw new Error("codex app-server stdio streams are unavailable.");
@@ -85,12 +88,12 @@ class JsonRpcStdioClient {
 
     child.on("error", (error) => {
       const err = error instanceof Error ? error : new Error(String(error));
-      this.rejectAll(err);
+      this.rejectAll(this.decorateError(err));
     });
 
     child.on("close", () => {
       this.ended = true;
-      this.rejectAll(new Error("codex app-server process closed."));
+      this.rejectAll(this.decorateError(new Error("codex app-server process closed.")));
     });
   }
 
@@ -326,6 +329,136 @@ function parseRequest(input: string): GatewayRequest {
   return JSON.parse(input) as GatewayRequest;
 }
 
+function buildMessageText(request: GatewayRequest): string {
+  const promptText =
+    typeof request.prompt === "string" && request.prompt.trim()
+      ? request.prompt.trim()
+      : "";
+
+  const rawMessages = Array.isArray(request.messages) ? request.messages : [];
+  const messages = rawMessages as GatewayMessage[];
+  return (
+    promptText ||
+    messages
+      .map((msg) => {
+        const role =
+          typeof msg.role === "string" && msg.role.trim() ? msg.role : "user";
+        return `${role.toUpperCase()}:\n${normalizeValue(msg.content)}`;
+      })
+      .join("\n\n")
+  );
+}
+
+function getRequestMetadata(request: GatewayRequest): Record<string, unknown> | undefined {
+  return isObjectRecord(request.metadata)
+    ? (request.metadata as Record<string, unknown>)
+    : undefined;
+}
+
+function findRequestMetadataValue(
+  request: GatewayRequest,
+  keys: string[],
+): unknown {
+  const metadata = getRequestMetadata(request);
+  if (!metadata) {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    if (metadata[key] !== undefined) {
+      return metadata[key];
+    }
+  }
+
+  const nestedMetadata = isObjectRecord(metadata.metadata)
+    ? (metadata.metadata as Record<string, unknown>)
+    : undefined;
+  if (!nestedMetadata) {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    if (nestedMetadata[key] !== undefined) {
+      return nestedMetadata[key];
+    }
+  }
+
+  return undefined;
+}
+
+function formatImageOptionValue(value: unknown): string {
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => formatImageOptionValue(entry))
+      .filter(Boolean)
+      .join(", ");
+  }
+  if (!isObjectRecord(value)) {
+    return "";
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "";
+  }
+}
+
+function collectImageOptionLines(request: GatewayRequest): string[] {
+  const optionDefs: Array<{ label: string; keys: string[] }> = [
+    { label: "Image count", keys: ["n"] },
+    { label: "Size", keys: ["size"] },
+    { label: "Quality", keys: ["quality"] },
+    { label: "Style", keys: ["style"] },
+    { label: "Background", keys: ["background"] },
+    { label: "Response format", keys: ["response_format", "responseFormat"] },
+    { label: "Output format", keys: ["output_format", "outputFormat"] },
+  ];
+
+  const lines: string[] = [];
+  for (const optionDef of optionDefs) {
+    const value = formatImageOptionValue(findRequestMetadataValue(request, optionDef.keys));
+    if (value) {
+      lines.push(`- ${optionDef.label}: ${value}`);
+    }
+  }
+  return lines;
+}
+
+export function buildImageGenerationPrompt(request: GatewayRequest): string {
+  const messageText = buildMessageText(request).trim();
+  const optionLines = collectImageOptionLines(request);
+  const imagegenInvocation = messageText.toLowerCase().includes("$imagegen")
+    ? ""
+    : "$imagegen";
+
+  return [
+    imagegenInvocation,
+    "Use Codex CLI's built-in image generation or editing workflow for this request.",
+    "Generate or edit the image directly instead of explaining how to do it.",
+    optionLines.length > 0 ? "Requested image options:" : "",
+    ...optionLines,
+    "",
+    "User request:",
+    messageText || "Generate the requested image.",
+    "",
+    "You are connected through an OpenAI-compatible gateway images endpoint.",
+    "Respond with raw JSON only in one of these shapes:",
+    '{"data":[{"b64_json":"<base64>","revised_prompt":"optional"}]}',
+    '{"data":[{"url":"https://example.com/image.png","revised_prompt":"optional"}]}',
+    "Do not wrap the JSON in markdown.",
+    "Do not return explanatory prose before or after the JSON.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 function extractAllowedToolNames(request: GatewayRequest): Map<string, string> {
   const out = new Map<string, string>();
   const tools = Array.isArray(request.tools) ? request.tools : [];
@@ -391,35 +524,10 @@ function extractDynamicTools(request: GatewayRequest): DynamicToolSpec[] {
   return out;
 }
 
-function buildPrompt(request: GatewayRequest): string {
-  const promptText =
-    typeof request.prompt === "string" && request.prompt.trim()
-      ? request.prompt.trim()
-      : "";
-
-  const rawMessages = Array.isArray(request.messages) ? request.messages : [];
-  const messages = rawMessages as GatewayMessage[];
-  const messageText =
-    promptText ||
-    messages
-      .map((msg) => {
-        const role =
-          typeof msg.role === "string" && msg.role.trim() ? msg.role : "user";
-        return `${role.toUpperCase()}:\n${normalizeValue(msg.content)}`;
-      })
-      .join("\n\n");
-
+export function buildPrompt(request: GatewayRequest): string {
+  const messageText = buildMessageText(request);
   if (request.requestKind === "images_generations") {
-    return [
-      messageText,
-      "",
-      "You are connected through an OpenAI-compatible gateway images endpoint.",
-      "If you can generate or return image output, respond with raw JSON only in one of these shapes:",
-      '{"data":[{"b64_json":"<base64>","revised_prompt":"optional"}]}',
-      '{"data":[{"url":"https://example.com/image.png","revised_prompt":"optional"}]}',
-      "Do not wrap the JSON in markdown.",
-      "Do not return explanatory prose before or after the JSON.",
-    ].join("\n");
+    return buildImageGenerationPrompt(request);
   }
 
   const tools = Array.isArray(request.tools) ? request.tools : [];
@@ -921,7 +1029,41 @@ function parseChatGptFallbackModel(): string {
   ) {
     return process.env.CODEX_APPSERVER_CHATGPT_FALLBACK_MODEL.trim();
   }
-  return "gpt-5.4";
+  return "gpt-5.5";
+}
+
+function decorateCodexExecutableError(
+  error: Error,
+  executable: string,
+  candidates: string[],
+): Error {
+  const code =
+    "code" in error && typeof (error as NodeJS.ErrnoException).code === "string"
+      ? (error as NodeJS.ErrnoException).code
+      : undefined;
+  const attempted = candidates.join(", ");
+
+  if (code === "EACCES") {
+    return new Error(
+      `Failed to start Codex app-server via '${executable}' (EACCES). ` +
+        `On Windows this often means PATH resolves to a packaged WindowsApps binary that is not executable in this context. ` +
+        `Set CODEX_EXECUTABLE to a working Codex CLI path or install a CLI shim such as codex.cmd. Tried: ${attempted}.`,
+    );
+  }
+
+  if (code === "ENOENT") {
+    return new Error(
+      `Failed to start Codex app-server via '${executable}' (ENOENT). ` +
+        `Set CODEX_EXECUTABLE to a working Codex CLI path or ensure the Codex CLI is installed. Tried: ${attempted}.`,
+    );
+  }
+
+  return error;
+}
+
+function shouldTryNextCodexExecutable(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return message.includes("Failed to start Codex app-server via");
 }
 
 function isChatGptCodexLatestUnsupportedError(error: unknown): boolean {
@@ -979,52 +1121,88 @@ async function run(): Promise<void> {
   const prompt = buildPrompt(request);
   const reasoningEffort = resolveReasoningEffort(request);
   const debugRpc = isTruthyEnv(process.env.CODEX_APPSERVER_DEBUG_RPC);
+  const codexExecutableCandidates = getCodexExecutableCandidates();
   const shouldStream =
     request.stream === true &&
     (request.requestKind === "chat_completions" || request.requestKind === "responses");
-
-  const appServer = spawn("codex", ["app-server", "--listen", "stdio://"], {
-    stdio: ["pipe", "pipe", "pipe"],
-    env: process.env,
-  });
   let childStderr = "";
-
-  if (appServer.stderr) {
-    appServer.stderr.setEncoding("utf8");
-    appServer.stderr.on("data", (chunk: string) => {
-      childStderr += chunk;
-    });
-  }
-
-  const rpc = new JsonRpcStdioClient(appServer);
+  let appServer: ReturnType<typeof spawn> | null = null;
+  let rpc: JsonRpcStdioClient | null = null;
 
   try {
-    let initialized = false;
     let initializeError: unknown = null;
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
-      try {
-        await rpc.request(
-          "initialize",
-          {
-            clientInfo: { name: "n8n-openai-cli-gateway", version: "0.1.0" },
-            capabilities: { experimentalApi: true },
-          },
-          initializeTimeoutMs,
-        );
-        initialized = true;
-        break;
-      } catch (error) {
-        initializeError = error;
-        if (attempt < 2) {
-          await delay(750);
+    let initialized = false;
+
+    for (const executable of codexExecutableCandidates) {
+      childStderr = "";
+      appServer = spawn(executable, ["app-server", "--listen", "stdio://"], {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: process.env,
+      });
+
+      if (appServer.stderr) {
+        appServer.stderr.setEncoding("utf8");
+        appServer.stderr.on("data", (chunk: string) => {
+          childStderr += chunk;
+        });
+      }
+
+      rpc = new JsonRpcStdioClient(
+        appServer,
+        (error) => decorateCodexExecutableError(error, executable, codexExecutableCandidates),
+      );
+
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+          await rpc.request(
+            "initialize",
+            {
+              clientInfo: { name: "n8n-openai-cli-gateway", version: "0.1.0" },
+              capabilities: { experimentalApi: true },
+            },
+            initializeTimeoutMs,
+          );
+          initialized = true;
+          break;
+        } catch (error) {
+          initializeError = error;
+          if (attempt < 2) {
+            await delay(750);
+          }
         }
       }
+
+      if (initialized) {
+        break;
+      }
+
+      try {
+        appServer.stdin?.end();
+      } catch {
+        // no-op
+      }
+      try {
+        appServer.kill("SIGTERM");
+      } catch {
+        // no-op
+      }
+
+      if (!shouldTryNextCodexExecutable(initializeError)) {
+        break;
+      }
     }
+
     if (!initialized) {
       if (initializeError instanceof Error) {
         throw initializeError;
       }
       throw new Error("JSON-RPC request timed out: initialize");
+    }
+
+    if (!rpc || !appServer) {
+      throw new Error(
+        `Unable to start Codex app-server. Set CODEX_EXECUTABLE to a working Codex CLI path. Tried: ${codexExecutableCandidates.join(", ")}.`,
+      );
     }
     rpc.notify("initialized");
 
@@ -1426,18 +1604,18 @@ async function run(): Promise<void> {
     process.stdout.write(JSON.stringify(out));
   } finally {
     try {
-      appServer.stdin?.end();
+      appServer?.stdin?.end();
     } catch {
       // no-op
     }
     try {
-      appServer.kill("SIGTERM");
+      appServer?.kill("SIGTERM");
     } catch {
       // no-op
     }
     setTimeout(() => {
       try {
-        appServer.kill("SIGKILL");
+        appServer?.kill("SIGKILL");
       } catch {
         // no-op
       }
@@ -1450,11 +1628,13 @@ async function run(): Promise<void> {
   }
 }
 
-run().catch((error) => {
-  const message =
-    error instanceof Error ? error.message : `Unexpected error: ${String(error)}`;
-  if (message) {
-    process.stderr.write(`${message}\n`);
-  }
-  process.exit(1);
-});
+if (require.main === module) {
+  run().catch((error) => {
+    const message =
+      error instanceof Error ? error.message : `Unexpected error: ${String(error)}`;
+    if (message) {
+      process.stderr.write(`${message}\n`);
+    }
+    process.exit(1);
+  });
+}

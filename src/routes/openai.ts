@@ -4,6 +4,7 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { ProviderRegistry } from "../providers/registry";
 import type {
+  AssistantPhase,
   ChatMessage,
   ProviderResult,
   ReasoningEffort,
@@ -42,6 +43,7 @@ interface ResponseMessageItem {
   id: string;
   type: "message";
   role: ResponseMessageRole;
+  phase?: AssistantPhase;
   status: ResponseItemStatus;
   content: ResponseTextContent[];
 }
@@ -242,11 +244,11 @@ function hydrateMessagesFromPreviousResponse(previousResponseId: string): ChatMe
 
 function responseInputItemToChatMessages(item: StoredResponseInputItem): ChatMessage[] {
   if (item.type === "function_call_output") {
-    return [{
-      role: "tool",
-      content: normalizeResponseText(item.output),
-      tool_call_id: item.call_id,
-    }];
+    return [
+      buildChatMessage("tool", normalizeResponseText(item.output), {
+        tool_call_id: item.call_id,
+      }),
+    ];
   }
 
   const role = normalizeResponseMessageRole(item.role);
@@ -254,22 +256,24 @@ function responseInputItemToChatMessages(item: StoredResponseInputItem): ChatMes
     return [];
   }
 
-  return [{
-    role,
-    content: extractResponseMessageText(item.content),
-  }];
+  return [
+    buildChatMessage(role, extractResponseMessageText(item.content), {
+      phase: item.phase,
+    }),
+  ];
 }
 
 function responseOutputItemToChatMessages(item: StoredResponseOutputItem): ChatMessage[] {
   if (item.type === "function_call") {
-    return [{
-      role: "assistant",
-      content: extractToolCallContext({
+    return [
+      buildChatMessage("assistant", extractToolCallContext({
         id: item.call_id,
         name: item.name,
         arguments: item.arguments,
+      }), {
+        phase: "commentary",
       }),
-    }];
+    ];
   }
 
   if (item.type === "reasoning") {
@@ -281,10 +285,11 @@ function responseOutputItemToChatMessages(item: StoredResponseOutputItem): ChatM
     return [];
   }
 
-  return [{
-    role,
-    content: extractResponseMessageText(item.content),
-  }];
+  return [
+    buildChatMessage(role, extractResponseMessageText(item.content), {
+      phase: item.phase,
+    }),
+  ];
 }
 
 function normalizeResponseMessageRole(
@@ -307,6 +312,33 @@ function normalizeResponseText(value: string): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function normalizeAssistantPhase(value: unknown): AssistantPhase | undefined {
+  return value === "commentary" || value === "final_answer" ? value : undefined;
+}
+
+function buildChatMessage(
+  role: ChatMessage["role"],
+  content: string,
+  options: {
+    phase?: AssistantPhase;
+    tool_call_id?: string;
+  } = {},
+): ChatMessage {
+  const message: ChatMessage = {
+    role,
+    content,
+  };
+
+  if (options.phase) {
+    message.phase = options.phase;
+  }
+  if (options.tool_call_id) {
+    message.tool_call_id = options.tool_call_id;
+  }
+
+  return message;
+}
+
 export function buildResponseInputItems(messages: ChatMessage[]): StoredResponseInputItem[] {
   const items: StoredResponseInputItem[] = [];
 
@@ -326,6 +358,7 @@ export function buildResponseInputItems(messages: ChatMessage[]): StoredResponse
       id: makeId("msg"),
       type: "message",
       role: message.role,
+      phase: message.role === "assistant" ? message.phase : undefined,
       status: "completed",
       content: buildResponseTextContent("input_text", message.content),
     });
@@ -342,6 +375,7 @@ export function buildResponseOutputItems(result: ProviderResult): StoredResponse
       id: makeId("msg"),
       type: "message",
       role: "assistant",
+      phase: result.finishReason === "tool_calls" ? "commentary" : "final_answer",
       status: "completed",
       content: buildResponseTextContent("output_text", result.outputText),
     });
@@ -1088,14 +1122,30 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
     }
 
     const n = Math.min(body.n ?? 1, 10);
+    const effectiveModel =
+      options.registry.resolvePreferredImageGenerationModel(body.model) ?? body.model;
 
     try {
-      const result = await options.registry.runModel(body.model, {
+      if (effectiveModel !== body.model) {
+        app.log.info(
+          {
+            requestedModel: body.model,
+            effectiveModel,
+          },
+          "Routed image generation request through preferred Codex-backed model.",
+        );
+      }
+
+      const result = await options.registry.runModel(effectiveModel, {
         requestId: makeId("req"),
         messages: [{ role: "user", content: prompt }],
         tools: [],
         requestKind: "images_generations",
-        metadata: body as Record<string, unknown>,
+        metadata: {
+          ...(body as Record<string, unknown>),
+          requested_model: body.model,
+          effective_model: effectiveModel,
+        },
       });
 
       const images = parseImageGenerationsFromResult(result);
@@ -1840,11 +1890,7 @@ export function normalizeResponsesInput(raw: unknown, depth = 0): ChatMessage[] 
       record.output ?? record.content ?? record.text ?? "",
     );
     return [
-      {
-        role: "tool",
-        content: outputText,
-        tool_call_id: callId,
-      },
+      buildChatMessage("tool", outputText, { tool_call_id: callId }),
     ];
   }
 
@@ -1866,10 +1912,7 @@ export function normalizeResponsesInput(raw: unknown, depth = 0): ChatMessage[] 
       return [];
     }
     return [
-      {
-        role: "assistant",
-        content: toolCallText,
-      },
+      buildChatMessage("assistant", toolCallText, { phase: "commentary" }),
     ];
   }
 
@@ -1914,7 +1957,11 @@ export function normalizeResponsesInput(raw: unknown, depth = 0): ChatMessage[] 
     ) {
       return [];
     }
-    return [{ role, content }];
+    return [
+      buildChatMessage(role, content, {
+        phase: role === "assistant" ? normalizeAssistantPhase(record.phase) : undefined,
+      }),
+    ];
   }
 
   if ("content" in record) {
@@ -1932,7 +1979,11 @@ export function normalizeResponsesInput(raw: unknown, depth = 0): ChatMessage[] 
     ) {
       return [];
     }
-    return [{ role, content }];
+    return [
+      buildChatMessage(role, content, {
+        phase: role === "assistant" ? normalizeAssistantPhase(record.phase) : undefined,
+      }),
+    ];
   }
 
   if (typeof record.text === "string") {
@@ -1956,6 +2007,10 @@ function asRole(value: unknown): ChatMessage["role"] | undefined {
 }
 
 function inferResponsesRole(record: Record<string, unknown>): ChatMessage["role"] {
+  if (record.role === "developer") {
+    return "system";
+  }
+
   const explicitRole = asRole(record.role);
   if (explicitRole) {
     return explicitRole;

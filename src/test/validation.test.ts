@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import {
   chatCompletionsRequestSchema,
+  imageGenerationsRequestSchema,
   responsesRequestSchema,
 } from "../validation";
 
@@ -93,12 +94,12 @@ describe("request schema compatibility", () => {
     const parsed = chatCompletionsRequestSchema.parse({
       model: "gpt-test",
       messages: [{ role: "user", content: "hi" }],
-      reasoning_effort: "high",
-      reasoningEffort: "medium",
+      reasoning_effort: "minimal",
+      reasoningEffort: "none",
     });
 
-    assert.strictEqual(parsed.reasoning_effort, "high");
-    assert.strictEqual(parsed.reasoningEffort, "medium");
+    assert.strictEqual(parsed.reasoning_effort, "minimal");
+    assert.strictEqual(parsed.reasoningEffort, "none");
   });
 
   it("accepts nested reasoning config on responses requests", () => {
@@ -111,5 +112,19 @@ describe("request schema compatibility", () => {
     });
 
     assert.deepStrictEqual(parsed.reasoning, { effort: "xhigh" });
+  });
+
+  it("preserves additional image-generation fields for downstream providers", () => {
+    const parsed = imageGenerationsRequestSchema.parse({
+      model: "gpt-test",
+      prompt: "draw a lighthouse",
+      background: "transparent",
+      response_format: "b64_json",
+      reference_image: "https://example.com/reference.png",
+    }) as Record<string, unknown>;
+
+    assert.strictEqual(parsed.background, "transparent");
+    assert.strictEqual(parsed.response_format, "b64_json");
+    assert.strictEqual(parsed.reference_image, "https://example.com/reference.png");
   });
 });

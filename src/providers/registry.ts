@@ -85,6 +85,21 @@ export class ProviderRegistry {
     return [...this.providers.values()];
   }
 
+  resolvePreferredImageGenerationModel(requestedModelId?: string): string | undefined {
+    const requestedBinding = requestedModelId ? this.models.get(requestedModelId) : undefined;
+    if (requestedBinding?.provider.prefersImageGeneration?.()) {
+      return requestedBinding.modelId;
+    }
+
+    for (const binding of this.models.values()) {
+      if (binding.provider.prefersImageGeneration?.()) {
+        return binding.modelId;
+      }
+    }
+
+    return requestedBinding?.modelId;
+  }
+
   getProvider(providerId: string): Provider | undefined {
     return this.providers.get(providerId);
   }

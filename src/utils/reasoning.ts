@@ -1,11 +1,6 @@
-import type { ReasoningEffort } from "../types";
+import { REASONING_EFFORT_VALUES, type ReasoningEffort } from "../types";
 
-const REASONING_EFFORT_SET = new Set<ReasoningEffort>([
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-]);
+const REASONING_EFFORT_SET = new Set<ReasoningEffort>(REASONING_EFFORT_VALUES);
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {

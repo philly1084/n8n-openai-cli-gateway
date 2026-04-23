@@ -4,6 +4,8 @@ import { parseReasoningEffort, resolveReasoningEffort } from "../utils/reasoning
 
 describe("reasoning normalization", () => {
   it("normalizes case-insensitive reasoning effort values", () => {
+    assert.strictEqual(parseReasoningEffort(" none "), "none");
+    assert.strictEqual(parseReasoningEffort("Minimal"), "minimal");
     assert.strictEqual(parseReasoningEffort(" HIGH "), "high");
     assert.strictEqual(parseReasoningEffort("xhigh"), "xhigh");
   });

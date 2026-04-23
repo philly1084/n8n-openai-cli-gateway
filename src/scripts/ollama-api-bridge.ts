@@ -660,7 +660,11 @@ function resolveThinkValue(
     return undefined;
   }
 
-  return reasoningEffort !== "low";
+  return (
+    reasoningEffort !== "none" &&
+    reasoningEffort !== "minimal" &&
+    reasoningEffort !== "low"
+  );
 }
 
 function safeJsonParseObject(value: string): Record<string, unknown> {

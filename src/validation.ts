@@ -92,7 +92,7 @@ export const imageGenerationsRequestSchema = z.object({
   quality: z.string().optional(),
   style: z.string().optional(),
   user: z.string().optional(),
-});
+}).passthrough();
 
 export const documentGenerationsRequestSchema = z.object({
   model: z.string().min(1, "model is required"),

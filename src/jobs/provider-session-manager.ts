@@ -15,6 +15,7 @@ import type {
 import type { Provider } from "../providers/provider";
 import { resolveCommand } from "../utils/command";
 import { makeId } from "../utils/ids";
+import { withRuntimeTemplateVars } from "../utils/runtime-template-vars";
 import { shellEscape } from "../utils/shell";
 
 const DEFAULT_TRANSCRIPT_MAX_BYTES = 256 * 1024;
@@ -445,12 +446,12 @@ function resolveSessionLaunch(
   }
 
   const cwd = resolveSessionCwd(provider, sessionConfig, requestedCwd, allowAnyCwd, allowedCwds);
-  const vars: Record<string, string> = {
+  const vars = withRuntimeTemplateVars({
     provider_id: provider.id,
     model: modelBinding?.id ?? "",
     provider_model: modelBinding?.providerModel ?? modelBinding?.id ?? "",
     cwd: cwd ?? "",
-  };
+  });
   const args = [...(mode === "login" && sessionConfig.loginArgs ? sessionConfig.loginArgs : sessionConfig.args ?? [])];
   if (
     modelBinding &&

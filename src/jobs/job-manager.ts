@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { makeId } from "../utils/ids";
 import { resolveCommand } from "../utils/command";
+import { withRuntimeTemplateVars } from "../utils/runtime-template-vars";
 import type { CommandSpec, LoginJobSummary } from "../types";
 
 interface LoginJobRecord extends LoginJobSummary {
@@ -21,7 +22,7 @@ export class JobManager {
     vars: Record<string, string>,
   ): Promise<LoginJobSummary> {
     const id = makeId("job");
-    const resolved = resolveCommand(commandSpec, vars);
+    const resolved = resolveCommand(commandSpec, withRuntimeTemplateVars(vars));
 
     const record: LoginJobRecord = {
       id,

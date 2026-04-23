@@ -954,6 +954,10 @@ function normalizeGroqReasoningEffort(
     return "high";
   }
 
+  if (reasoningEffort === "none" || reasoningEffort === "minimal") {
+    return "low";
+  }
+
   return reasoningEffort === "low" || reasoningEffort === "medium" || reasoningEffort === "high"
     ? reasoningEffort
     : undefined;

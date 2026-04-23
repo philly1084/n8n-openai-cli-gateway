@@ -7,11 +7,13 @@ providers:
         providerModel: google/gemini-3.1-pro-preview
         fallbackModels:
           - gemini-3-flash-preview
+          - gpt-5.5
           - gpt-5.4
       - id: gemini-3-flash-preview
         providerModel: google/gemini-3-flash-preview
         fallbackModels:
           - gemini-3.1-pro-preview
+          - gpt-5.5
           - gpt-5.4
       - id: gemini-3.1-flash-lite-preview
         providerModel: google/gemini-3.1-flash-lite-preview
@@ -108,21 +110,31 @@ providers:
       - id: codex-latest
         providerModel: codex-latest
         fallbackModels:
+          - gpt-5.5
           - gpt-5.4
+          - gemini-3.1-pro-preview
+      - id: gpt-5.5
+        providerModel: gpt-5.5
+        fallbackModels:
+          - gpt-5.4
+          - gpt-5.4-pro
           - gemini-3.1-pro-preview
       - id: gpt-5.4
         providerModel: gpt-5.4
         fallbackModels:
+          - gpt-5.5
           - gpt-5.4-pro
           - gemini-3.1-pro-preview
       - id: gpt-5.4-pro
         providerModel: gpt-5.4-pro
         fallbackModels:
+          - gpt-5.5
           - gpt-5.4
           - gemini-3.1-pro-preview
       - id: gpt-5.3-instant
         providerModel: gpt-5.3-instant
         fallbackModels:
+          - gpt-5.5
           - gpt-5.4
       - id: gpt-4.1
         providerModel: gpt-4.1
@@ -138,7 +150,7 @@ providers:
       output: json_contract
       timeoutMs: 240000
     sessionCommand:
-      executable: codex
+      executable: "{{codex_executable}}"
       args: []
       loginArgs:
         - login
@@ -151,13 +163,13 @@ providers:
       ptyMode: auto
     auth:
       loginCommand:
-        executable: codex
+        executable: "{{codex_executable}}"
         args:
           - login
           - --no-browser
         timeoutMs: 900000
       statusCommand:
-        executable: codex
+        executable: "{{codex_executable}}"
         args:
           - whoami
           - --json
@@ -175,9 +187,11 @@ providers:
       #         jq '{limitType: "credits", remaining: .total_available, maxAllowed: .total_granted}'
       #   timeoutMs: 30000
 
+  # Optional direct OpenAI Images API fallback. Frontend image requests prefer
+  # the Codex app-server bridge when a Codex-backed model is configured.
   - id: openai-image-api
     type: openai
-    description: OpenAI Images API
+    description: Optional direct OpenAI Images API fallback
     baseUrl: https://api.openai.com/v1
     apiKeyEnv: OPENAI_API_KEY
     timeoutMs: 240000

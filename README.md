@@ -20,7 +20,7 @@ OpenAI-compatible gateway for n8n that exposes:
 
 Also exposed under `/openai/v1/*` for in-cluster compatibility URLs.
 
-Model execution is delegated to configurable providers, including CLI runners (Gemini via OpenCode OAuth plugin, Antigravity CLI, Codex CLI) and OpenAI-compatible remote APIs such as Groq. The gateway keeps n8n on one API key while provider auth is handled on the backend.
+Model execution is delegated to configurable providers, including CLI runners (Gemini via OpenCode OAuth plugin, Antigravity CLI, Codex CLI) and OpenAI-compatible remote APIs such as Groq. When a Codex app-server bridge model is configured, the gateway also prefers it for `POST /v1/images/generations` so frontend image requests run through Codex CLI image generation by default. The gateway keeps n8n on one API key while provider auth is handled on the backend.
 
 ## Why this fits your setup
 
@@ -70,7 +70,8 @@ Supported template variables in commands:
 
 - `{{model}}` requested model id from API
 - `{{provider_model}}` provider-specific model id
-- `{{reasoning_effort}}` normalized reasoning effort (`low`, `medium`, `high`, `xhigh`) when provided
+- `{{codex_executable}}` resolved Codex CLI executable (`CODEX_EXECUTABLE`, or platform default)
+- `{{reasoning_effort}}` normalized reasoning effort (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`) when provided
 - `{{prompt}}` flattened prompt text
 - `{{prompt_file}}` path to temp prompt file
 - `{{request_file}}` path to temp request JSON
@@ -103,6 +104,7 @@ responseCommand:
 
 Optional environment variables:
 
+- `CODEX_EXECUTABLE` override the Codex CLI executable used by the bridge and direct Codex login/session commands. Useful on Windows when PATH resolves to an inaccessible WindowsApps binary.
 - `CODEX_APPSERVER_MODEL_PROVIDER` (default `openai`)
 - `CODEX_APPSERVER_TIMEOUT_MS` (default `240000`)
 - `CODEX_APPSERVER_DEBUG_RPC` (`1`/`true` to log raw Codex app-server JSON-RPC methods to stderr)
@@ -311,7 +313,7 @@ Environment variables for CLI:
 | `RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window (milliseconds) |
 | `MAX_REQUEST_BODY_SIZE` | `10485760` | Max request body size in bytes (10MB) |
 | `OPENAI_REASONING_EFFORT` | provider default | Default reasoning effort for chat/responses requests |
-| `OPENAI_API_KEY` | unset | API key for OpenAI `type: openai` providers, including image generation |
+| `OPENAI_API_KEY` | unset | API key for optional OpenAI `type: openai` providers, including direct OpenAI-hosted image backends |
 | `GROQ_API_KEY` | unset | API key for Groq `type: openai` providers |
 
 Kimi is configured through the local `kimi` CLI via an ACP bridge in the current examples. It does not use `KIMI_API_KEY`; authenticate once in the provider home by running `kimi` in a TTY and then `/login` (some older CLI builds still use `/setup`).
@@ -324,7 +326,7 @@ The gateway accepts these request forms:
 - `reasoningEffort: "medium"`
 - `reasoning: { "effort": "medium" }`
 
-Supported values are `low`, `medium`, `high`, and `xhigh`. For `/v1/chat/completions`, use `reasoning_effort` or `reasoningEffort`. For `/v1/responses`, all three forms are accepted.
+Supported values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`. For `/v1/chat/completions`, use `reasoning_effort` or `reasoningEffort`. For `/v1/responses`, all three forms are accepted.
 
 ## Frontend Chat Endpoint
 
@@ -364,6 +366,30 @@ Notes:
 - True incremental streaming is currently implemented for Codex-backed stream-capable models. Other providers may still return a single final SSE chunk.
 - The gateway now emits an immediate SSE prelude comment (`: stream-open`) so clients can detect that the stream opened before model output arrives.
 - If you need debugging for Codex app-server event flow, start the gateway with `CODEX_APPSERVER_DEBUG_RPC=1`.
+
+## Frontend Image Endpoint
+
+For frontend image generation, standardize on:
+
+- `POST /v1/images/generations`
+
+Behavior:
+
+- When a Codex app-server bridge model is configured, the gateway automatically routes image-generation requests through that Codex-backed model.
+- The Codex bridge explicitly invokes the built-in Codex CLI image workflow (equivalent to adding `$imagegen` to the prompt).
+- Request fields such as `size`, `quality`, `style`, `background`, `response_format`, and other passthrough image metadata remain available to the downstream provider flow.
+
+Recommended request shape:
+
+```json
+{
+  "model": "codex-latest",
+  "prompt": "Create a clean banner illustration for a developer tools landing page.",
+  "size": "1536x1024",
+  "quality": "high",
+  "style": "vivid"
+}
+```
 
 ## 6) Request Tracing
 
@@ -494,9 +520,7 @@ The gateway also accepts `responses` follow-up tool input entries of `type: "fun
 
 ### Image generation provider output
 
-`POST /v1/images/generations` runs the selected model and maps provider output to OpenAI image response format.
-
-For real OpenAI-hosted image generation, prefer a `type: openai` provider pointed at `https://api.openai.com/v1` with `gpt-image-1.5`, `gpt-image-1`, or `gpt-image-1-mini`. Codex CLI models are useful for coding/chat, but not as the primary backend for the Images API.
+`POST /v1/images/generations` maps provider output to OpenAI image response format. When a Codex app-server bridge model is configured, the gateway prefers that Codex-backed model and explicitly routes the turn through Codex CLI image generation. Direct OpenAI `type: openai` image providers remain useful as optional fallbacks when Codex CLI image generation is not available in a deployment.
 
 Accepted provider output patterns:
 

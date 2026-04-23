@@ -116,7 +116,8 @@ Providers are configured via YAML. Each provider defines:
 **Template Variables in Commands:**
 - `{{model}}` - Requested model ID from API
 - `{{provider_model}}` - Provider-specific model ID
-- `{{reasoning_effort}}` - Normalized reasoning effort (`low`, `medium`, `high`, `xhigh`) when provided
+- `{{codex_executable}}` - Resolved Codex CLI executable (`CODEX_EXECUTABLE`, or platform default)
+- `{{reasoning_effort}}` - Normalized reasoning effort (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`) when provided
 - `{{prompt}}` - Flattened prompt text
 - `{{prompt_file}}` - Path to temp prompt file
 - `{{request_file}}` - Path to temp request JSON
@@ -126,12 +127,15 @@ Providers are configured via YAML. Each provider defines:
 **Reasoning Flags:**
 - `reasoning_effort` and `reasoningEffort` are accepted on chat/responses requests
 - `reasoning: { effort: "medium" }` is also accepted on `/v1/responses`
-- Supported values: `low`, `medium`, `high`, `xhigh`
+- Supported values: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
 
 **Auth Commands:**
 - `auth.loginCommand` - OAuth/login flow command
 - `auth.statusCommand` - Check authentication status
 - `auth.rateLimitCommand` - Check provider rate limits/quota (optional)
+
+**Codex CLI Override:**
+- `CODEX_EXECUTABLE` - Override the Codex CLI executable used by the bridge and direct Codex auth/session commands. Useful on Windows when PATH resolves to an inaccessible WindowsApps binary.
 
 **Output Modes:**
 - `text`: Raw stdout with optional JSON contract detection

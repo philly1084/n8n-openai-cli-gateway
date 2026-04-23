@@ -905,7 +905,7 @@ function findThoughtLevelValue(
   }
 
   const rankList =
-    reasoningEffort === "low"
+    reasoningEffort === "none" || reasoningEffort === "minimal" || reasoningEffort === "low"
       ? ["off", "none", "minimal", "low"]
       : reasoningEffort === "medium"
         ? ["medium", "normal", "balanced", "auto"]
@@ -925,7 +925,11 @@ function findThoughtLevelValue(
   if (reasoningEffort === "high" || reasoningEffort === "xhigh") {
     return { id: option.id, value: candidates[candidates.length - 1]!.value };
   }
-  if (reasoningEffort === "low") {
+  if (
+    reasoningEffort === "none" ||
+    reasoningEffort === "minimal" ||
+    reasoningEffort === "low"
+  ) {
     return { id: option.id, value: candidates[0]!.value };
   }
 

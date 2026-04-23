@@ -19,6 +19,7 @@ export interface Provider {
   run(request: UnifiedRequest): Promise<ProviderResult>;
   runStream?(request: UnifiedRequest): AsyncIterable<ProviderStreamEvent>;
   supportsStreaming?(): boolean;
+  prefersImageGeneration?(): boolean;
   startLoginJob(jobManager: JobManager): Promise<LoginJobSummary>;
   checkAuthStatus(): Promise<AuthStatusResult>;
   /** Check rate limits/quota for this provider */

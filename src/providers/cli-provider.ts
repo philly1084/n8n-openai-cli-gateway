@@ -16,6 +16,7 @@ import type {
 } from "../types";
 import { runCommand, runCommandStream, resolveCommand } from "../utils/command";
 import { buildPrompt } from "../utils/prompt";
+import { withRuntimeTemplateVars } from "../utils/runtime-template-vars";
 import { normalizeToolName, normalizeToolAlias, normalizeArgumentKey } from "../utils/tools";
 import { normalizeAssistantResult } from "../utils/assistant-output";
 import type { Provider } from "./provider";
@@ -71,7 +72,11 @@ export class CliProvider implements Provider {
   }
 
   supportsStreaming(): boolean {
-    return this.config.responseCommand.args.some((arg) => arg.includes("codex-appserver-bridge.js"));
+    return this.usesCodexAppServerBridge();
+  }
+
+  prefersImageGeneration(): boolean {
+    return this.usesCodexAppServerBridge();
   }
 
   async run(request: UnifiedRequest): Promise<ProviderResult> {
@@ -176,7 +181,7 @@ export class CliProvider implements Provider {
     await writeFile(promptFile, prompt, "utf8");
     await writeFile(requestFile, JSON.stringify(requestPayload, null, 2), "utf8");
 
-    const vars: Record<string, string> = {
+    const vars = withRuntimeTemplateVars({
       request_id: request.requestId,
       provider_id: this.id,
       model: request.model,
@@ -186,7 +191,7 @@ export class CliProvider implements Provider {
       prompt,
       prompt_file: promptFile,
       request_file: requestFile,
-    };
+    });
 
     const MAX_ARG_PROMPT_BYTES = 100_000;
     const argsUsePrompt = this.config.responseCommand.args.some(
@@ -221,6 +226,12 @@ export class CliProvider implements Provider {
     };
   }
 
+  private usesCodexAppServerBridge(): boolean {
+    return this.config.responseCommand.args.some((arg) =>
+      arg.includes("codex-appserver-bridge.js"),
+    );
+  }
+
   async startLoginJob(jobManager: JobManager): Promise<LoginJobSummary> {
     const command = this.config.auth?.loginCommand;
     if (!command) {
@@ -243,9 +254,9 @@ export class CliProvider implements Provider {
       };
     }
 
-    const resolved = resolveCommand(command, {
+    const resolved = resolveCommand(command, withRuntimeTemplateVars({
       provider_id: this.id,
-    });
+    }));
     const output = await runCommand(resolved);
     return {
       ok: output.exitCode === 0 && !output.timedOut,
@@ -271,9 +282,9 @@ export class CliProvider implements Provider {
     }
 
     try {
-      const resolved = resolveCommand(command, {
+      const resolved = resolveCommand(command, withRuntimeTemplateVars({
         provider_id: this.id,
-      });
+      }));
       const output = await runCommand(resolved);
 
       if (output.timedOut) {
