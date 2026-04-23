@@ -1,46 +1,43 @@
 providers:
   - id: gemini-cli
     type: cli
-    description: Gemini via OpenCode + Google OAuth plugin
+    description: Gemini CLI adapter
     models:
       - id: gemini-3.1-pro-preview
-        providerModel: google/gemini-3.1-pro-preview
+        providerModel: gemini-3.1-pro-preview
         fallbackModels:
           - gemini-3-flash-preview
           - gpt-5.5
           - gpt-5.4
       - id: gemini-3-flash-preview
-        providerModel: google/gemini-3-flash-preview
+        providerModel: gemini-3-flash-preview
         fallbackModels:
           - gemini-3.1-pro-preview
           - gpt-5.5
           - gpt-5.4
       - id: gemini-3.1-flash-lite-preview
-        providerModel: google/gemini-3.1-flash-lite-preview
+        providerModel: gemini-3.1-flash-lite-preview
         fallbackModels:
           - gemini-3-flash-preview
       - id: gemini-2.5-pro
-        providerModel: google/gemini-2.5-pro
+        providerModel: gemini-2.5-pro
         fallbackModels:
           - gemini-3.1-pro-preview
       - id: gemini-2.5-flash
-        providerModel: google/gemini-2.5-flash
+        providerModel: gemini-2.5-flash
         fallbackModels:
           - gemini-3-flash-preview
     responseCommand:
-      executable: opencode
+      executable: node
       args:
-        - run
+        - dist/scripts/gemini-cli-bridge.js
         - --model
         - "{{provider_model}}"
-        - --format
-        - default
-        - "{{prompt}}"
-      input: prompt_stdin
-      output: text
+      input: request_json_stdin
+      output: json_contract
       timeoutMs: 240000
     sessionCommand:
-      executable: opencode
+      executable: gemini
       args: []
       env:
         TERM: xterm-256color
@@ -50,16 +47,23 @@ providers:
       ptyMode: auto
     auth:
       loginCommand:
-        executable: opencode
+        executable: sh
         args:
-          - auth
-          - login
+          - -c
+          - |
+            echo "Gemini CLI login is interactive in this version."
+            echo "Run in a TTY shell: gemini"
+            echo "Then run: /auth and choose Login with Google."
+            exit 1
         timeoutMs: 900000
       statusCommand:
         executable: sh
         args:
           - -c
-          - opencode auth list | grep -qi google
+          - |
+            test -f "$HOME/.gemini/oauth_creds.json" \
+              && echo '{"ok":true,"source":"oauth_creds.json"}' \
+              || (echo '{"ok":false,"error":"missing ~/.gemini/oauth_creds.json"}' && exit 1)
         timeoutMs: 30000
       # Example: Rate limit check command
       # This should output JSON with rate limit information

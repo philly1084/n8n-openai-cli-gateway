@@ -20,7 +20,7 @@ OpenAI-compatible gateway for n8n that exposes:
 
 Also exposed under `/openai/v1/*` for in-cluster compatibility URLs.
 
-Model execution is delegated to configurable providers, including CLI runners (Gemini via OpenCode OAuth plugin, Antigravity CLI, Codex CLI) and OpenAI-compatible remote APIs such as Groq. When a Codex app-server bridge model is configured, the gateway also prefers it for `POST /v1/images/generations` so frontend image requests run through Codex CLI image generation by default. The gateway keeps n8n on one API key while provider auth is handled on the backend.
+Model execution is delegated to configurable providers, including CLI runners (Gemini CLI, Kimi ACP, Antigravity CLI, Codex CLI) and OpenAI-compatible remote APIs such as Groq and DeepSeek. When a Codex app-server bridge model is configured, the gateway also prefers it for `POST /v1/images/generations` so frontend image requests run through Codex CLI image generation by default. The gateway keeps n8n on one API key while provider auth is handled on the backend.
 
 ## Why this fits your setup
 
@@ -45,7 +45,7 @@ Model execution is delegated to configurable providers, including CLI runners (G
 ## Requirements
 
 - Node.js 20+
-- Provider CLIs available in runtime image/host (`opencode`, `gemini`, `antigravity`, `codex`, etc.)
+- Provider CLIs available in runtime image/host (`gemini`, `kimi`, `antigravity`, `codex`, etc.)
 - A real providers config file at `config/providers.yaml`
 
 ## 1) Configure providers
@@ -64,7 +64,7 @@ Each provider defines:
 - optional `auth.loginCommand`, `auth.statusCommand`, and `auth.rateLimitCommand`.
 - optional per-model `fallbackModels` list of model ids to try when a provider command fails.
 
-The gateway also supports `type: openai` providers for OpenAI-compatible remote APIs such as Groq. Those providers can auto-discover models from `/models` at startup and register them automatically.
+The gateway also supports `type: openai` providers for OpenAI-compatible remote APIs such as Groq and DeepSeek. Those providers can auto-discover models from `/models` at startup and register them automatically.
 
 Supported template variables in commands:
 
@@ -517,6 +517,12 @@ The gateway also accepts `responses` follow-up tool input entries of `type: "fun
 
 - Use the dedicated Gemini bridge (`dist/scripts/gemini-cli-bridge.js`) for tool turns.
 - The bridge normalizes Gemini `stream-json` output into the same JSON tool-call contract used by the Codex and Kimi adapters.
+
+### Kimi, Groq, and DeepSeek routing
+
+- Kimi runs through `dist/scripts/kimi-acp-bridge.js`, which starts `kimi acp` over stdio and converts ACP output to the gateway JSON contract.
+- Groq and DeepSeek should use `type: openai` providers instead of shell/curl CLI wrappers. The shared provider forwards normal OpenAI chat messages and tools directly to `/chat/completions`.
+- Groq compound models are treated as hosted-tool systems; when n8n sends gateway-managed tools, the registry should route to a fallback model.
 
 ### Image generation provider output
 

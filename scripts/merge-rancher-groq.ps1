@@ -23,10 +23,14 @@ $groqEnvBlock = @"
 "@
 
 $groqProviderBlock = @"
-
       - id: groq-api
-        type: cli
-        description: Groq API via curl using Groq production chat models
+        type: openai
+        description: Groq API - auto-discovers chat-usable models at startup
+        baseUrl: https://api.groq.com/openai/v1
+        apiKeyEnv: GROQ_API_KEY
+        timeoutMs: 60000
+        discovery:
+          enabled: true
         models:
           - id: groq/compound
             providerModel: groq/compound
@@ -59,46 +63,6 @@ $groqProviderBlock = @"
               - kimi-for-coding
           - id: llama-3.1-8b-instant
             providerModel: llama-3.1-8b-instant
-          # Preview models from Groq docs. Uncomment if you want them exposed.
-          # - id: meta-llama/llama-4-scout-17b-16e-instruct
-          #   providerModel: meta-llama/llama-4-scout-17b-16e-instruct
-          # - id: qwen/qwen3-32b
-          #   providerModel: qwen/qwen3-32b
-        responseCommand:
-          executable: sh
-          args:
-            - -lc
-            - |
-              REQUEST_JSON="$(cat)"
-              HAS_TOOLS="$(
-                printf "%s" "$REQUEST_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const req=JSON.parse(d);const tools=Array.isArray(req.tools)?req.tools:[];process.stdout.write(tools.length>0?"1":"0");}catch{process.stdout.write("0");}});'
-              )"
-              if [ "$HAS_TOOLS" = "1" ]; then
-                echo "Groq CLI provider does not reliably support gateway-managed tool turns. Retry with fallback." >&2
-                exit 86
-              fi
-              PAYLOAD="$(
-                printf "%s" "$REQUEST_JSON" | node -e 'let d="";const maxChars=Number(process.env.GROQ_MAX_PROMPT_CHARS||120000);process.stdin.on("data",c=>d+=c).on("end",()=>{const norm=v=>typeof v==="string"?v:JSON.stringify(v??"");try{const req=JSON.parse(d);const rawMsgs=Array.isArray(req.messages)?req.messages:[];const allowedRoles=new Set(["system","user","assistant","tool"]);const msgs=rawMsgs.map(m=>{const role=allowedRoles.has(String(m&&m.role||""))?String(m.role):"user";const content=norm(m&&Object.prototype.hasOwnProperty.call(m,"content")?m.content:"").trim();if(!content)return null;const out={role,content};if(role==="tool"&&m&&typeof m==="object"&&typeof m.tool_call_id==="string"&&m.tool_call_id){out.tool_call_id=m.tool_call_id;}if(role==="assistant"&&m&&typeof m==="object"&&Array.isArray(m.tool_calls)&&m.tool_calls.length>0){out.tool_calls=m.tool_calls;}return out;}).filter(Boolean);let total=0;const kept=[];for(let i=msgs.length-1;i>=0;i--){const msg=msgs[i];const cost=msg.content.length+msg.role.length+32;if(kept.length>0&&total+cost>maxChars) continue;kept.unshift(msg);total+=cost;}const firstSystem=msgs.find(m=>m.role==="system");if(firstSystem&&!kept.some(m=>m.role==="system")&&(total+firstSystem.content.length+32)<=maxChars){kept.unshift(firstSystem);total+=firstSystem.content.length+32;}if(kept.length===0){const fallback=(typeof req.prompt==="string"?req.prompt:norm(req.prompt)).trim();kept.push({role:"user",content:fallback.slice(-maxChars)||"Hello"});}process.stdout.write(JSON.stringify({model:"{{provider_model}}",messages:kept,stream:false}));}catch{process.stdout.write(JSON.stringify({model:"{{provider_model}}",messages:[{role:"user",content:"Hello"}],stream:false}));}});'
-              )"
-              printf "%s" "$PAYLOAD" | curl -fsS https://api.groq.com/openai/v1/chat/completions \
-                -H "Authorization: Bearer $GROQ_API_KEY" \
-                -H "Content-Type: application/json" \
-                --data-binary @- | \
-                node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const out={output_text:"",tool_calls:[],finish_reason:"stop"};try{const res=JSON.parse(d);const choice=Array.isArray(res.choices)&&res.choices[0]&&typeof res.choices[0]==="object"?res.choices[0]:{};const msg=choice.message&&typeof choice.message==="object"?choice.message:{};const extractText=(content)=>{if(typeof content==="string") return content.trim();if(Array.isArray(content)){return content.map(part=>{if(typeof part==="string") return part;if(part&&typeof part==="object"){if(typeof part.text==="string") return part.text;if(typeof part.content==="string") return part.content;}return "";}).filter(Boolean).join("\n").trim();}if(content&&typeof content==="object"){if(typeof content.text==="string") return content.text.trim();if(typeof content.content==="string") return content.content.trim();}return "";};const content=extractText(msg.content);const toolCalls=Array.isArray(msg.tool_calls)?msg.tool_calls.map((call,i)=>{if(!call||typeof call!=="object") return null;const fn=call.function&&typeof call.function==="object"?call.function:{};const name=typeof fn.name==="string"?fn.name.trim():"";if(!name) return null;const args=typeof fn.arguments==="string"?fn.arguments:JSON.stringify(fn.arguments??{});return {id:typeof call.id==="string"&&call.id?call.id:`call_${i+1}`,name,arguments:args};}).filter(Boolean):[];const finish=typeof choice.finish_reason==="string"&&choice.finish_reason?choice.finish_reason:(toolCalls.length>0?"tool_calls":"stop");out.output_text=content;out.tool_calls=toolCalls;out.finish_reason=finish;}catch(e){out.output_text=d.trim();}process.stdout.write(JSON.stringify(out));});'
-          input: request_json_stdin
-          output: json_contract
-          timeoutMs: 120000
-        auth:
-          statusCommand:
-            executable: sh
-            args:
-              - -lc
-              - |
-                test -n "${GROQ_API_KEY:-}" || { echo '{"ok":false,"error":"GROQ_API_KEY not set"}'; exit 1; }
-                curl -fsS https://api.groq.com/openai/v1/models \
-                  -H "Authorization: Bearer $GROQ_API_KEY" >/dev/null
-                echo '{"ok":true}'
-            timeoutMs: 15000
 "@
 
 if ($content -notmatch '(?m)^\s*groqApiKey:\s*') {
@@ -113,7 +77,7 @@ if ($content -notmatch '(?m)^\s*groqApiKey:\s*') {
 if ($content -notmatch '(?m)^\s*- name:\s*GROQ_API_KEY\s*$') {
   $content = [regex]::Replace(
     $content,
-    '(?ms)(\s*- name:\s*NANOBANANA_GOOGLE_API_KEY\s*\r?\n\s*valueFrom:\s*\r?\n\s*secretKeyRef:\s*\r?\n\s*name:\s*n8n-openai-cli-gateway-secrets\s*\r?\n\s*key:\s*geminiApiKey\s*)',
+    '(?ms)^(\s*- name:\s*ADMIN_API_KEY\s*\r?\n\s*valueFrom:\s*\r?\n\s*secretKeyRef:\s*\r?\n\s*name:\s*n8n-openai-cli-gateway-secrets\s*\r?\n\s*key:\s*adminApiKey\s*)$',
     "`$1`r`n$groqEnvBlock",
     1
   )
@@ -122,10 +86,20 @@ if ($content -notmatch '(?m)^\s*- name:\s*GROQ_API_KEY\s*$') {
 if ($content -notmatch '(?m)^\s*- id:\s*groq-api\s*$') {
   $content = [regex]::Replace(
     $content,
-    '(?ms)(providers\.yaml:\s*\|\s*\r?\n.*?)(\r?\n---\r?\napiVersion:\s*v1\s*\r?\nkind:\s*PersistentVolumeClaim)',
-    { param($m) $m.Groups[1].Value.TrimEnd("`r", "`n") + "`r`n" + $groqProviderBlock + $m.Groups[2].Value },
+    '(?m)^(\s*- id:\s*deepseek-api\s*)$',
+    "$groqProviderBlock`r`n`$1",
     1
   )
+}
+
+if ($content -notmatch '(?m)^\s*groqApiKey:\s*') {
+  throw "Failed to add groqApiKey secret entry."
+}
+if ($content -notmatch '(?m)^\s*- name:\s*GROQ_API_KEY\s*$') {
+  throw "Failed to add GROQ_API_KEY env entry."
+}
+if ($content -notmatch '(?m)^\s*- id:\s*groq-api\s*$') {
+  throw "Failed to add Groq provider block before deepseek-api."
 }
 
 Set-Content -LiteralPath $OutputPath -Value $content -NoNewline

@@ -9,6 +9,11 @@ type CapturedRequestBody = {
   taskType?: string;
   metadata?: Record<string, unknown>;
   model?: string;
+  messages?: Array<Record<string, unknown>>;
+  tools?: unknown[];
+  reasoning_effort?: string;
+  reasoning_format?: string;
+  include_reasoning?: boolean;
   prompt?: string;
   n?: number;
   size?: string;
@@ -106,9 +111,45 @@ test("OpenAiCompatibleProvider forwards remote session metadata and approval fla
   }
 });
 
-test("OpenAiCompatibleProvider rejects deepseek-reasoner tool turns", async () => {
+test("OpenAiCompatibleProvider forwards DeepSeek reasoner tool turns without remote metadata", async () => {
+  const originalFetch = globalThis.fetch;
   const originalApiKey = process.env.TEST_REMOTE_API_KEY;
+  let capturedUrl = "";
+  let capturedBody: CapturedRequestBody = {};
+
   process.env.TEST_REMOTE_API_KEY = "test-key";
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    capturedUrl = String(input);
+    capturedBody = JSON.parse(String(init?.body ?? "{}")) as CapturedRequestBody;
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: null,
+              tool_calls: [
+                {
+                  id: "call_status",
+                  type: "function",
+                  function: {
+                    name: "check_status",
+                    arguments: "{\"service\":\"api\"}",
+                  },
+                },
+              ],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      },
+    );
+  }) as typeof fetch;
 
   try {
     const provider = await OpenAiCompatibleProvider.create({
@@ -124,11 +165,182 @@ test("OpenAiCompatibleProvider rejects deepseek-reasoner tool turns", async () =
       ],
     });
 
+    const result = await provider.run({
+      requestId: "req_2",
+      model: "deepseek-reasoner",
+      providerModel: "deepseek-reasoner",
+      messages: [
+        {
+          role: "user",
+          content: "Use the tool if needed.",
+        },
+      ],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "check_status",
+          },
+        },
+      ],
+      metadata: {
+        session_id: "session-123",
+        reasoning_format: "parsed",
+        include_reasoning: true,
+      },
+    });
+
+    assert.match(capturedUrl, /https:\/\/api\.deepseek\.com\/chat\/completions$/);
+    assert.equal(capturedBody.model, "deepseek-reasoner");
+    assert.equal(capturedBody.session_id, undefined);
+    assert.equal(capturedBody.metadata, undefined);
+    assert.equal(capturedBody.reasoning_format, undefined);
+    assert.equal(capturedBody.include_reasoning, undefined);
+    assert.equal(capturedBody.tools?.length, 1);
+    assert.deepStrictEqual(result.toolCalls, [
+      {
+        id: "call_status",
+        name: "check_status",
+        arguments: "{\"service\":\"api\"}",
+      },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalApiKey === undefined) {
+      delete process.env.TEST_REMOTE_API_KEY;
+    } else {
+      process.env.TEST_REMOTE_API_KEY = originalApiKey;
+    }
+  }
+});
+
+test("OpenAiCompatibleProvider forwards Groq local tool calls for chat models", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.TEST_REMOTE_API_KEY;
+  let capturedBody: CapturedRequestBody = {};
+
+  process.env.TEST_REMOTE_API_KEY = "test-key";
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    capturedBody = JSON.parse(String(init?.body ?? "{}")) as CapturedRequestBody;
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: null,
+              reasoning: "Chose the status lookup tool.",
+              tool_calls: [
+                {
+                  id: "call_status",
+                  type: "function",
+                  function: {
+                    name: "check_status",
+                    arguments: "{\"service\":\"api\"}",
+                  },
+                },
+              ],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      },
+    );
+  }) as typeof fetch;
+
+  try {
+    const provider = await OpenAiCompatibleProvider.create({
+      id: "groq-api",
+      type: "openai",
+      baseUrl: "https://api.groq.com/openai/v1",
+      apiKeyEnv: "TEST_REMOTE_API_KEY",
+      models: [
+        {
+          id: "openai/gpt-oss-20b",
+          providerModel: "openai/gpt-oss-20b",
+        },
+      ],
+      discovery: {
+        enabled: false,
+      },
+    });
+
+    const result = await provider.run({
+      requestId: "req_groq_1",
+      model: "openai/gpt-oss-20b",
+      providerModel: "openai/gpt-oss-20b",
+      messages: [
+        {
+          role: "user",
+          content: "Use the tool if needed.",
+        },
+      ],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "check_status",
+          },
+        },
+      ],
+      reasoningEffort: "xhigh",
+      metadata: {
+        session_id: "session-123",
+        reasoning_format: "raw",
+        include_reasoning: true,
+      },
+    });
+
+    assert.equal(capturedBody.model, "openai/gpt-oss-20b");
+    assert.equal(capturedBody.reasoning_effort, "high");
+    assert.equal(capturedBody.include_reasoning, true);
+    assert.equal(capturedBody.reasoning_format, undefined);
+    assert.equal(capturedBody.session_id, undefined);
+    assert.equal(capturedBody.metadata, undefined);
+    assert.equal(capturedBody.tools?.length, 1);
+    assert.equal(result.finishReason, "tool_calls");
+    assert.equal(result.reasoningText, "Chose the status lookup tool.");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalApiKey === undefined) {
+      delete process.env.TEST_REMOTE_API_KEY;
+    } else {
+      process.env.TEST_REMOTE_API_KEY = originalApiKey;
+    }
+  }
+});
+
+test("OpenAiCompatibleProvider rejects Groq compound gateway-managed tool turns", async () => {
+  const originalApiKey = process.env.TEST_REMOTE_API_KEY;
+  process.env.TEST_REMOTE_API_KEY = "test-key";
+
+  try {
+    const provider = await OpenAiCompatibleProvider.create({
+      id: "groq-api",
+      type: "openai",
+      baseUrl: "https://api.groq.com/openai/v1",
+      apiKeyEnv: "TEST_REMOTE_API_KEY",
+      models: [
+        {
+          id: "groq/compound",
+          providerModel: "groq/compound",
+        },
+      ],
+      discovery: {
+        enabled: false,
+      },
+    });
+
     await assert.rejects(
       provider.run({
-        requestId: "req_2",
-        model: "deepseek-reasoner",
-        providerModel: "deepseek-reasoner",
+        requestId: "req_groq_2",
+        model: "groq/compound",
+        providerModel: "groq/compound",
         messages: [
           {
             role: "user",
@@ -144,9 +356,79 @@ test("OpenAiCompatibleProvider rejects deepseek-reasoner tool turns", async () =
           },
         ],
       }),
-      /requires DeepSeek reasoning_content round-tripping during tool use/i,
+      /does not reliably support gateway-managed tool calling/i,
     );
   } finally {
+    if (originalApiKey === undefined) {
+      delete process.env.TEST_REMOTE_API_KEY;
+    } else {
+      process.env.TEST_REMOTE_API_KEY = originalApiKey;
+    }
+  }
+});
+
+test("OpenAiCompatibleProvider maps Groq Qwen reasoning effort", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.TEST_REMOTE_API_KEY;
+  let capturedBody: CapturedRequestBody = {};
+
+  process.env.TEST_REMOTE_API_KEY = "test-key";
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    capturedBody = JSON.parse(String(init?.body ?? "{}")) as CapturedRequestBody;
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: "ok",
+            },
+            finish_reason: "stop",
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      },
+    );
+  }) as typeof fetch;
+
+  try {
+    const provider = await OpenAiCompatibleProvider.create({
+      id: "groq-api",
+      type: "openai",
+      baseUrl: "https://api.groq.com/openai/v1",
+      apiKeyEnv: "TEST_REMOTE_API_KEY",
+      models: [
+        {
+          id: "qwen/qwen3-32b",
+          providerModel: "qwen/qwen3-32b",
+        },
+      ],
+      discovery: {
+        enabled: false,
+      },
+    });
+
+    await provider.run({
+      requestId: "req_groq_qwen",
+      model: "qwen/qwen3-32b",
+      providerModel: "qwen/qwen3-32b",
+      messages: [
+        {
+          role: "user",
+          content: "hi",
+        },
+      ],
+      tools: [],
+      reasoningEffort: "minimal",
+    });
+
+    assert.equal(capturedBody.reasoning_effort, "none");
+  } finally {
+    globalThis.fetch = originalFetch;
     if (originalApiKey === undefined) {
       delete process.env.TEST_REMOTE_API_KEY;
     } else {

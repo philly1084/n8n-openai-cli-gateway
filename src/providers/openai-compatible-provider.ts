@@ -109,11 +109,6 @@ export class OpenAiCompatibleProvider implements Provider {
         `Model ${providerModel} does not reliably support gateway-managed tool calling. Retry with a fallback model.`,
       );
     }
-    if (shouldRejectDeepSeekReasonerToolTurn(this.config.baseUrl, providerModel, request)) {
-      throw new Error(
-        `Model ${providerModel} requires DeepSeek reasoning_content round-tripping during tool use. Retry with deepseek-chat or another fallback model for tool turns.`,
-      );
-    }
     const body: Record<string, unknown> = {
       model: providerModel,
       messages: buildApiMessages(request.messages, {
@@ -129,13 +124,14 @@ export class OpenAiCompatibleProvider implements Provider {
     copyNumberMetadata(body, metadata, "frequency_penalty");
     copyIntegerMetadata(body, metadata, "max_tokens");
     copyStringMetadata(body, metadata, "user");
-    copyStringMetadata(body, metadata, "reasoning_format");
-    copyBooleanMetadata(body, metadata, "include_reasoning");
-    copyStringMetadataKeys(body, metadata, REMOTE_STRING_METADATA_KEYS);
+    copyProviderReasoningMetadata(body, metadata, this.config.baseUrl, providerModel);
 
-    const forwardedMetadata = extractForwardedMetadata(metadata);
-    if (forwardedMetadata) {
-      body.metadata = forwardedMetadata;
+    if (shouldForwardRemoteMetadata(this.config.baseUrl)) {
+      copyStringMetadataKeys(body, metadata, REMOTE_STRING_METADATA_KEYS);
+      const forwardedMetadata = extractForwardedMetadata(metadata);
+      if (forwardedMetadata) {
+        body.metadata = forwardedMetadata;
+      }
     }
 
     const groqReasoningEffort = normalizeGroqReasoningEffort(
@@ -517,26 +513,13 @@ function shouldRejectGroqToolTurn(
     return false;
   }
 
-  // Groq-hosted models have been inconsistent at gateway-managed tool turns.
-  // Fail fast so the registry can move to a more reliable fallback model
-  // instead of surfacing synthetic assistant completions.
-  return request.tools.length > 0;
+  // Compound systems use Groq-hosted tools. Keep gateway-managed local tool
+  // orchestration on ordinary chat models or let the registry pick a fallback.
+  return request.tools.length > 0 && shouldSuppressGroqLocalToolCalling(baseUrl, providerModel);
 }
 
 function isGroqBaseUrl(baseUrl: string): boolean {
   return /api\.groq\.com/i.test(baseUrl);
-}
-
-function shouldRejectDeepSeekReasonerToolTurn(
-  baseUrl: string,
-  providerModel: string,
-  request: UnifiedRequest,
-): boolean {
-  if (!isDeepSeekBaseUrl(baseUrl)) {
-    return false;
-  }
-
-  return request.tools.length > 0 && providerModel.trim() === "deepseek-reasoner";
 }
 
 function isDeepSeekBaseUrl(baseUrl: string): boolean {
@@ -857,6 +840,36 @@ function copyBooleanMetadata(
   }
 }
 
+function copyProviderReasoningMetadata(
+  target: Record<string, unknown>,
+  metadata: UnifiedRequest["metadata"],
+  baseUrl: string,
+  providerModel: string,
+): void {
+  if (isDeepSeekBaseUrl(baseUrl)) {
+    return;
+  }
+
+  const includeReasoning = readMetadataValue(metadata, "include_reasoning");
+  const reasoningFormat = readMetadataValue(metadata, "reasoning_format");
+
+  if (isGroqBaseUrl(baseUrl) && isGroqGptOssModel(providerModel)) {
+    if (typeof includeReasoning === "boolean") {
+      target.include_reasoning = includeReasoning;
+    }
+    return;
+  }
+
+  if (typeof reasoningFormat === "string" && reasoningFormat.trim()) {
+    target.reasoning_format = reasoningFormat.trim();
+    return;
+  }
+
+  if (typeof includeReasoning === "boolean") {
+    target.include_reasoning = includeReasoning;
+  }
+}
+
 function copyStringMetadataKeys(
   target: Record<string, unknown>,
   metadata: UnifiedRequest["metadata"],
@@ -887,6 +900,10 @@ function extractForwardedMetadata(
   }
 
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function shouldForwardRemoteMetadata(baseUrl: string): boolean {
+  return !isGroqBaseUrl(baseUrl) && !isDeepSeekBaseUrl(baseUrl);
 }
 
 function buildImageGenerationPrompt(request: UnifiedRequest): string {
@@ -941,26 +958,47 @@ function normalizeGroqReasoningEffort(
   baseUrl: string,
   providerModel: string,
   reasoningEffort: UnifiedRequest["reasoningEffort"],
-): "low" | "medium" | "high" | undefined {
+): "none" | "default" | "low" | "medium" | "high" | undefined {
   if (!reasoningEffort) {
     return undefined;
   }
 
-  if (!/api\.groq\.com/i.test(baseUrl) || !/^openai\/gpt-oss-(20b|120b)$/i.test(providerModel)) {
+  if (!isGroqBaseUrl(baseUrl)) {
     return undefined;
   }
 
-  if (reasoningEffort === "xhigh") {
-    return "high";
+  if (isGroqQwen3Model(providerModel)) {
+    return reasoningEffort === "none" ||
+      reasoningEffort === "minimal" ||
+      reasoningEffort === "low"
+      ? "none"
+      : "default";
+  }
+
+  if (!isGroqGptOssModel(providerModel)) {
+    return undefined;
   }
 
   if (reasoningEffort === "none" || reasoningEffort === "minimal") {
     return "low";
   }
 
+  if (reasoningEffort === "xhigh") {
+    return "high";
+  }
+
   return reasoningEffort === "low" || reasoningEffort === "medium" || reasoningEffort === "high"
     ? reasoningEffort
     : undefined;
+}
+
+function isGroqGptOssModel(providerModel: string): boolean {
+  return /^openai\/gpt-oss-(20b|120b)$/i.test(providerModel.trim());
+}
+
+function isGroqQwen3Model(providerModel: string): boolean {
+  return /(^|\/)qwen3[-/]/i.test(providerModel.trim()) ||
+    /(^|\/)qwen\/qwen3[-/]/i.test(providerModel.trim());
 }
 
 function extractApiErrorMessage(payload: unknown): string {
