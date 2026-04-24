@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildPrompt,
+  findSafeModeValue,
   normalizeToolCallsFromContract,
   parseJsonContractFromText,
 } from "../scripts/kimi-acp-bridge.js";
@@ -91,4 +92,23 @@ test("Kimi bridge prompt includes explicit available tool names and tool choice 
 
   assert.match(prompt, /AVAILABLE_TOOL_NAMES:\ncheck_status/);
   assert.match(prompt, /MUST call exactly this function name: check_status/i);
+  assert.match(prompt, /Do not request local permissions/i);
+});
+
+test("Kimi bridge prefers chat mode over ask mode when both are available", () => {
+  const selected = findSafeModeValue([
+    {
+      id: "mode",
+      category: "mode",
+      options: [
+        { value: "ask", name: "Ask" },
+        { value: "chat", name: "Chat" },
+      ],
+    },
+  ]);
+
+  assert.deepEqual(selected, {
+    id: "mode",
+    value: "chat",
+  });
 });

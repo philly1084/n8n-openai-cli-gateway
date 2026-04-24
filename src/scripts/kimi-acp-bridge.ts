@@ -382,6 +382,7 @@ export function buildPrompt(request: GatewayRequest): string {
     "The tools listed in AVAILABLE_TOOLS_JSON are the only tools you can use in this turn.",
     "Do not claim that tools are unavailable when AVAILABLE_TOOLS_JSON is non-empty.",
     "Do not use any internal ACP tools, shell commands, filesystem access, web browsing, or MCP tools.",
+    "Do not request local permissions. Local permission requests are rejected by the gateway.",
     "TOOL: messages are outputs from previous tool calls.",
     "When TOOL: messages are present and no more tools are needed, synthesize the final answer for the user in output_text.",
     "Do not copy placeholder or example text into output_text.",
@@ -842,14 +843,14 @@ function findOptionByCategory(
   return configOptions.find((option) => option.category === category);
 }
 
-function findSafeModeValue(configOptions: AcpConfigOption[]): { id: string; value: string } | null {
+export function findSafeModeValue(configOptions: AcpConfigOption[]): { id: string; value: string } | null {
   const option = findOptionByCategory(configOptions, "mode");
   if (!option || typeof option.id !== "string" || !option.id) {
     return null;
   }
 
   const candidates = normalizeOptionCandidates(option);
-  const preferred = ["ask", "chat", "architect", "plan", "read_only", "readonly"];
+  const preferred = ["chat", "ask", "architect", "plan", "read_only", "readonly"];
   for (const name of preferred) {
     const match = candidates.find(
       (candidate) =>

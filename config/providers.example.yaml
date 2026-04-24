@@ -330,8 +330,16 @@ providers:
     models:
       - id: kimi-for-coding
         providerModel: kimi-for-coding
+        fallbackModels:
+          - gpt-5.5
+          - gpt-5.4
+          - gemini-3.1-pro-preview
       - id: kimi-k2-turbo-preview
         providerModel: kimi-for-coding
+        fallbackModels:
+          - gpt-5.5
+          - gpt-5.4
+          - gemini-3.1-pro-preview
     responseCommand:
       executable: node
       args:
