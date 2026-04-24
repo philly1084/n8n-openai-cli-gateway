@@ -482,7 +482,7 @@ test("images route parses image data from provider raw payload", async () => {
   }
 });
 
-test("images route prefers Codex-backed models when available", async () => {
+test("images route prefers explicit Codex-backed image model when available", async () => {
   let capturedModelId = "";
 
   const server = createTestServer(
@@ -501,19 +501,19 @@ test("images route prefers Codex-backed models when available", async () => {
     {
       models: [
         {
-          id: "gpt-image-1.5",
-          providerId: "openai-image-api",
-          providerModel: "gpt-image-1.5",
+          id: "gemini-image",
+          providerId: "gemini-cli",
+          providerModel: "gemini-image",
           fallbackModels: [],
         },
         {
-          id: "codex-latest",
+          id: "gpt-image-2",
           providerId: "codex-cli",
           providerModel: "codex-latest",
           fallbackModels: [],
         },
       ],
-      resolvePreferredImageGenerationModel: () => "codex-latest",
+      resolvePreferredImageGenerationModel: () => "gpt-image-2",
     },
   );
 
@@ -525,13 +525,13 @@ test("images route prefers Codex-backed models when available", async () => {
         authorization: "Bearer test-key",
       },
       payload: {
-        model: "gpt-image-1.5",
+        model: "gemini-image",
         prompt: "A lighthouse",
       },
     });
 
     assert.equal(response.statusCode, 200);
-    assert.equal(capturedModelId, "codex-latest");
+    assert.equal(capturedModelId, "gpt-image-2");
   } finally {
     await server.close();
   }
@@ -552,6 +552,7 @@ function createTestServer(
       providerId: string;
       providerModel: string;
       fallbackModels: string[];
+      capabilities?: Array<"image_generation">;
     }>;
     resolvePreferredImageGenerationModel?: (requestedModelId?: string) => string | undefined;
   },

@@ -13,11 +13,14 @@ const commandSchema = z.object({
   timeoutMs: z.number().int().positive().default(180000),
 });
 
+const modelCapabilitySchema = z.enum(["image_generation"]);
+
 const providerModelSchema = z.object({
   id: z.string().min(1),
   providerModel: z.string().optional(),
   description: z.string().optional(),
   fallbackModels: z.array(z.string().min(1)).optional(),
+  capabilities: z.array(modelCapabilitySchema).optional(),
 });
 
 const discoverySchema = z.object({

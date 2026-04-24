@@ -1,4 +1,10 @@
-import type { ProviderConfig, ProviderResult, ProviderStreamEvent, UnifiedRequest } from "../types";
+import type {
+  ModelCapability,
+  ProviderConfig,
+  ProviderResult,
+  ProviderStreamEvent,
+  UnifiedRequest,
+} from "../types";
 import type {
   ModelStatsModelSnapshot,
   ModelStatsSnapshot,
@@ -16,6 +22,7 @@ interface ModelBinding {
   provider: Provider;
   description?: string;
   fallbackModelIds: string[];
+  capabilities: ModelCapability[];
 }
 
 export class ProviderRegistry {
@@ -47,6 +54,7 @@ export class ProviderRegistry {
           provider,
           description: model.description,
           fallbackModelIds: model.fallbackModels || [],
+          capabilities: model.capabilities || [],
         });
         registry.modelStats.registerModel({
           modelId: model.id,
@@ -71,6 +79,7 @@ export class ProviderRegistry {
     providerId: string;
     providerModel: string;
     fallbackModels: string[];
+    capabilities: ModelCapability[];
   }> {
     return [...this.models.values()].map((binding) => ({
       id: binding.modelId,
@@ -78,6 +87,7 @@ export class ProviderRegistry {
       providerId: binding.provider.id,
       providerModel: binding.providerModel,
       fallbackModels: binding.fallbackModelIds,
+      capabilities: binding.capabilities,
     }));
   }
 
@@ -87,6 +97,16 @@ export class ProviderRegistry {
 
   resolvePreferredImageGenerationModel(requestedModelId?: string): string | undefined {
     const requestedBinding = requestedModelId ? this.models.get(requestedModelId) : undefined;
+    if (requestedBinding && bindingSupportsImageGeneration(requestedBinding)) {
+      return requestedBinding.modelId;
+    }
+
+    for (const binding of this.models.values()) {
+      if (bindingSupportsImageGeneration(binding)) {
+        return binding.modelId;
+      }
+    }
+
     if (requestedBinding?.provider.prefersImageGeneration?.()) {
       return requestedBinding.modelId;
     }
@@ -196,7 +216,11 @@ export class ProviderRegistry {
           error,
         });
         trackProvider(binding.provider.id, binding.modelId, false, Date.now() - startedAt);
-        const nextModelId = binding.fallbackModelIds.find((fallback) => !visited.has(fallback));
+        const nextModelId = binding.fallbackModelIds.find(
+          (fallback) =>
+            !visited.has(fallback) &&
+            (!isImageGenerationRequest(request) || this.modelSupportsImageGeneration(fallback)),
+        );
         if (!nextModelId) {
           break;
         }
@@ -227,6 +251,14 @@ export class ProviderRegistry {
   canStreamModel(modelId: string): boolean {
     const binding = this.models.get(modelId);
     return Boolean(binding?.provider.runStream && (binding.provider.supportsStreaming?.() ?? true));
+  }
+
+  private modelSupportsImageGeneration(modelId: string): boolean {
+    const binding = this.models.get(modelId);
+    return Boolean(
+      binding &&
+      (bindingSupportsImageGeneration(binding) || binding.provider.prefersImageGeneration?.()),
+    );
   }
 
   async *runModelStream(
@@ -285,6 +317,16 @@ export class ProviderRegistry {
       throw error;
     }
   }
+}
+
+function bindingSupportsImageGeneration(binding: ModelBinding): boolean {
+  return binding.capabilities.includes("image_generation");
+}
+
+function isImageGenerationRequest(
+  request: Omit<UnifiedRequest, "model" | "providerModel">,
+): boolean {
+  return request.requestKind === "images_generations";
 }
 
 function isInvalidProviderResult(result: ProviderResult): boolean {

@@ -123,7 +123,10 @@ export interface ProviderModelConfig {
   providerModel?: string;
   description?: string;
   fallbackModels?: string[];
+  capabilities?: ModelCapability[];
 }
+
+export type ModelCapability = "image_generation";
 
 export interface ModelDiscoveryConfig {
   enabled?: boolean;

@@ -111,6 +111,11 @@ providers:
     type: cli
     description: OpenAI Codex app-server bridge adapter
     models:
+      - id: gpt-image-2
+        providerModel: codex-latest
+        description: OpenAI Image 2.0 via Codex CLI image generation
+        capabilities:
+          - image_generation
       - id: codex-latest
         providerModel: codex-latest
         fallbackModels:
@@ -190,27 +195,6 @@ providers:
       #         -H "Content-Type: application/json" | \
       #         jq '{limitType: "credits", remaining: .total_available, maxAllowed: .total_granted}'
       #   timeoutMs: 30000
-
-  # Optional direct OpenAI Images API fallback. Frontend image requests prefer
-  # the Codex app-server bridge when a Codex-backed model is configured.
-  - id: openai-image-api
-    type: openai
-    description: Optional direct OpenAI Images API fallback
-    baseUrl: https://api.openai.com/v1
-    apiKeyEnv: OPENAI_API_KEY
-    timeoutMs: 240000
-    models:
-      - id: gpt-image-1.5
-        providerModel: gpt-image-1.5
-        fallbackModels:
-          - gpt-image-1
-          - gpt-image-1-mini
-      - id: gpt-image-1
-        providerModel: gpt-image-1
-        fallbackModels:
-          - gpt-image-1-mini
-      - id: gpt-image-1-mini
-        providerModel: gpt-image-1-mini
 
   # ============================================================================
   # FREE AI SERVICES
@@ -405,95 +389,8 @@ providers:
           - deepseek-chat
 
   # ============================================================================
-  # FREE IMAGE & MULTIMODAL SERVICES
+  # FREE AUDIO & MULTIMODAL SERVICES
   # ============================================================================
-
-  - id: pollinations-image
-    type: cli
-    description: Free image generation via Pollinations AI (no API key needed)
-    models:
-      - id: pollinations-flux
-        providerModel: flux
-      - id: pollinations-turbo
-        providerModel: turbo
-    responseCommand:
-      executable: sh
-      args:
-        - -c
-        - |
-          set -e
-          # Create temp directory for image
-          TMP_DIR=$(mktemp -d)
-          trap "rm -rf $TMP_DIR" EXIT
-          
-          # URL encode the prompt
-          PROMPT_ENCODED=$(echo "{{prompt}}" | sed 's/ /%20/g; s/"/%22/g; s/#/%23/g; s/&/%26/g')
-          SEED=$((RANDOM % 999999))
-          IMAGE_URL="https://image.pollinations.ai/prompt/${PROMPT_ENCODED}?seed=${SEED}&width=1024&height=1024&nologo=true&model={{provider_model}}"
-          
-          # Download image
-          curl -sL "$IMAGE_URL" -o "$TMP_DIR/image.png"
-          
-          # Convert to base64 and output as JSON
-          B64=$(base64 -w 0 "$TMP_DIR/image.png" 2>/dev/null || base64 "$TMP_DIR/image.png" | tr -d '\n')
-          echo "{\"data\":[{\"b64_json\":\"${B64}\"}]}"
-      input: prompt_stdin
-      output: json_contract
-      timeoutMs: 120000
-
-  - id: huggingface-image
-    type: cli
-    description: Free image generation via Hugging Face Inference API
-    models:
-      - id: hf-stable-diffusion-xl
-        providerModel: stabilityai/stable-diffusion-xl-base-1.0
-      - id: hf-playground-v2.5
-        providerModel: playgroundai/playground-v2.5-1024px-aesthetic
-      - id: hf-flux-schnell
-        providerModel: black-forest-labs/FLUX.1-schnell
-    responseCommand:
-      executable: sh
-      args:
-        - -c
-        - |
-          set -e
-          TMP_DIR=$(mktemp -d)
-          trap "rm -rf $TMP_DIR" EXIT
-          
-          # Generate image via Hugging Face API
-          curl -s -X POST "https://api-inference.huggingface.co/models/{{provider_model}}" \
-            -H "Authorization: Bearer $HF_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{\"inputs\": \"{{prompt}}\"}" \
-            -o "$TMP_DIR/image.png"
-          
-          # Check if we got valid image
-          if file "$TMP_DIR/image.png" | grep -q "image"; then
-            B64=$(base64 -w 0 "$TMP_DIR/image.png" 2>/dev/null || base64 "$TMP_DIR/image.png" | tr -d '\n')
-            echo "{\"data\":[{\"b64_json\":\"${B64}\"}]}"
-          else
-            # May be loading or error
-            cat "$TMP_DIR/image.png"
-            exit 1
-          fi
-      input: prompt_stdin
-      output: json_contract
-      timeoutMs: 180000
-    auth:
-      statusCommand:
-        executable: sh
-        args:
-          - -c
-          - |
-            if [ -z "$HF_API_TOKEN" ]; then
-              echo '{"ok":false,"error":"HF_API_TOKEN not set"}'
-              exit 1
-            fi
-            curl -s -o /dev/null -w "%{http_code}" \
-              https://api-inference.huggingface.co/models/gpt2 \
-              -H "Authorization: Bearer $HF_API_TOKEN" | grep -q "200" && \
-              echo '{"ok":true}' || echo '{"ok":false,"error":"Check token"}'
-        timeoutMs: 15000
 
   - id: huggingface-whisper
     type: cli

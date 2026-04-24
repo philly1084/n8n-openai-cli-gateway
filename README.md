@@ -313,7 +313,7 @@ Environment variables for CLI:
 | `RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window (milliseconds) |
 | `MAX_REQUEST_BODY_SIZE` | `10485760` | Max request body size in bytes (10MB) |
 | `OPENAI_REASONING_EFFORT` | provider default | Default reasoning effort for chat/responses requests |
-| `OPENAI_API_KEY` | unset | API key for optional OpenAI `type: openai` providers, including direct OpenAI-hosted image backends |
+| `OPENAI_API_KEY` | unset | API key for optional OpenAI `type: openai` providers |
 | `GROQ_API_KEY` | unset | API key for Groq `type: openai` providers |
 
 Kimi is configured through the local `kimi` CLI via an ACP bridge in the current examples. It does not use `KIMI_API_KEY`; authenticate once in the provider home by running `kimi` in a TTY and then `/login` (some older CLI builds still use `/setup`).
@@ -375,15 +375,16 @@ For frontend image generation, standardize on:
 
 Behavior:
 
-- When a Codex app-server bridge model is configured, the gateway automatically routes image-generation requests through that Codex-backed model.
+- Image-generation requests are routed through the model explicitly marked with `image_generation` capability, currently `gpt-image-2` backed by the OpenAI Codex CLI.
 - The Codex bridge explicitly invokes the built-in Codex CLI image workflow (equivalent to adding `$imagegen` to the prompt).
+- Image fallback chains skip models that are not explicitly image-generation capable, so Gemini chat models are not used for image generation.
 - Request fields such as `size`, `quality`, `style`, `background`, `response_format`, and other passthrough image metadata remain available to the downstream provider flow.
 
 Recommended request shape:
 
 ```json
 {
-  "model": "codex-latest",
+  "model": "gpt-image-2",
   "prompt": "Create a clean banner illustration for a developer tools landing page.",
   "size": "1536x1024",
   "quality": "high",
@@ -526,7 +527,7 @@ The gateway also accepts `responses` follow-up tool input entries of `type: "fun
 
 ### Image generation provider output
 
-`POST /v1/images/generations` maps provider output to OpenAI image response format. When a Codex app-server bridge model is configured, the gateway prefers that Codex-backed model and explicitly routes the turn through Codex CLI image generation. Direct OpenAI `type: openai` image providers remain useful as optional fallbacks when Codex CLI image generation is not available in a deployment.
+`POST /v1/images/generations` maps provider output to OpenAI image response format. The configured image model is `gpt-image-2`, an OpenAI Codex CLI-backed alias that explicitly routes the turn through Codex CLI image generation. Image requests and image fallback chains are constrained to models with the `image_generation` capability.
 
 Accepted provider output patterns:
 

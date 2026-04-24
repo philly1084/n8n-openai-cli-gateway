@@ -681,6 +681,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
       object: "model",
       created: 0,
       owned_by: model.providerId,
+      capabilities: model.capabilities,
     })),
   }));
 
