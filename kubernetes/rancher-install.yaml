@@ -15,6 +15,7 @@ stringData:
   n8nApiKey: "replace-with-long-random-n8n-key"
   adminApiKey: "replace-with-long-random-admin-key"
   groqApiKey: "replace-with-groq-api-key"
+  openrouterApiKey: "replace-with-openrouter-api-key"
   deepseekApiKey: "replace-with-deepseek-api-key"
 ---
 apiVersion: v1
@@ -313,6 +314,20 @@ data:
               - gpt-5.5
               - gpt-5.4
               - kimi-for-coding
+
+      - id: openrouter-free
+        type: openai
+        description: OpenRouter free-model router
+        baseUrl: https://openrouter.ai/api/v1
+        apiKeyEnv: OPENROUTER_API_KEY
+        timeoutMs: 120000
+        models:
+          - id: openrouter-free
+            providerModel: openrouter/free
+            fallbackModels:
+              - openai/gpt-oss-20b
+              - llama-3.1-8b-instant
+              - gemini-3-flash-preview
 
       - id: deepseek-api
         type: openai
@@ -621,6 +636,11 @@ spec:
                 secretKeyRef:
                   name: n8n-openai-cli-gateway-secrets
                   key: groqApiKey
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: n8n-openai-cli-gateway-secrets
+                  key: openrouterApiKey
             - name: DEEPSEEK_API_KEY
               valueFrom:
                 secretKeyRef:
