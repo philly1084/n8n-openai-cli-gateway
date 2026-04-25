@@ -308,6 +308,20 @@ providers:
       - id: llama-3.1-8b-instant
         providerModel: llama-3.1-8b-instant
 
+  - id: openrouter-free
+    type: openai
+    description: OpenRouter free-model router
+    baseUrl: https://openrouter.ai/api/v1
+    apiKeyEnv: OPENROUTER_API_KEY
+    timeoutMs: 120000
+    models:
+      - id: openrouter-free
+        providerModel: openrouter/free
+        fallbackModels:
+          - openai/gpt-oss-20b
+          - llama-3.1-8b-instant
+          - gemini-3-flash-preview
+
   - id: kimi-code-cli
     type: cli
     description: Kimi Code ACP bridge adapter
