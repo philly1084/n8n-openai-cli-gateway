@@ -75,6 +75,12 @@ interface ResponseReasoningItem {
 type StoredResponseInputItem = ResponseMessageItem | ResponseFunctionCallOutputItem;
 type StoredResponseOutputItem = ResponseMessageItem | ResponseFunctionCallItem | ResponseReasoningItem;
 
+interface ResponseOutputItemIds {
+  messageId?: string;
+  reasoningId?: string;
+  toolCallItemIds?: Map<string, string>;
+}
+
 interface StoredResponseRecord {
   id: string;
   createdAt: number;
@@ -367,12 +373,15 @@ export function buildResponseInputItems(messages: ChatMessage[]): StoredResponse
   return items;
 }
 
-export function buildResponseOutputItems(result: ProviderResult): StoredResponseOutputItem[] {
+export function buildResponseOutputItems(
+  result: ProviderResult,
+  ids: ResponseOutputItemIds = {},
+): StoredResponseOutputItem[] {
   const items: StoredResponseOutputItem[] = [];
 
   if (result.outputText) {
     items.push({
-      id: makeId("msg"),
+      id: ids.messageId || makeId("msg"),
       type: "message",
       role: "assistant",
       phase: result.finishReason === "tool_calls" ? "commentary" : "final_answer",
@@ -383,7 +392,7 @@ export function buildResponseOutputItems(result: ProviderResult): StoredResponse
 
   if (result.reasoningText) {
     items.push({
-      id: makeId("rsn"),
+      id: ids.reasoningId || makeId("rsn"),
       type: "reasoning",
       text: normalizeResponseText(result.reasoningText),
       status: "completed",
@@ -392,7 +401,7 @@ export function buildResponseOutputItems(result: ProviderResult): StoredResponse
 
   for (const call of result.toolCalls) {
     items.push({
-      id: makeId("fc"),
+      id: ids.toolCallItemIds?.get(call.id) || makeId("fc"),
       type: "function_call",
       call_id: call.id,
       name: call.name,
@@ -915,56 +924,95 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
           toolCalls: [],
           finishReason: "stop",
         };
+        const responseStreamIds = {
+          messageId: makeId("msg"),
+          reasoningId: makeId("rsn"),
+          toolCallItemIds: new Map<string, string>(),
+        };
+        let sequenceNumber = 0;
+        const writeResponseStreamEvent = (
+          payload: Record<string, unknown>,
+          status: "in_progress" | "completed" = "in_progress",
+        ): void => {
+          sequenceNumber += 1;
+          writeSseData(reply, {
+            id: responseId,
+            object: "response.chunk",
+            created_at: createdAt,
+            status,
+            model: body.model,
+            previous_response_id: previousResponseId,
+            conversation: {
+              id: conversationId,
+            },
+            sequence_number: sequenceNumber,
+            ...payload,
+          });
+        };
         startSseStream(reply);
+        writeResponseStreamEvent({
+          type: "response.created",
+          response: {
+            id: responseId,
+            object: "response",
+            created_at: createdAt,
+            status: "in_progress",
+            model: body.model,
+            previous_response_id: previousResponseId,
+            conversation: {
+              id: conversationId,
+            },
+          },
+        });
         try {
           for await (const event of options.registry.runModelStream(body.model, runRequest)) {
             if (event.type === "output_text_delta") {
               streamedResult.outputText += event.delta;
-              writeSseData(reply, {
-                id: responseId,
-                object: "response.chunk",
-                created_at: createdAt,
-                status: "in_progress",
-                model: body.model,
-                previous_response_id: previousResponseId,
-                conversation: {
-                  id: conversationId,
-                },
+              writeResponseStreamEvent({
+                type: "response.output_text.delta",
+                item_id: responseStreamIds.messageId,
+                output_index: 0,
+                content_index: 0,
+                delta: event.delta,
                 output_text_delta: event.delta,
               });
               continue;
             }
             if (event.type === "reasoning_delta") {
               streamedResult.reasoningText = `${streamedResult.reasoningText || ""}${event.delta}`;
-              writeSseData(reply, {
-                id: responseId,
-                object: "response.chunk",
-                created_at: createdAt,
-                status: "in_progress",
-                model: body.model,
-                previous_response_id: previousResponseId,
-                conversation: {
-                  id: conversationId,
-                },
+              writeResponseStreamEvent({
+                type: "response.reasoning_summary_text.delta",
+                item_id: responseStreamIds.reasoningId,
+                output_index: streamedResult.outputText ? 1 : 0,
+                summary_index: 0,
+                delta: event.delta,
                 reasoning_delta: event.delta,
               });
               continue;
             }
             if (event.type === "tool_call") {
+              const toolCallItemId = makeId("fc");
+              responseStreamIds.toolCallItemIds.set(event.toolCall.id, toolCallItemId);
+              const outputIndex =
+                (streamedResult.outputText ? 1 : 0) +
+                (streamedResult.reasoningText ? 1 : 0) +
+                streamedResult.toolCalls.length;
               streamedResult.toolCalls.push(event.toolCall);
-              writeSseData(reply, {
-                id: responseId,
-                object: "response.chunk",
-                created_at: createdAt,
-                status: "in_progress",
-                model: body.model,
-                previous_response_id: previousResponseId,
-                conversation: {
-                  id: conversationId,
+              writeResponseStreamEvent({
+                type: "response.output_item.done",
+                output_index: outputIndex,
+                item_id: toolCallItemId,
+                item: {
+                  id: toolCallItemId,
+                  type: "function_call",
+                  call_id: event.toolCall.id,
+                  name: event.toolCall.name,
+                  arguments: event.toolCall.arguments,
+                  status: "completed",
                 },
                 output: [
                   {
-                    id: makeId("fc"),
+                    id: toolCallItemId,
                     type: "function_call",
                     call_id: event.toolCall.id,
                     name: event.toolCall.name,
@@ -980,16 +1028,12 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
                 const delta = computeMonotonicDelta(streamedResult.reasoningText || "", event.reasoningText);
                 if (delta) {
                   streamedResult.reasoningText = event.reasoningText;
-                  writeSseData(reply, {
-                    id: responseId,
-                    object: "response.chunk",
-                    created_at: createdAt,
-                    status: "in_progress",
-                    model: body.model,
-                    previous_response_id: previousResponseId,
-                    conversation: {
-                      id: conversationId,
-                    },
+                  writeResponseStreamEvent({
+                    type: "response.reasoning_summary_text.delta",
+                    item_id: responseStreamIds.reasoningId,
+                    output_index: streamedResult.outputText ? 1 : 0,
+                    summary_index: 0,
+                    delta,
                     reasoning_delta: delta,
                   });
                 } else {
@@ -1000,16 +1044,12 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
                 const delta = computeMonotonicDelta(streamedResult.outputText, event.outputText);
                 if (delta) {
                   streamedResult.outputText = event.outputText;
-                  writeSseData(reply, {
-                    id: responseId,
-                    object: "response.chunk",
-                    created_at: createdAt,
-                    status: "in_progress",
-                    model: body.model,
-                    previous_response_id: previousResponseId,
-                    conversation: {
-                      id: conversationId,
-                    },
+                  writeResponseStreamEvent({
+                    type: "response.output_text.delta",
+                    item_id: responseStreamIds.messageId,
+                    output_index: 0,
+                    content_index: 0,
+                    delta,
                     output_text_delta: delta,
                   });
                 } else {
@@ -1021,7 +1061,8 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
             }
           }
         } catch (error) {
-          writeSseData(reply, {
+          writeResponseStreamEvent({
+            type: "error",
             object: "error",
             error: error instanceof Error ? error.message : String(error),
           });
@@ -1031,7 +1072,25 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
         }
 
         logBlankAssistantResult(app.log.warn.bind(app.log), body.model, streamedResult, "/responses");
-        const outputItems = buildResponseOutputItems(streamedResult);
+        if (streamedResult.outputText) {
+          writeResponseStreamEvent({
+            type: "response.output_text.done",
+            item_id: responseStreamIds.messageId,
+            output_index: 0,
+            content_index: 0,
+            text: streamedResult.outputText,
+          });
+        }
+        if (streamedResult.reasoningText) {
+          writeResponseStreamEvent({
+            type: "response.reasoning_summary_text.done",
+            item_id: responseStreamIds.reasoningId,
+            output_index: streamedResult.outputText ? 1 : 0,
+            summary_index: 0,
+            text: streamedResult.reasoningText,
+          });
+        }
+        const outputItems = buildResponseOutputItems(streamedResult, responseStreamIds);
         const storedResponse = storeResponseRecord({
           id: responseId,
           createdAt,
@@ -1045,7 +1104,11 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
           outputText: streamedResult.outputText,
         });
         const responsePayload = buildStoredResponse(storedResponse);
-        writeSseData(reply, responsePayload);
+        writeResponseStreamEvent({
+          type: "response.completed",
+          response: responsePayload,
+          ...responsePayload,
+        }, "completed");
         reply.raw.write("data: [DONE]\n\n");
         reply.raw.end();
         return reply;
@@ -1454,6 +1517,21 @@ async function handleChatCompletionsRequest(
         finishReason: "stop",
       };
       startSseStream(reply);
+      writeSseData(reply, {
+        id: respId,
+        object: "chat.completion.chunk",
+        created,
+        model: body.model,
+        choices: [
+          {
+            index: 0,
+            delta: {
+              role: "assistant",
+            },
+            finish_reason: null,
+          },
+        ],
+      });
       try {
         for await (const event of registry.runModelStream(body.model, runRequest)) {
           if (event.type === "output_text_delta") {
@@ -1495,6 +1573,7 @@ async function handleChatCompletionsRequest(
             continue;
           }
           if (event.type === "tool_call") {
+            const toolCallIndex = streamedResult.toolCalls.length;
             streamedResult.toolCalls.push(event.toolCall);
             writeSseData(reply, {
               id: respId,
@@ -1507,6 +1586,7 @@ async function handleChatCompletionsRequest(
                   delta: {
                     tool_calls: [
                       {
+                        index: toolCallIndex,
                         id: event.toolCall.id,
                         type: "function",
                         function: {

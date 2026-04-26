@@ -357,11 +357,54 @@ test("chat completions stream emits incremental Codex chunks", async () => {
 
     assert.equal(response.statusCode, 200);
     assert.match(response.payload, /: stream-open/);
+    assert.match(response.payload, /"role":"assistant"/);
     assert.match(response.payload, /"reasoning":"Think 1\. "/);
     assert.match(response.payload, /"content":"Hello"/);
     assert.match(response.payload, /"content":" world"/);
     assert.match(response.payload, /"finish_reason":"stop"/);
     assert.match(response.payload, /\[DONE\]/);
+  } finally {
+    await server.close();
+  }
+});
+
+test("chat completions stream includes indexed tool call chunks", async () => {
+  const server = createTestServer(
+    async () => ({
+      outputText: "",
+      toolCalls: [],
+      finishReason: "stop",
+    }),
+    async function* () {
+      yield {
+        type: "tool_call",
+        toolCall: {
+          id: "call_1",
+          name: "lookup_docs",
+          arguments: "{\"query\":\"streaming\"}",
+        },
+      } satisfies ProviderStreamEvent;
+      yield { type: "done", finishReason: "tool_calls" } satisfies ProviderStreamEvent;
+    },
+  );
+
+  try {
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: {
+        authorization: "Bearer test-key",
+      },
+      payload: {
+        model: "demo-model",
+        stream: true,
+        messages: [{ role: "user", content: "Search docs" }],
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.match(response.payload, /"tool_calls":\[\{"index":0,"id":"call_1"/);
+    assert.match(response.payload, /"finish_reason":"tool_calls"/);
   } finally {
     await server.close();
   }
@@ -397,8 +440,14 @@ test("responses stream emits incremental chunks and stores reasoning in final ou
 
     assert.equal(response.statusCode, 200);
     assert.match(response.payload, /: stream-open/);
+    assert.match(response.payload, /"type":"response.created"/);
+    assert.match(response.payload, /"type":"response.reasoning_summary_text.delta"/);
+    assert.match(response.payload, /"type":"response.output_text.delta"/);
     assert.match(response.payload, /"reasoning_delta":"Plan first\. "/);
     assert.match(response.payload, /"output_text_delta":"Done"/);
+    assert.match(response.payload, /"type":"response.output_text.done"/);
+    assert.match(response.payload, /"type":"response.reasoning_summary_text.done"/);
+    assert.match(response.payload, /"type":"response.completed"/);
     assert.match(response.payload, /"type":"reasoning"/);
     assert.match(response.payload, /\[DONE\]/);
   } finally {
