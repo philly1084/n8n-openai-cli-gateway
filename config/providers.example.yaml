@@ -1,3 +1,18 @@
+# Optional trusted remote coding targets exposed through POST /mcp as MCP tools.
+# Uncomment and customize to let an Agents SDK backend call remote_code_run/status/cancel.
+# remoteCliTargets:
+#   - targetId: prod
+#     description: Production coding host
+#     host: prod.example.com
+#     user: deploy
+#     port: 22
+#     allowedCwds:
+#       - /srv/apps
+#     defaultCwd: /srv/apps/my-app
+#     defaultModel: openai/gpt-5.4
+#     opencodeExecutable: opencode
+#     timeoutMs: 1800000
+
 providers:
   - id: gemini-cli
     type: cli

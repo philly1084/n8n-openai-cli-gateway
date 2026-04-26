@@ -162,6 +162,23 @@ export type ProviderConfig = CliProviderConfig | OpenAiCompatibleProviderConfig;
 
 export interface ProvidersFile {
   providers: ProviderConfig[];
+  remoteCliTargets?: RemoteCliTargetConfig[];
+}
+
+export type RemoteCliToolAuthScope = "admin" | "frontend" | "n8n";
+
+export interface RemoteCliTargetConfig {
+  targetId: string;
+  description?: string;
+  host: string;
+  user?: string;
+  port?: number;
+  allowedCwds: string[];
+  defaultCwd?: string;
+  defaultModel?: string;
+  opencodeExecutable?: string;
+  timeoutMs?: number;
+  maxOutputBytes?: number;
 }
 
 export interface AppConfig {
@@ -171,6 +188,7 @@ export interface AppConfig {
   adminApiKey: string;
   frontendApiKeys: Set<string>;
   frontendAllowedCwds: string[];
+  remoteCliToolAuthScopes: Set<RemoteCliToolAuthScope>;
   providersPath: string;
   logLevel: "trace" | "debug" | "info" | "warn" | "error" | "fatal";
   maxJobLogLines: number;

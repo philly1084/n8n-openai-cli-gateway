@@ -1,0 +1,420 @@
+import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from "node:child_process";
+import type { RemoteCliTargetConfig } from "../types";
+import { makeId } from "../utils/ids";
+import { shellEscape } from "../utils/shell";
+
+const DEFAULT_OPENCODE_EXECUTABLE = "opencode";
+const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_WAIT_MS = 1000;
+const MAX_WAIT_MS = 30_000;
+const DEFAULT_MAX_OUTPUT_BYTES = 256 * 1024;
+
+export type RemoteCliJobStatus = "running" | "completed" | "failed" | "timed_out" | "cancelled";
+
+export interface RemoteCliRunInput {
+  targetId: string;
+  cwd?: string;
+  task: string;
+  model?: string;
+  sessionId?: string;
+  waitMs?: number;
+}
+
+export interface RemoteCliJob {
+  id: string;
+  targetId: string;
+  cwd: string;
+  status: RemoteCliJobStatus;
+  startedAt: string;
+  finishedAt?: string;
+  exitCode?: number | null;
+  stdout: string;
+  stderr: string;
+  sessionId?: string;
+  summary?: string;
+  durationMs?: number;
+}
+
+interface RemoteCliJobInternal extends RemoteCliJob {
+  child?: ChildProcessWithoutNullStreams;
+  timeout?: ReturnType<typeof setTimeout>;
+  sigkillTimer?: ReturnType<typeof setTimeout>;
+  maxOutputBytes: number;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+}
+
+type SpawnFn = (
+  command: string,
+  args: string[],
+  options: SpawnOptionsWithoutStdio,
+) => ChildProcessWithoutNullStreams;
+
+export interface RemoteCliLaunch {
+  command: string;
+  args: string[];
+  cwd: string;
+  target: RemoteCliTargetConfig;
+  remoteCommand: string;
+}
+
+export class RemoteCliToolManager {
+  private readonly targets = new Map<string, RemoteCliTargetConfig>();
+  private readonly jobs = new Map<string, RemoteCliJobInternal>();
+  private readonly sshExecutable: string;
+  private readonly spawnFn: SpawnFn;
+
+  constructor(
+    targets: RemoteCliTargetConfig[] = [],
+    options: { sshExecutable?: string; spawnFn?: SpawnFn } = {},
+  ) {
+    for (const target of targets) {
+      this.targets.set(target.targetId, target);
+    }
+    this.sshExecutable = options.sshExecutable ?? "ssh";
+    this.spawnFn = options.spawnFn ?? spawn;
+  }
+
+  listTargets(): RemoteCliTargetConfig[] {
+    return [...this.targets.values()].map((target) => ({
+      ...target,
+      allowedCwds: [...target.allowedCwds],
+    }));
+  }
+
+  async run(input: RemoteCliRunInput): Promise<RemoteCliJob> {
+    const launch = buildRemoteOpenCodeLaunch(input, this.targets, this.sshExecutable);
+    const job = this.createJob(launch);
+    this.startJob(job, launch);
+
+    const waitMs = normalizeWaitMs(input.waitMs);
+    if (waitMs > 0) {
+      await this.waitForSettled(job.id, waitMs);
+    }
+
+    return this.toPublic(job);
+  }
+
+  getJob(jobId: string): RemoteCliJob | undefined {
+    const job = this.jobs.get(jobId);
+    return job ? this.toPublic(job) : undefined;
+  }
+
+  cancel(jobId: string): RemoteCliJob {
+    const job = this.requireJob(jobId);
+    if (job.status === "running") {
+      job.status = "cancelled";
+      job.finishedAt = new Date().toISOString();
+      job.durationMs = Date.now() - new Date(job.startedAt).getTime();
+      if (job.timeout) {
+        clearTimeout(job.timeout);
+      }
+      job.child?.kill("SIGTERM");
+    }
+    return this.toPublic(job);
+  }
+
+  async close(): Promise<void> {
+    for (const job of this.jobs.values()) {
+      if (job.status === "running") {
+        job.status = "cancelled";
+        job.child?.kill("SIGTERM");
+      }
+      if (job.timeout) {
+        clearTimeout(job.timeout);
+      }
+      if (job.sigkillTimer) {
+        clearTimeout(job.sigkillTimer);
+      }
+    }
+  }
+
+  private createJob(launch: RemoteCliLaunch): RemoteCliJobInternal {
+    const now = new Date().toISOString();
+    const job: RemoteCliJobInternal = {
+      id: makeId("rcli"),
+      targetId: launch.target.targetId,
+      cwd: launch.cwd,
+      status: "running",
+      startedAt: now,
+      stdout: "",
+      stderr: "",
+      maxOutputBytes: launch.target.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
+      stdoutTruncated: false,
+      stderrTruncated: false,
+    };
+    this.jobs.set(job.id, job);
+    return job;
+  }
+
+  private startJob(job: RemoteCliJobInternal, launch: RemoteCliLaunch): void {
+    const startedAt = Date.now();
+    let finished = false;
+    const child = this.spawnFn(launch.command, launch.args, {
+      env: process.env,
+      stdio: "pipe",
+      shell: false,
+      windowsHide: true,
+    });
+    job.child = child;
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+
+    child.stdout.on("data", (chunk: string) => {
+      appendOutput(job, "stdout", chunk);
+    });
+    child.stderr.on("data", (chunk: string) => {
+      appendOutput(job, "stderr", chunk);
+    });
+
+    job.timeout = setTimeout(() => {
+      if (finished || job.status !== "running") {
+        return;
+      }
+      finished = true;
+      job.status = "timed_out";
+      job.finishedAt = new Date().toISOString();
+      job.durationMs = Date.now() - startedAt;
+      child.kill("SIGTERM");
+      job.sigkillTimer = setTimeout(() => child.kill("SIGKILL"), 5000);
+      job.sigkillTimer.unref();
+    }, launch.target.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    job.timeout.unref();
+
+    child.on("error", (error) => {
+      if (finished || job.status !== "running") {
+        return;
+      }
+      finished = true;
+      clearJobTimers(job);
+      job.status = "failed";
+      job.exitCode = null;
+      appendOutput(job, "stderr", `\n[system] Failed to start remote CLI: ${error.message}`);
+      finalizeOutput(job, startedAt);
+    });
+
+    child.on("close", (exitCode) => {
+      if (finished) {
+        if (job.sigkillTimer) {
+          clearTimeout(job.sigkillTimer);
+          job.sigkillTimer = undefined;
+        }
+        return;
+      }
+      finished = true;
+      clearJobTimers(job);
+      job.exitCode = exitCode;
+      if (job.status === "running") {
+        job.status = exitCode === 0 ? "completed" : "failed";
+      }
+      finalizeOutput(job, startedAt);
+    });
+  }
+
+  private async waitForSettled(jobId: string, waitMs: number): Promise<void> {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < waitMs) {
+      const job = this.jobs.get(jobId);
+      if (!job || job.status !== "running") {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
+  private requireJob(jobId: string): RemoteCliJobInternal {
+    const job = this.jobs.get(jobId);
+    if (!job) {
+      throw new Error(`Unknown remote CLI job: ${jobId}`);
+    }
+    return job;
+  }
+
+  private toPublic(job: RemoteCliJobInternal): RemoteCliJob {
+    return {
+      id: job.id,
+      targetId: job.targetId,
+      cwd: job.cwd,
+      status: job.status,
+      startedAt: job.startedAt,
+      finishedAt: job.finishedAt,
+      exitCode: job.exitCode,
+      stdout: job.stdout,
+      stderr: job.stderr,
+      sessionId: job.sessionId,
+      summary: job.summary,
+      durationMs: job.durationMs,
+    };
+  }
+}
+
+export function buildRemoteOpenCodeLaunch(
+  input: RemoteCliRunInput,
+  targets: Map<string, RemoteCliTargetConfig>,
+  sshExecutable = "ssh",
+): RemoteCliLaunch {
+  const target = targets.get(input.targetId);
+  if (!target) {
+    throw new Error(`Unknown remote CLI target: ${input.targetId}`);
+  }
+  if (!input.task.trim()) {
+    throw new Error("task is required.");
+  }
+
+  const cwd = resolveRemoteCwd(input.cwd ?? target.defaultCwd, target);
+  const destination = target.user ? `${target.user}@${target.host}` : target.host;
+  const remoteArgs = [
+    shellEscape(target.opencodeExecutable ?? DEFAULT_OPENCODE_EXECUTABLE),
+    "run",
+    "--format",
+    "json",
+  ];
+  if (input.model?.trim()) {
+    remoteArgs.push("--model", shellEscape(input.model.trim()));
+  } else if (target.defaultModel?.trim()) {
+    remoteArgs.push("--model", shellEscape(target.defaultModel.trim()));
+  }
+  if (input.sessionId?.trim()) {
+    remoteArgs.push("--session", shellEscape(input.sessionId.trim()));
+  }
+  remoteArgs.push(shellEscape(input.task));
+
+  const remoteCommand = `cd ${shellEscape(cwd)} && ${remoteArgs.join(" ")}`;
+  const args = ["-o", "BatchMode=yes"];
+  if (target.port) {
+    args.push("-p", String(target.port));
+  }
+  args.push(destination, remoteCommand);
+
+  return {
+    command: sshExecutable,
+    args,
+    cwd,
+    target,
+    remoteCommand,
+  };
+}
+
+function resolveRemoteCwd(requestedCwd: string | undefined, target: RemoteCliTargetConfig): string {
+  if (!requestedCwd) {
+    throw new Error(`Remote CLI target ${target.targetId} requires cwd or defaultCwd.`);
+  }
+  const cwd = normalizeRemotePath(requestedCwd);
+  const allowed = target.allowedCwds.map(normalizeRemotePath);
+  if (!allowed.some((root) => isWithinRemoteRoot(cwd, root))) {
+    throw new Error(`Requested cwd is outside target ${target.targetId} allowed roots: ${cwd}`);
+  }
+  return cwd;
+}
+
+function normalizeRemotePath(value: string): string {
+  const trimmed = value.trim().replace(/\\/g, "/");
+  if (!trimmed.startsWith("/")) {
+    throw new Error(`Remote cwd must be an absolute POSIX path: ${value}`);
+  }
+  const parts: string[] = [];
+  for (const part of trimmed.split("/")) {
+    if (!part || part === ".") {
+      continue;
+    }
+    if (part === "..") {
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return `/${parts.join("/")}`;
+}
+
+function isWithinRemoteRoot(cwd: string, root: string): boolean {
+  return cwd === root || cwd.startsWith(`${root}/`);
+}
+
+function normalizeWaitMs(value: number | undefined): number {
+  if (value === undefined) {
+    return DEFAULT_WAIT_MS;
+  }
+  if (!Number.isFinite(value) || value < 0) {
+    return DEFAULT_WAIT_MS;
+  }
+  return Math.min(Math.floor(value), MAX_WAIT_MS);
+}
+
+function appendOutput(job: RemoteCliJobInternal, stream: "stdout" | "stderr", chunk: string): void {
+  if (stream === "stdout") {
+    if (job.stdout.length + chunk.length <= job.maxOutputBytes) {
+      job.stdout += chunk;
+      return;
+    }
+    if (!job.stdoutTruncated) {
+      const remaining = Math.max(0, job.maxOutputBytes - job.stdout.length);
+      job.stdout += `${chunk.slice(0, remaining)}\n[...stdout truncated]\n`;
+      job.stdoutTruncated = true;
+    }
+    return;
+  }
+
+  if (job.stderr.length + chunk.length <= job.maxOutputBytes) {
+    job.stderr += chunk;
+    return;
+  }
+  if (!job.stderrTruncated) {
+    const remaining = Math.max(0, job.maxOutputBytes - job.stderr.length);
+    job.stderr += `${chunk.slice(0, remaining)}\n[...stderr truncated]\n`;
+    job.stderrTruncated = true;
+  }
+}
+
+function clearJobTimers(job: RemoteCliJobInternal): void {
+  if (job.timeout) {
+    clearTimeout(job.timeout);
+    job.timeout = undefined;
+  }
+  if (job.sigkillTimer) {
+    clearTimeout(job.sigkillTimer);
+    job.sigkillTimer = undefined;
+  }
+}
+
+function finalizeOutput(job: RemoteCliJobInternal, startedAt: number): void {
+  job.finishedAt = new Date().toISOString();
+  job.durationMs = Date.now() - startedAt;
+  const parsed = parseOpenCodeOutput(job.stdout);
+  job.sessionId = job.sessionId ?? parsed.sessionId;
+  job.summary = parsed.summary;
+}
+
+function parseOpenCodeOutput(stdout: string): { sessionId?: string; summary?: string } {
+  let sessionId: string | undefined;
+  let summary: string | undefined;
+
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || !trimmed.startsWith("{")) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      sessionId = sessionId ?? firstString(parsed.sessionId, parsed.session_id, parsed.sessionID);
+      summary = firstString(parsed.summary, parsed.output, parsed.text, parsed.message) ?? summary;
+      const nested = typeof parsed.session === "object" && parsed.session !== null
+        ? parsed.session as Record<string, unknown>
+        : undefined;
+      sessionId = sessionId ?? firstString(nested?.id, nested?.sessionId, nested?.session_id);
+    } catch {
+      continue;
+    }
+  }
+
+  return { sessionId, summary };
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}

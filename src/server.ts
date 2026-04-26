@@ -1,10 +1,12 @@
 import Fastify from "fastify";
-import type { AppConfig } from "./types";
+import type { AppConfig, RemoteCliTargetConfig } from "./types";
 import { adminRoutes } from "./routes/admin";
 import { openAiRoutes } from "./routes/openai";
 import { providerSessionRoutes } from "./routes/provider-sessions";
+import { mcpRoutes } from "./routes/mcp";
 import { JobManager } from "./jobs/job-manager";
 import { ProviderSessionManager } from "./jobs/provider-session-manager";
+import { RemoteCliToolManager } from "./jobs/remote-cli-tool-manager";
 import { ProviderRegistry } from "./providers/registry";
 import { LruMap } from "./utils/lru-map";
 import { makeId } from "./utils/ids";
@@ -69,7 +71,11 @@ function checkRateLimit(
   return { allowed: true };
 }
 
-export function buildServer(config: AppConfig, registry: ProviderRegistry) {
+export function buildServer(
+  config: AppConfig,
+  registry: ProviderRegistry,
+  options: { remoteCliTargets?: RemoteCliTargetConfig[] } = {},
+) {
   const app = Fastify({
     logger: {
       level: config.logLevel,
@@ -86,6 +92,7 @@ export function buildServer(config: AppConfig, registry: ProviderRegistry) {
   const providerSessionManager = new ProviderSessionManager({
     allowedCwds: config.frontendAllowedCwds,
   });
+  const remoteCliToolManager = new RemoteCliToolManager(options.remoteCliTargets ?? []);
 
   // Rate limit store scoped to this server instance
   const rateLimitStore = new LruMap<string, RateLimitEntry>(RATE_LIMIT_STORE_MAX_SIZE);
@@ -199,6 +206,14 @@ export function buildServer(config: AppConfig, registry: ProviderRegistry) {
     frontendApiKeys: config.frontendApiKeys,
   });
 
+  app.register(mcpRoutes, {
+    manager: remoteCliToolManager,
+    adminApiKey: config.adminApiKey,
+    frontendApiKeys: config.frontendApiKeys,
+    n8nApiKeys: config.n8nApiKeys,
+    authScopes: config.remoteCliToolAuthScopes,
+  });
+
   app.setErrorHandler((error, request, reply) => {
     const requestId = request.headers["x-request-id"];
     request.log.error({ error, requestId }, "Request error");
@@ -244,6 +259,7 @@ export function buildServer(config: AppConfig, registry: ProviderRegistry) {
       // Clear the rate limit cleanup interval
       clearInterval(rateLimitCleanupInterval);
       await providerSessionManager.close();
+      await remoteCliToolManager.close();
 
       app.log.info("Graceful shutdown complete.");
     },

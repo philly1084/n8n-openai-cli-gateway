@@ -583,6 +583,7 @@ function createTestServer(
     adminApiKey: "admin-key",
     frontendApiKeys: new Set(),
     frontendAllowedCwds: [],
+    remoteCliToolAuthScopes: new Set(["frontend", "admin"]),
     providersPath: "config/providers.yaml",
     logLevel: "error",
     maxJobLogLines: 10,

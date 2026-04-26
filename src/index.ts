@@ -6,7 +6,9 @@ async function main(): Promise<void> {
   const config = loadAppConfig();
   const providersFile = loadProvidersFile(config.providersPath);
   const registry = await ProviderRegistry.create(providersFile.providers);
-  const { app, close } = buildServer(config, registry);
+  const { app, close } = buildServer(config, registry, {
+    remoteCliTargets: providersFile.remoteCliTargets,
+  });
 
   // Track active connections for graceful shutdown
   let isShuttingDown = false;
@@ -57,6 +59,8 @@ async function main(): Promise<void> {
       maxRequestBodySize: config.maxRequestBodySize,
       frontendApiKeysConfigured: config.frontendApiKeys.size,
       frontendAllowedCwds: config.frontendAllowedCwds,
+      remoteCliTargetsConfigured: providersFile.remoteCliTargets?.length ?? 0,
+      remoteCliToolAuthScopes: [...config.remoteCliToolAuthScopes],
       shutdownTimeoutMs: config.shutdownTimeoutMs,
       defaultReasoningEffort: config.defaultReasoningEffort,
     },

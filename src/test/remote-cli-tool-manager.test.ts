@@ -1,0 +1,97 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import type { ChildProcessWithoutNullStreams, SpawnOptionsWithoutStdio } from "node:child_process";
+import {
+  RemoteCliToolManager,
+  buildRemoteOpenCodeLaunch,
+} from "../jobs/remote-cli-tool-manager";
+import type { RemoteCliTargetConfig } from "../types";
+
+const TARGET: RemoteCliTargetConfig = {
+  targetId: "prod",
+  host: "server.example.com",
+  user: "deploy",
+  port: 2222,
+  allowedCwds: ["/srv/apps"],
+  defaultModel: "openai/gpt-5.4",
+  opencodeExecutable: "/usr/local/bin/opencode",
+  timeoutMs: 10_000,
+};
+
+test("buildRemoteOpenCodeLaunch quotes dynamic values and pins ssh target", () => {
+  const launch = buildRemoteOpenCodeLaunch(
+    {
+      targetId: "prod",
+      cwd: "/srv/apps/my app",
+      task: "fix bug'; touch /tmp/pwned #",
+      model: "anthropic/claude sonnet",
+      sessionId: "sess'1",
+    },
+    new Map([[TARGET.targetId, TARGET]]),
+    "ssh-test",
+  );
+
+  assert.equal(launch.command, "ssh-test");
+  assert.deepEqual(launch.args.slice(0, 5), ["-o", "BatchMode=yes", "-p", "2222", "deploy@server.example.com"]);
+  assert.match(launch.remoteCommand, /^cd '\/srv\/apps\/my app' && '\/usr\/local\/bin\/opencode' run --format json/);
+  assert.match(launch.remoteCommand, /--model 'anthropic\/claude sonnet'/);
+  assert.match(launch.remoteCommand, /--session 'sess'"'"'1'/);
+  assert.match(launch.remoteCommand, /'fix bug'"'"'; touch \/tmp\/pwned #'/);
+});
+
+test("buildRemoteOpenCodeLaunch rejects cwd outside allowed remote roots", () => {
+  assert.throws(
+    () =>
+      buildRemoteOpenCodeLaunch(
+        {
+          targetId: "prod",
+          cwd: "/srv/applications/not-allowed",
+          task: "run tests",
+        },
+        new Map([[TARGET.targetId, TARGET]]),
+      ),
+    /outside target prod allowed roots/,
+  );
+});
+
+test("RemoteCliToolManager captures fake ssh output and extracts session metadata", async () => {
+  const calls: Array<{ command: string; args: string[] }> = [];
+  const manager = new RemoteCliToolManager([TARGET], {
+    sshExecutable: "fake-ssh",
+    spawnFn(command: string, args: string[], _options: SpawnOptionsWithoutStdio) {
+      calls.push({ command, args });
+      const child = createFakeChild();
+      setTimeout(() => {
+        (child.stdout as PassThrough).write('{"sessionId":"sess_123","summary":"patched tests"}\n');
+        child.emit("close", 0);
+      }, 5);
+      return child;
+    },
+  });
+
+  const result = await manager.run({
+    targetId: "prod",
+    cwd: "/srv/apps/repo",
+    task: "fix failing test",
+    waitMs: 500,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.sessionId, "sess_123");
+  assert.equal(result.summary, "patched tests");
+  assert.equal(calls[0]?.command, "fake-ssh");
+  assert.match(calls[0]?.args.at(-1) ?? "", /opencode' run --format json/);
+
+  await manager.close();
+});
+
+function createFakeChild(): ChildProcessWithoutNullStreams {
+  const child = new EventEmitter() as ChildProcessWithoutNullStreams;
+  child.stdin = new PassThrough() as ChildProcessWithoutNullStreams["stdin"];
+  child.stdout = new PassThrough() as ChildProcessWithoutNullStreams["stdout"];
+  child.stderr = new PassThrough() as ChildProcessWithoutNullStreams["stderr"];
+  child.kill = (() => true) as ChildProcessWithoutNullStreams["kill"];
+  return child;
+}

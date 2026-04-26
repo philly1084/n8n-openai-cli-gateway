@@ -63,6 +63,7 @@ Each provider defines:
 - optional `sessionCommand` to expose the provider's interactive CLI to a trusted frontend client.
 - optional `auth.loginCommand`, `auth.statusCommand`, and `auth.rateLimitCommand`.
 - optional per-model `fallbackModels` list of model ids to try when a provider command fails.
+- optional top-level `remoteCliTargets` list for trusted MCP remote coding tools.
 
 The gateway also supports `type: openai` providers for OpenAI-compatible remote APIs such as Groq and DeepSeek. Those providers can auto-discover models from `/models` at startup and register them automatically.
 
@@ -111,6 +112,7 @@ Optional environment variables:
 - `OPENAI_REASONING_EFFORT` default reasoning effort when requests omit it
 - `FRONTEND_API_KEY` / `FRONTEND_API_KEYS` dedicated keys for trusted frontend session clients
 - `FRONTEND_ALLOWED_CWDS` comma-separated working-directory roots that frontend session clients may request
+- `REMOTE_CLI_TOOL_AUTH_SCOPES` comma-separated scopes allowed to use `POST /mcp`; defaults to `frontend,admin`, set `n8n,frontend,admin` only for trusted server-side Agents SDK runtimes
 
 ### Groq API with model discovery
 
@@ -230,6 +232,62 @@ Streaming output:
 - `GET /admin/provider-sessions/:id/stream` returns an SSE stream.
 - The session creation response includes a `streamUrl` with a short-lived attach token so the frontend can open the stream without reusing the main auth key on every reconnect.
 
+## 4b) Remote CLI MCP tools
+
+Use `POST /mcp` when a trusted OpenAI Agents SDK backend should expose remote coding as tools rather than as a raw shell. The endpoint implements Streamable HTTP MCP methods for `initialize`, `tools/list`, and `tools/call`.
+
+Configure targets in `providers.yaml`:
+
+```yaml
+remoteCliTargets:
+  - targetId: prod
+    host: prod.example.com
+    user: deploy
+    port: 22
+    allowedCwds:
+      - /srv/apps
+    defaultCwd: /srv/apps/my-app
+    defaultModel: openai/gpt-5.4
+    opencodeExecutable: opencode
+    timeoutMs: 1800000
+```
+
+Available MCP tools:
+
+- `remote_code_run({ targetId, cwd?, task, model?, sessionId?, waitMs? })`
+- `remote_code_status({ jobId })`
+- `remote_code_cancel({ jobId })`
+
+`remote_code_run` starts `ssh <target> "cd <cwd> && opencode run --format json ... <task>"`. The gateway validates `cwd` against `allowedCwds`, quotes dynamic values, and rejects raw `command`, `args`, `executable`, or `shell` fields.
+
+Agents SDK server-side usage:
+
+```ts
+import { Agent, MCPServerStreamableHttp } from "@openai/agents";
+
+const remoteCli = new MCPServerStreamableHttp({
+  url: "https://gateway.example.com/mcp",
+  name: "remote-cli",
+  headers: {
+    Authorization: `Bearer ${process.env.N8N_API_KEY}`,
+  },
+  cacheToolsList: true,
+});
+
+await remoteCli.connect();
+
+const agent = new Agent({
+  name: "Remote coding assistant",
+  mcpServers: [remoteCli],
+});
+```
+
+Only enable n8n-key access deliberately:
+
+```powershell
+$env:REMOTE_CLI_TOOL_AUTH_SCOPES="n8n,frontend,admin"
+```
+
 Check auth status:
 
 ```bash
@@ -313,6 +371,7 @@ Environment variables for CLI:
 | `RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window (milliseconds) |
 | `MAX_REQUEST_BODY_SIZE` | `10485760` | Max request body size in bytes (10MB) |
 | `OPENAI_REASONING_EFFORT` | provider default | Default reasoning effort for chat/responses requests |
+| `REMOTE_CLI_TOOL_AUTH_SCOPES` | `frontend,admin` | Comma-separated auth scopes allowed to use `POST /mcp` remote CLI tools (`admin`, `frontend`, `n8n`) |
 | `OPENAI_API_KEY` | unset | API key for optional OpenAI `type: openai` providers |
 | `GROQ_API_KEY` | unset | API key for Groq `type: openai` providers |
 

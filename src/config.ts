@@ -2,7 +2,12 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
-import { REASONING_EFFORT_VALUES, type AppConfig, type ProvidersFile } from "./types";
+import {
+  REASONING_EFFORT_VALUES,
+  type AppConfig,
+  type ProvidersFile,
+  type RemoteCliToolAuthScope,
+} from "./types";
 import { parseReasoningEffort } from "./utils/reasoning";
 
 const commandSchema = z.object({
@@ -79,6 +84,23 @@ const providersFileSchema = z.object({
   providers: z
     .array(z.discriminatedUnion("type", [cliProviderSchema, openAiProviderSchema]))
     .min(1),
+  remoteCliTargets: z
+    .array(
+      z.object({
+        targetId: z.string().min(1),
+        description: z.string().optional(),
+        host: z.string().min(1),
+        user: z.string().min(1).optional(),
+        port: z.number().int().min(1).max(65535).optional(),
+        allowedCwds: z.array(z.string().min(1)).min(1),
+        defaultCwd: z.string().min(1).optional(),
+        defaultModel: z.string().min(1).optional(),
+        opencodeExecutable: z.string().min(1).optional(),
+        timeoutMs: z.number().int().positive().optional(),
+        maxOutputBytes: z.number().int().positive().optional(),
+      }),
+    )
+    .default([]),
 });
 
 const reasoningEffortSchema = z.enum(REASONING_EFFORT_VALUES);
@@ -131,6 +153,24 @@ function parseFrontendAllowedCwds(): string[] {
     .map((entry) => entry.trim())
     .filter(Boolean)
     .map((entry) => path.resolve(process.cwd(), entry));
+}
+
+function parseRemoteCliToolAuthScopes(): Set<RemoteCliToolAuthScope> {
+  const raw = process.env.REMOTE_CLI_TOOL_AUTH_SCOPES?.trim();
+  const values = raw ? raw.split(",").map((entry) => entry.trim()).filter(Boolean) : ["frontend", "admin"];
+  const allowed = new Set<RemoteCliToolAuthScope>(["admin", "frontend", "n8n"]);
+  const scopes = new Set<RemoteCliToolAuthScope>();
+
+  for (const value of values) {
+    if (!allowed.has(value as RemoteCliToolAuthScope)) {
+      throw new Error(
+        `Invalid REMOTE_CLI_TOOL_AUTH_SCOPES entry: ${value}. Expected one of: admin, frontend, n8n`,
+      );
+    }
+    scopes.add(value as RemoteCliToolAuthScope);
+  }
+
+  return scopes;
 }
 
 export function loadAppConfig(): AppConfig {
@@ -204,6 +244,7 @@ export function loadAppConfig(): AppConfig {
     adminApiKey,
     frontendApiKeys: parseFrontendApiKeys(),
     frontendAllowedCwds: parseFrontendAllowedCwds(),
+    remoteCliToolAuthScopes: parseRemoteCliToolAuthScopes(),
     logLevel,
     maxJobLogLines,
     shutdownTimeoutMs,

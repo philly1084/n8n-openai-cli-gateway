@@ -167,6 +167,7 @@ const KNOWN_ROUTE_PREFIXES = [
   "/openai/v1/message",
   "/healthz",
   "/metrics",
+  "/mcp",
   "/admin/providers",
   "/admin/jobs",
   "/admin/stats/models",
