@@ -2460,15 +2460,25 @@ function normalizeImagePayload(raw: unknown): OpenAiImageItem[] {
       return [{ b64_json: dataUrlMatch[1] }];
     }
 
+    const markdownImageMatch = /!\[[^\]]*]\((https?:\/\/[^)\s]+)\)/i.exec(trimmed);
+    if (markdownImageMatch && markdownImageMatch[1]) {
+      return [{ url: markdownImageMatch[1] }];
+    }
+
     if (/^https?:\/\//i.test(trimmed)) {
       return [{ url: trimmed }];
+    }
+
+    const normalizedBase64 = normalizeBase64ImageData(trimmed);
+    if (normalizedBase64) {
+      return [{ b64_json: normalizedBase64 }];
     }
 
     return [];
   }
 
   if (Array.isArray(raw)) {
-    return raw.flatMap((item) => normalizeImageItem(item)).filter(isImageItem);
+    return raw.flatMap((item) => normalizeImagePayload(item)).filter(isImageItem);
   }
 
   if (!raw || typeof raw !== "object") {
@@ -2484,23 +2494,51 @@ function normalizeImagePayload(raw: unknown): OpenAiImageItem[] {
     return obj.images.flatMap((item) => normalizeImageItem(item)).filter(isImageItem);
   }
 
+  if (Array.isArray(obj.output)) {
+    return obj.output.flatMap((item) => normalizeImagePayload(item)).filter(isImageItem);
+  }
+
+  if (Array.isArray(obj.content)) {
+    return obj.content.flatMap((item) => normalizeImagePayload(item)).filter(isImageItem);
+  }
+
+  if (Array.isArray(obj.contentItems)) {
+    return obj.contentItems.flatMap((item) => normalizeImagePayload(item)).filter(isImageItem);
+  }
+
   const single = normalizeImageItem(obj);
   return single ? [single] : [];
 }
 
 function normalizeImageItem(raw: unknown): OpenAiImageItem | null {
+  if (typeof raw === "string") {
+    return normalizeImagePayload(raw)[0] ?? null;
+  }
+
   if (!raw || typeof raw !== "object") {
     return null;
   }
 
   const obj = raw as Record<string, unknown>;
-  const url = typeof obj.url === "string" ? obj.url.trim() : "";
+  const imageRef = normalizeImageReferenceValue(
+    obj.url ??
+      obj.image_url ??
+      obj.imageUrl ??
+      obj.output_url ??
+      obj.outputUrl ??
+      obj.download_url ??
+      obj.downloadUrl,
+  );
+  const resultImage = normalizeResultImageValue(obj.result);
   const b64 =
     typeof obj.b64_json === "string"
       ? obj.b64_json.trim()
       : typeof obj.base64 === "string"
         ? obj.base64.trim()
-        : "";
+        : typeof obj.b64 === "string"
+          ? obj.b64.trim()
+          : resultImage.b64_json ?? "";
+  const directB64Image = b64 ? normalizeImagePayload(b64)[0] : undefined;
   const revisedPrompt =
     typeof obj.revised_prompt === "string"
       ? obj.revised_prompt
@@ -2508,19 +2546,54 @@ function normalizeImageItem(raw: unknown): OpenAiImageItem | null {
         ? obj.revisedPrompt
         : undefined;
 
-  if (!url && !b64) {
+  const url = imageRef.url || resultImage.url || directB64Image?.url || "";
+  const normalizedB64 =
+    imageRef.b64_json || resultImage.b64_json || directB64Image?.b64_json || b64;
+
+  if (!url && !normalizedB64) {
     return null;
   }
 
   return {
     url: url || undefined,
-    b64_json: b64 || undefined,
+    b64_json: normalizedB64 || undefined,
     revised_prompt: revisedPrompt,
   };
 }
 
 function isImageItem(value: OpenAiImageItem | null): value is OpenAiImageItem {
   return Boolean(value && (value.url || value.b64_json));
+}
+
+function normalizeImageReferenceValue(value: unknown): OpenAiImageItem {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return normalizeImagePayload(trimmed)[0] ?? {};
+  }
+
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return normalizeImageReferenceValue(record.url ?? record.image_url ?? record.imageUrl);
+  }
+
+  return {};
+}
+
+function normalizeResultImageValue(value: unknown): OpenAiImageItem {
+  if (typeof value !== "string") {
+    return {};
+  }
+
+  const direct = normalizeImagePayload(value)[0];
+  return direct ?? {};
+}
+
+function normalizeBase64ImageData(value: string): string | null {
+  const normalized = value.replace(/\s/g, "");
+  if (!/^[A-Za-z0-9+/]{100,}={0,2}$/.test(normalized)) {
+    return null;
+  }
+  return normalized;
 }
 
 export function parseDocumentGenerations(

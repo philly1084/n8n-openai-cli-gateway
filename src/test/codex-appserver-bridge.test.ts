@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildImageGenerationPrompt } from "../scripts/codex-appserver-bridge";
+import {
+  buildImageGenerationPrompt,
+  collectImageGenerationItems,
+} from "../scripts/codex-appserver-bridge";
 
 test("buildImageGenerationPrompt explicitly invokes Codex image workflow", () => {
   const prompt = buildImageGenerationPrompt({
@@ -23,4 +26,15 @@ test("buildImageGenerationPrompt explicitly invokes Codex image workflow", () =>
   assert.match(prompt, /Style: vivid/);
   assert.match(prompt, /Background: transparent/);
   assert.match(prompt, /Respond with raw JSON only/i);
+});
+
+test("collectImageGenerationItems extracts app-server image call results", () => {
+  const imageData = "a".repeat(120);
+  const images = collectImageGenerationItems({
+    type: "image_generation_call",
+    status: "completed",
+    result: imageData,
+  });
+
+  assert.deepEqual(images, [{ b64_json: imageData }]);
 });

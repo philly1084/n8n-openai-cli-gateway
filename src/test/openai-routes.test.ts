@@ -531,6 +531,44 @@ test("images route parses image data from provider raw payload", async () => {
   }
 });
 
+test("images route parses Responses image generation call result", async () => {
+  const imageData = "a".repeat(120);
+  const server = createTestServer(async () => ({
+    outputText: JSON.stringify({
+      output: [
+        {
+          type: "image_generation_call",
+          status: "completed",
+          result: imageData,
+        },
+      ],
+    }),
+    toolCalls: [],
+    finishReason: "stop",
+  }));
+
+  try {
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/v1/images/generations",
+      headers: {
+        authorization: "Bearer test-key",
+      },
+      payload: {
+        model: "demo-model",
+        prompt: "A cat",
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    const body = response.json() as Record<string, unknown>;
+    const data = body.data as Array<Record<string, unknown>>;
+    assert.equal(data[0]?.b64_json, imageData);
+  } finally {
+    await server.close();
+  }
+});
+
 test("images route prefers explicit Codex-backed image model when available", async () => {
   let capturedModelId = "";
 

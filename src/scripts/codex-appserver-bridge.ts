@@ -55,6 +55,12 @@ interface JsonContract {
   finish_reason: FinishReason;
 }
 
+interface ImageGenerationItem {
+  url?: string;
+  b64_json?: string;
+  revised_prompt?: string;
+}
+
 class JsonRpcStdioClient {
   private nextId = 1;
   private readonly pending = new Map<
@@ -734,6 +740,204 @@ function collectAssistantContentFromThreadItem(item: unknown): {
   };
 }
 
+export function collectImageGenerationItems(value: unknown): ImageGenerationItem[] {
+  const out: ImageGenerationItem[] = [];
+  const seenObjects = new WeakSet<object>();
+  const seenImages = new Set<string>();
+
+  const push = (item: ImageGenerationItem | null): void => {
+    if (!item || (!item.url && !item.b64_json)) {
+      return;
+    }
+    const key = item.url ? `url:${item.url}` : `b64:${item.b64_json}`;
+    if (!key || seenImages.has(key)) {
+      return;
+    }
+    seenImages.add(key);
+    out.push(item);
+  };
+
+  const visit = (current: unknown, depth: number): void => {
+    if (depth > 8 || current === null || current === undefined) {
+      return;
+    }
+
+    if (typeof current === "string") {
+      push(normalizeImageGenerationString(current));
+      return;
+    }
+
+    if (Array.isArray(current)) {
+      for (const item of current) {
+        visit(item, depth + 1);
+      }
+      return;
+    }
+
+    if (!isObjectRecord(current)) {
+      return;
+    }
+
+    if (seenObjects.has(current)) {
+      return;
+    }
+    seenObjects.add(current);
+
+    push(normalizeImageGenerationRecord(current));
+
+    for (const key of [
+      "result",
+      "image",
+      "image_url",
+      "imageUrl",
+      "url",
+      "data",
+      "content",
+      "contentItems",
+      "output",
+      "outputs",
+      "items",
+      "attachments",
+      "artifact",
+      "artifacts",
+      "file",
+      "files",
+    ]) {
+      if (Object.prototype.hasOwnProperty.call(current, key)) {
+        visit(current[key], depth + 1);
+      }
+    }
+  };
+
+  visit(value, 0);
+  return out;
+}
+
+function normalizeImageGenerationRecord(record: Record<string, unknown>): ImageGenerationItem | null {
+  const url = normalizeImageGenerationUrl(
+    record.url ??
+      record.image_url ??
+      record.imageUrl ??
+      record.output_url ??
+      record.outputUrl ??
+      record.download_url ??
+      record.downloadUrl,
+  );
+  const directB64 = firstNonEmptyString(
+    record.b64_json,
+    record.base64,
+    record.b64,
+    record.image_base64,
+    record.imageBase64,
+  );
+  const nestedResult =
+    typeof record.result === "string"
+      ? normalizeImageGenerationString(record.result)
+      : null;
+  const directB64Image = directB64 ? normalizeImageGenerationString(directB64) : null;
+  const imageData =
+    typeof record.data === "string" && isLikelyImageRecord(record)
+      ? normalizeImageGenerationString(record.data)
+      : null;
+  const b64 =
+    directB64Image?.b64_json ??
+    normalizeBase64ImageData(directB64 ?? "") ??
+    nestedResult?.b64_json ??
+    imageData?.b64_json;
+  const revisedPrompt = firstNonEmptyString(record.revised_prompt, record.revisedPrompt);
+
+  if (!url && !b64 && !directB64Image?.url && !nestedResult?.url && !imageData?.url) {
+    return null;
+  }
+
+  const item: ImageGenerationItem = {};
+  const finalUrl = url || directB64Image?.url || nestedResult?.url || imageData?.url || "";
+  if (finalUrl) {
+    item.url = finalUrl;
+  }
+  if (b64) {
+    item.b64_json = b64;
+  }
+  if (revisedPrompt) {
+    item.revised_prompt = revisedPrompt;
+  }
+  return item;
+}
+
+function normalizeImageGenerationString(value: string): ImageGenerationItem | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const dataUrlMatch = /^data:image\/[a-zA-Z0-9.+-]+;base64,(.+)$/i.exec(trimmed);
+  if (dataUrlMatch && dataUrlMatch[1]) {
+    return { b64_json: dataUrlMatch[1].replace(/\s/g, "") };
+  }
+
+  const markdownImageMatch = /!\[[^\]]*]\((https?:\/\/[^)\s]+)\)/i.exec(trimmed);
+  if (markdownImageMatch && markdownImageMatch[1]) {
+    return { url: markdownImageMatch[1] };
+  }
+
+  if (/^https?:\/\//i.test(trimmed)) {
+    return { url: trimmed };
+  }
+
+  const b64 = normalizeBase64ImageData(trimmed);
+  if (b64) {
+    return { b64_json: b64 };
+  }
+
+  return null;
+}
+
+function normalizeImageGenerationUrl(value: unknown): string {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return /^https?:\/\//i.test(trimmed) ? trimmed : "";
+  }
+
+  if (isObjectRecord(value)) {
+    return normalizeImageGenerationUrl(value.url ?? value.image_url ?? value.imageUrl);
+  }
+
+  return "";
+}
+
+function normalizeBase64ImageData(value: string): string | null {
+  const normalized = value.replace(/\s/g, "");
+  if (!/^[A-Za-z0-9+/]{100,}={0,2}$/.test(normalized)) {
+    return null;
+  }
+  return normalized;
+}
+
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const trimmed = value.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+  return undefined;
+}
+
+function isLikelyImageRecord(record: Record<string, unknown>): boolean {
+  const type = typeof record.type === "string" ? record.type.toLowerCase() : "";
+  return (
+    type.includes("image") ||
+    "b64_json" in record ||
+    "image_url" in record ||
+    "imageUrl" in record ||
+    "image" in record ||
+    "result" in record
+  );
+}
+
 function normalizeTextForComparison(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
@@ -1120,6 +1324,7 @@ async function run(): Promise<void> {
   const dynamicTools = extractDynamicTools(request);
   const prompt = buildPrompt(request);
   const reasoningEffort = resolveReasoningEffort(request);
+  const isImageGenerationRequest = request.requestKind === "images_generations";
   const debugRpc = isTruthyEnv(process.env.CODEX_APPSERVER_DEBUG_RPC);
   const codexExecutableCandidates = getCodexExecutableCandidates();
   const shouldStream =
@@ -1288,6 +1493,8 @@ async function run(): Promise<void> {
     const toolCallIds = new Set<string>();
     const textParts: string[] = [];
     const reasoningParts: string[] = [];
+    const imageItems: ImageGenerationItem[] = [];
+    const imageItemKeys = new Set<string>();
     let streamedOutputText = "";
     let streamedReasoningText = "";
     let turnCompleted = false;
@@ -1329,6 +1536,19 @@ async function run(): Promise<void> {
         streamedReasoningText = nextText;
       }
     };
+    const appendImageItems = (items: ImageGenerationItem[]): void => {
+      for (const item of items) {
+        if (!item.url && !item.b64_json) {
+          continue;
+        }
+        const key = item.url ? `url:${item.url}` : `b64:${item.b64_json}`;
+        if (imageItemKeys.has(key)) {
+          continue;
+        }
+        imageItemKeys.add(key);
+        imageItems.push(item);
+      }
+    };
 
     while (Date.now() - startedAt < timeoutMs) {
       const incoming = await rpc.nextMessage(1000);
@@ -1351,6 +1571,9 @@ async function run(): Promise<void> {
           method,
           ...summarizeRpcParams(params),
         });
+      }
+      if (isImageGenerationRequest && params) {
+        appendImageItems(collectImageGenerationItems(params));
       }
 
       if (method === "item/tool/call" && params) {
@@ -1425,6 +1648,10 @@ async function run(): Promise<void> {
           continue;
         }
 
+        if (isImageGenerationRequest) {
+          appendImageItems(collectImageGenerationItems(params.item));
+        }
+
         const content = collectAssistantContentFromRawItem(params.item);
         if (appendUniqueTextPart(reasoningParts, content.reasoningText)) {
           streamAggregateText("reasoning_delta", reasoningParts.join("\n").trim());
@@ -1446,6 +1673,9 @@ async function run(): Promise<void> {
           typeof params.turnId === "string" ? params.turnId : "";
         if (turnId && incomingTurnId && incomingTurnId !== turnId) {
           continue;
+        }
+        if (isImageGenerationRequest) {
+          appendImageItems(collectImageGenerationItems(params.item));
         }
         const content = collectAssistantContentFromThreadItem(params.item);
         if (appendUniqueTextPart(reasoningParts, content.reasoningText)) {
@@ -1526,6 +1756,11 @@ async function run(): Promise<void> {
     let outputText = textParts.join("\n").trim();
     let reasoningText = reasoningParts.join("\n").trim();
     let finishReason: FinishReason = "stop";
+
+    if (isImageGenerationRequest && imageItems.length > 0) {
+      outputText = JSON.stringify({ data: imageItems });
+      streamAggregateText("output_text_delta", outputText);
+    }
 
     const parsedContract = parseJsonContractFromText(outputText);
     if (parsedContract) {
