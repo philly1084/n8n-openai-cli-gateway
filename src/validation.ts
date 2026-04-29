@@ -163,6 +163,16 @@ export const providerSessionSignalRequestSchema = z.object({
   signal: z.enum(["SIGINT", "SIGTERM", "SIGKILL"]).default("SIGINT"),
 }).passthrough();
 
+export const remoteAgentTaskCreateRequestSchema = z.object({
+  providerId: z.string().min(1, "providerId is required"),
+  targetId: z.string().min(1, "targetId is required"),
+  task: z.string().min(1, "task is required"),
+  cwd: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
+  cols: z.number().int().min(20).max(400).default(120),
+  rows: z.number().int().min(5).max(200).default(40),
+}).passthrough();
+
 export type ChatCompletionsRequest = z.infer<typeof chatCompletionsRequestSchema>;
 export type ResponsesRequest = z.infer<typeof responsesRequestSchema>;
 export type ImageGenerationsRequest = z.infer<typeof imageGenerationsRequestSchema>;
@@ -174,3 +184,4 @@ export type ProviderSessionCreateRequest = z.infer<typeof providerSessionCreateR
 export type ProviderSessionInputRequest = z.infer<typeof providerSessionInputRequestSchema>;
 export type ProviderSessionResizeRequest = z.infer<typeof providerSessionResizeRequestSchema>;
 export type ProviderSessionSignalRequest = z.infer<typeof providerSessionSignalRequestSchema>;
+export type RemoteAgentTaskCreateRequest = z.infer<typeof remoteAgentTaskCreateRequestSchema>;

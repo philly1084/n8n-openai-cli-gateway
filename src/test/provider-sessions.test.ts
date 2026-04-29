@@ -17,15 +17,17 @@ const SESSION_SCRIPT = [
   "process.stdout.write('ready\\\\n');",
   "process.stdin.on('data', (chunk) => {",
   "  const parts = chunk.split(/(?<=\\\\n)/);",
+  "  let shouldExit = false;",
   "  for (const part of parts) {",
   "    if (!part) continue;",
   "    if (part.includes('exit')) {",
   "      process.stdout.write('bye\\\\n');",
-  "      process.exit(0);",
-  "      return;",
+  "      shouldExit = true;",
+  "      continue;",
   "    }",
   "    process.stdout.write(`echo:${part}`);",
   "  }",
+  "  if (shouldExit) process.exit(0);",
   "});",
 ].join(" ");
 
@@ -93,7 +95,7 @@ test("frontend session lifecycle supports create, input, transcript, and token s
     });
 
     assert.equal(inputResponse.statusCode, 200);
-    await sleep(75);
+    await waitForOutput(server, sessionId, /echo:hello/, "frontend-key");
 
     await server.app.inject({
       method: "POST",
@@ -352,4 +354,31 @@ function createProviderSessionTestServer() {
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForOutput(
+  server: ReturnType<typeof createProviderSessionTestServer>,
+  sessionId: string,
+  pattern: RegExp,
+  apiKey: string,
+): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 1000) {
+    const transcriptResponse = await server.app.inject({
+      method: "GET",
+      url: `/admin/provider-sessions/${sessionId}/transcript`,
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+      },
+    });
+    const transcriptBody = transcriptResponse.json() as { data: Array<{ type: string; data?: string }> };
+    const outputText = transcriptBody.data
+      .filter((event) => event.type === "output")
+      .map((event) => event.data ?? "")
+      .join("");
+    if (pattern.test(outputText)) {
+      return;
+    }
+    await sleep(25);
+  }
 }

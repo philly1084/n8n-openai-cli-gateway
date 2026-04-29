@@ -260,6 +260,47 @@ Available MCP tools:
 
 `remote_code_run` starts `ssh <target> "cd <cwd> && opencode run --format json ... <task>"`. The gateway validates `cwd` against `allowedCwds`, quotes dynamic values, and rejects raw `command`, `args`, `executable`, or `shell` fields.
 
+## 4c) Remote agent sessions
+
+Use `/admin/remote-agent-tasks` when the frontend should choose a local CLI provider session, such as Codex, Gemini, or Kimi, and give it controlled instructions for a configured remote target. This path runs the selected provider CLI on the gateway and sends it a bootstrap prompt with SSH target details, allowed remote roots, and progress marker instructions.
+
+```http
+POST /admin/remote-agent-tasks
+```
+
+```json
+{
+  "providerId": "gemini-cli",
+  "targetId": "prod",
+  "cwd": "/srv/apps/my-app",
+  "task": "Update the k3s app and verify the rollout.",
+  "model": "gemini-3.1-pro-preview"
+}
+```
+
+Response:
+
+```json
+{
+  "task": {
+    "id": "ragent_...",
+    "providerId": "gemini-cli",
+    "targetId": "prod",
+    "sessionId": "ps_...",
+    "reasoning": {
+      "summary": "Remote agent task started with provider gemini-cli on target prod.",
+      "data": {
+        "sshCommand": "ssh deploy@prod.example.com",
+        "progressMarkers": ["REMOTE_AGENT_PLAN", "REMOTE_AGENT_PROGRESS", "REMOTE_AGENT_RESULT"]
+      }
+    }
+  },
+  "streamUrl": "/admin/remote-agent-tasks/ragent_.../stream?token=..."
+}
+```
+
+The task stream is Server-Sent Events. It includes normal provider-session `output` events plus a structured `reasoning` event with non-secret routing context so the chat UI can show what agent, target, cwd, and progress markers are active. It does not expose hidden model chain-of-thought.
+
 Agents SDK server-side usage:
 
 ```ts

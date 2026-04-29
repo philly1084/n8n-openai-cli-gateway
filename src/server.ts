@@ -3,9 +3,11 @@ import type { AppConfig, RemoteCliTargetConfig } from "./types";
 import { adminRoutes } from "./routes/admin";
 import { openAiRoutes } from "./routes/openai";
 import { providerSessionRoutes } from "./routes/provider-sessions";
+import { remoteAgentRoutes } from "./routes/remote-agents";
 import { mcpRoutes } from "./routes/mcp";
 import { JobManager } from "./jobs/job-manager";
 import { ProviderSessionManager } from "./jobs/provider-session-manager";
+import { RemoteAgentManager } from "./jobs/remote-agent-manager";
 import { RemoteCliToolManager } from "./jobs/remote-cli-tool-manager";
 import { ProviderRegistry } from "./providers/registry";
 import { LruMap } from "./utils/lru-map";
@@ -93,6 +95,7 @@ export function buildServer(
     allowedCwds: config.frontendAllowedCwds,
   });
   const remoteCliToolManager = new RemoteCliToolManager(options.remoteCliTargets ?? []);
+  const remoteAgentManager = new RemoteAgentManager(providerSessionManager, options.remoteCliTargets ?? []);
 
   // Rate limit store scoped to this server instance
   const rateLimitStore = new LruMap<string, RateLimitEntry>(RATE_LIMIT_STORE_MAX_SIZE);
@@ -202,6 +205,14 @@ export function buildServer(
     prefix: "/admin",
     registry,
     sessionManager: providerSessionManager,
+    adminApiKey: config.adminApiKey,
+    frontendApiKeys: config.frontendApiKeys,
+  });
+
+  app.register(remoteAgentRoutes, {
+    prefix: "/admin",
+    registry,
+    manager: remoteAgentManager,
     adminApiKey: config.adminApiKey,
     frontendApiKeys: config.frontendApiKeys,
   });

@@ -299,6 +299,13 @@ export type ProviderSessionEvent =
     data: string;
   }
   | {
+    type: "reasoning";
+    cursor: number;
+    ts: string;
+    summary: string;
+    data?: Record<string, unknown>;
+  }
+  | {
     type: "status";
     cursor: number;
     ts: string;
@@ -311,3 +318,28 @@ export type ProviderSessionEvent =
     ts: string;
     exitCode: number | null;
   };
+
+export type RemoteAgentTaskStatus = ProviderSessionStatus;
+
+export interface RemoteAgentTaskSummary {
+  id: string;
+  providerId: string;
+  providerDescription?: string;
+  targetId: string;
+  targetDescription?: string;
+  host: string;
+  user?: string;
+  port?: number;
+  cwd: string;
+  model?: string;
+  task: string;
+  status: RemoteAgentTaskStatus;
+  createdAt: string;
+  updatedAt: string;
+  sessionId: string;
+  streamToken: string;
+  reasoning: {
+    summary: string;
+    data: Record<string, unknown>;
+  };
+}

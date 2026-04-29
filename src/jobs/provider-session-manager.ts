@@ -265,6 +265,15 @@ export class ProviderSessionManager {
     return { ...record.summary };
   }
 
+  emitReasoning(sessionId: string, summary: string, data?: Record<string, unknown>): void {
+    const record = this.requireRecord(sessionId);
+    this.emitEvent(record, {
+      type: "reasoning",
+      summary,
+      data,
+    });
+  }
+
   terminateSession(sessionId: string): ProviderSessionSummary {
     const record = this.requireRecord(sessionId);
     if (!isFinalStatus(record.summary.status)) {
@@ -379,6 +388,7 @@ export class ProviderSessionManager {
     record: ProviderSessionRecord,
     event:
       | Omit<Extract<ProviderSessionEvent, { type: "output" }>, "cursor" | "ts">
+      | Omit<Extract<ProviderSessionEvent, { type: "reasoning" }>, "cursor" | "ts">
       | Omit<Extract<ProviderSessionEvent, { type: "status" }>, "cursor" | "ts">
       | Omit<Extract<ProviderSessionEvent, { type: "exit" }>, "cursor" | "ts">,
   ): void {
