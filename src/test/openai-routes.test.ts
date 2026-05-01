@@ -569,6 +569,52 @@ test("images route parses Responses image generation call result", async () => {
   }
 });
 
+test("images route parses nested inline_data image payloads", async () => {
+  const imageData = "b".repeat(120);
+  const server = createTestServer(async () => ({
+    outputText: "",
+    toolCalls: [],
+    finishReason: "stop",
+    raw: {
+      candidates: [
+        {
+          content: {
+            parts: [
+              {
+                inline_data: {
+                  mime_type: "image/png",
+                  data: imageData,
+                },
+              },
+            ],
+          },
+        },
+      ],
+    },
+  }));
+
+  try {
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/v1/images/generations",
+      headers: {
+        authorization: "Bearer test-key",
+      },
+      payload: {
+        model: "demo-model",
+        prompt: "A cat",
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    const body = response.json() as Record<string, unknown>;
+    const data = body.data as Array<Record<string, unknown>>;
+    assert.equal(data[0]?.b64_json, imageData);
+  } finally {
+    await server.close();
+  }
+});
+
 test("images route prefers explicit Codex-backed image model when available", async () => {
   let capturedModelId = "";
 

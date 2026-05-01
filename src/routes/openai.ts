@@ -2463,7 +2463,31 @@ function extractJsonCandidates(input: string): string[] {
   return out;
 }
 
-function normalizeImagePayload(raw: unknown): OpenAiImageItem[] {
+const IMAGE_NESTED_PAYLOAD_KEYS = [
+  "data",
+  "images",
+  "image",
+  "inline_data",
+  "inlineData",
+  "output",
+  "outputs",
+  "content",
+  "contentItems",
+  "candidates",
+  "parts",
+  "items",
+  "attachments",
+  "artifact",
+  "artifacts",
+  "file",
+  "files",
+] as const;
+
+function normalizeImagePayload(raw: unknown, depth = 0): OpenAiImageItem[] {
+  if (depth > 8) {
+    return [];
+  }
+
   if (typeof raw === "string") {
     const trimmed = raw.trim();
     if (!trimmed) {
@@ -2472,7 +2496,7 @@ function normalizeImagePayload(raw: unknown): OpenAiImageItem[] {
 
     const parsed = tryParseJson(trimmed);
     if (parsed !== null) {
-      return normalizeImagePayload(parsed);
+      return normalizeImagePayload(parsed, depth + 1);
     }
 
     const dataUrlMatch = /^data:image\/[a-zA-Z0-9.+-]+;base64,(.+)$/i.exec(trimmed);
@@ -2498,7 +2522,9 @@ function normalizeImagePayload(raw: unknown): OpenAiImageItem[] {
   }
 
   if (Array.isArray(raw)) {
-    return raw.flatMap((item) => normalizeImagePayload(item)).filter(isImageItem);
+    return dedupeImageItems(
+      raw.flatMap((item) => normalizeImagePayload(item, depth + 1)).filter(isImageItem),
+    );
   }
 
   if (!raw || typeof raw !== "object") {
@@ -2506,33 +2532,25 @@ function normalizeImagePayload(raw: unknown): OpenAiImageItem[] {
   }
 
   const obj = raw as Record<string, unknown>;
-  if (Array.isArray(obj.data)) {
-    return obj.data.flatMap((item) => normalizeImageItem(item)).filter(isImageItem);
+  const items: OpenAiImageItem[] = [];
+  const single = normalizeImageItem(obj, depth + 1);
+  if (single) {
+    items.push(single);
   }
 
-  if (Array.isArray(obj.images)) {
-    return obj.images.flatMap((item) => normalizeImageItem(item)).filter(isImageItem);
+  for (const key of IMAGE_NESTED_PAYLOAD_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(obj, key)) {
+      continue;
+    }
+    items.push(...normalizeImagePayload(obj[key], depth + 1));
   }
 
-  if (Array.isArray(obj.output)) {
-    return obj.output.flatMap((item) => normalizeImagePayload(item)).filter(isImageItem);
-  }
-
-  if (Array.isArray(obj.content)) {
-    return obj.content.flatMap((item) => normalizeImagePayload(item)).filter(isImageItem);
-  }
-
-  if (Array.isArray(obj.contentItems)) {
-    return obj.contentItems.flatMap((item) => normalizeImagePayload(item)).filter(isImageItem);
-  }
-
-  const single = normalizeImageItem(obj);
-  return single ? [single] : [];
+  return dedupeImageItems(items.filter(isImageItem));
 }
 
-function normalizeImageItem(raw: unknown): OpenAiImageItem | null {
+function normalizeImageItem(raw: unknown, depth = 0): OpenAiImageItem | null {
   if (typeof raw === "string") {
-    return normalizeImagePayload(raw)[0] ?? null;
+    return normalizeImagePayload(raw, depth + 1)[0] ?? null;
   }
 
   if (!raw || typeof raw !== "object") {
@@ -2547,9 +2565,15 @@ function normalizeImageItem(raw: unknown): OpenAiImageItem | null {
       obj.output_url ??
       obj.outputUrl ??
       obj.download_url ??
-      obj.downloadUrl,
+      obj.downloadUrl ??
+      obj.uri,
   );
-  const resultImage = normalizeResultImageValue(obj.result);
+  const resultImage = normalizeResultImageValue(obj.result, depth + 1);
+  const inlineImage = normalizeInlineImageValue(obj.inline_data ?? obj.inlineData, depth + 1);
+  const dataImage =
+    typeof obj.data === "string" && isLikelyImageRecord(obj)
+      ? normalizeImagePayload(obj.data, depth + 1)[0]
+      : undefined;
   const b64 =
     typeof obj.b64_json === "string"
       ? obj.b64_json.trim()
@@ -2557,8 +2581,16 @@ function normalizeImageItem(raw: unknown): OpenAiImageItem | null {
         ? obj.base64.trim()
         : typeof obj.b64 === "string"
           ? obj.b64.trim()
-          : resultImage.b64_json ?? "";
-  const directB64Image = b64 ? normalizeImagePayload(b64)[0] : undefined;
+          : typeof obj.b64_data === "string"
+            ? obj.b64_data.trim()
+            : typeof obj.base64_data === "string"
+              ? obj.base64_data.trim()
+              : typeof obj.image_base64 === "string"
+                ? obj.image_base64.trim()
+                : typeof obj.imageBase64 === "string"
+                  ? obj.imageBase64.trim()
+                  : resultImage.b64_json ?? "";
+  const directB64Image = b64 ? normalizeImagePayload(b64, depth + 1)[0] : undefined;
   const revisedPrompt =
     typeof obj.revised_prompt === "string"
       ? obj.revised_prompt
@@ -2566,9 +2598,14 @@ function normalizeImageItem(raw: unknown): OpenAiImageItem | null {
         ? obj.revisedPrompt
         : undefined;
 
-  const url = imageRef.url || resultImage.url || directB64Image?.url || "";
+  const url = imageRef.url || resultImage.url || inlineImage.url || directB64Image?.url || "";
   const normalizedB64 =
-    imageRef.b64_json || resultImage.b64_json || directB64Image?.b64_json || b64;
+    imageRef.b64_json ||
+    resultImage.b64_json ||
+    inlineImage.b64_json ||
+    dataImage?.b64_json ||
+    directB64Image?.b64_json ||
+    b64;
 
   if (!url && !normalizedB64) {
     return null;
@@ -2583,6 +2620,20 @@ function normalizeImageItem(raw: unknown): OpenAiImageItem | null {
 
 function isImageItem(value: OpenAiImageItem | null): value is OpenAiImageItem {
   return Boolean(value && (value.url || value.b64_json));
+}
+
+function dedupeImageItems(items: OpenAiImageItem[]): OpenAiImageItem[] {
+  const out: OpenAiImageItem[] = [];
+  const seen = new Set<string>();
+  for (const item of items) {
+    const key = item.url ? `url:${item.url}` : `b64:${item.b64_json}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
 }
 
 function summarizeImageItemsForLog(items: OpenAiImageItem[]): Array<Record<string, unknown>> {
@@ -2650,15 +2701,31 @@ function summarizeRawImagePayloadForLog(value: unknown, depth = 0): unknown {
   for (const key of [
     "data",
     "images",
+    "image",
+    "inline_data",
+    "inlineData",
     "output",
+    "outputs",
     "content",
     "contentItems",
+    "candidates",
+    "parts",
+    "items",
+    "attachments",
+    "artifact",
+    "artifacts",
+    "file",
+    "files",
     "result",
     "url",
     "image_url",
     "imageUrl",
     "b64_json",
+    "b64_data",
     "base64",
+    "base64_data",
+    "image_base64",
+    "imageBase64",
     "b64",
   ]) {
     if (Object.prototype.hasOwnProperty.call(record, key)) {
@@ -2722,13 +2789,39 @@ function normalizeImageReferenceValue(value: unknown): OpenAiImageItem {
   return {};
 }
 
-function normalizeResultImageValue(value: unknown): OpenAiImageItem {
-  if (typeof value !== "string") {
+function normalizeResultImageValue(value: unknown, depth = 0): OpenAiImageItem {
+  const direct = normalizeImagePayload(value, depth + 1)[0];
+  return direct ?? {};
+}
+
+function normalizeInlineImageValue(value: unknown, depth = 0): OpenAiImageItem {
+  if (!value) {
     return {};
   }
 
-  const direct = normalizeImagePayload(value)[0];
-  return direct ?? {};
+  if (typeof value === "string") {
+    return normalizeImagePayload(value, depth + 1)[0] ?? {};
+  }
+
+  if (typeof value !== "object") {
+    return {};
+  }
+
+  const record = value as Record<string, unknown>;
+  const data = firstNonEmptyString(
+    record.data,
+    record.b64_json,
+    record.base64,
+    record.b64,
+    record.b64_data,
+    record.base64_data,
+  );
+  if (!data) {
+    return normalizeImagePayload(record, depth + 1)[0] ?? {};
+  }
+
+  const normalized = normalizeImagePayload(data, depth + 1)[0];
+  return normalized ?? { b64_json: data.replace(/\s/g, "") };
 }
 
 function normalizeBase64ImageData(value: string): string | null {
@@ -2737,6 +2830,27 @@ function normalizeBase64ImageData(value: string): string | null {
     return null;
   }
   return normalized;
+}
+
+function isLikelyImageRecord(record: Record<string, unknown>): boolean {
+  const type = firstNonEmptyString(record.type)?.toLowerCase() ?? "";
+  const mimeType = firstNonEmptyString(record.mime_type, record.mimeType)?.toLowerCase() ?? "";
+  return (
+    type.includes("image") ||
+    mimeType.startsWith("image/") ||
+    "inline_data" in record ||
+    "inlineData" in record ||
+    "b64_json" in record ||
+    "b64_data" in record ||
+    "base64" in record ||
+    "base64_data" in record ||
+    "image_base64" in record ||
+    "imageBase64" in record ||
+    "image_url" in record ||
+    "imageUrl" in record ||
+    "image" in record ||
+    "result" in record
+  );
 }
 
 export function parseDocumentGenerations(

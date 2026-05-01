@@ -788,12 +788,16 @@ export function collectImageGenerationItems(value: unknown): ImageGenerationItem
     for (const key of [
       "result",
       "image",
+      "inline_data",
+      "inlineData",
       "image_url",
       "imageUrl",
       "url",
       "data",
       "content",
       "contentItems",
+      "candidates",
+      "parts",
       "output",
       "outputs",
       "items",
@@ -821,11 +825,14 @@ function normalizeImageGenerationRecord(record: Record<string, unknown>): ImageG
       record.output_url ??
       record.outputUrl ??
       record.download_url ??
-      record.downloadUrl,
+      record.downloadUrl ??
+      record.uri,
   );
   const directB64 = firstNonEmptyString(
     record.b64_json,
+    record.b64_data,
     record.base64,
+    record.base64_data,
     record.b64,
     record.image_base64,
     record.imageBase64,
@@ -839,19 +846,29 @@ function normalizeImageGenerationRecord(record: Record<string, unknown>): ImageG
     typeof record.data === "string" && isLikelyImageRecord(record)
       ? normalizeImageGenerationString(record.data)
       : null;
+  const inlineImage = normalizeInlineImageGenerationValue(record.inline_data ?? record.inlineData);
   const b64 =
     directB64Image?.b64_json ??
     normalizeBase64ImageData(directB64 ?? "") ??
     nestedResult?.b64_json ??
-    imageData?.b64_json;
+    imageData?.b64_json ??
+    inlineImage?.b64_json;
   const revisedPrompt = firstNonEmptyString(record.revised_prompt, record.revisedPrompt);
 
-  if (!url && !b64 && !directB64Image?.url && !nestedResult?.url && !imageData?.url) {
+  if (
+    !url &&
+    !b64 &&
+    !directB64Image?.url &&
+    !nestedResult?.url &&
+    !imageData?.url &&
+    !inlineImage?.url
+  ) {
     return null;
   }
 
   const item: ImageGenerationItem = {};
-  const finalUrl = url || directB64Image?.url || nestedResult?.url || imageData?.url || "";
+  const finalUrl =
+    url || directB64Image?.url || nestedResult?.url || imageData?.url || inlineImage?.url || "";
   if (finalUrl) {
     item.url = finalUrl;
   }
@@ -899,10 +916,38 @@ function normalizeImageGenerationUrl(value: unknown): string {
   }
 
   if (isObjectRecord(value)) {
-    return normalizeImageGenerationUrl(value.url ?? value.image_url ?? value.imageUrl);
+    return normalizeImageGenerationUrl(value.url ?? value.image_url ?? value.imageUrl ?? value.uri);
   }
 
   return "";
+}
+
+function normalizeInlineImageGenerationValue(value: unknown): ImageGenerationItem | null {
+  if (!value) {
+    return null;
+  }
+
+  if (typeof value === "string") {
+    return normalizeImageGenerationString(value);
+  }
+
+  if (!isObjectRecord(value)) {
+    return null;
+  }
+
+  const data = firstNonEmptyString(
+    value.data,
+    value.b64_json,
+    value.b64_data,
+    value.base64,
+    value.base64_data,
+    value.b64,
+  );
+  if (!data) {
+    return normalizeImageGenerationRecord(value);
+  }
+
+  return normalizeImageGenerationString(data) ?? { b64_json: data.replace(/\s/g, "") };
 }
 
 function normalizeBase64ImageData(value: string): string | null {
@@ -928,9 +973,18 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
 
 function isLikelyImageRecord(record: Record<string, unknown>): boolean {
   const type = typeof record.type === "string" ? record.type.toLowerCase() : "";
+  const mimeType = firstNonEmptyString(record.mime_type, record.mimeType)?.toLowerCase() ?? "";
   return (
     type.includes("image") ||
+    mimeType.startsWith("image/") ||
+    "inline_data" in record ||
+    "inlineData" in record ||
     "b64_json" in record ||
+    "b64_data" in record ||
+    "base64" in record ||
+    "base64_data" in record ||
+    "image_base64" in record ||
+    "imageBase64" in record ||
     "image_url" in record ||
     "imageUrl" in record ||
     "image" in record ||

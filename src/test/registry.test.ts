@@ -120,6 +120,92 @@ test("registry allows image generation raw payloads with blank output text", asy
   }
 });
 
+test("registry allows nested inline image raw payloads with blank output text", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.TEST_REGISTRY_IMAGE_API_KEY;
+  const imageData = "b".repeat(120);
+  process.env.TEST_REGISTRY_IMAGE_API_KEY = "test-key";
+
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: "image/png",
+                    data: imageData,
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      },
+    )) as typeof fetch;
+
+  try {
+    const registry = await ProviderRegistry.create([
+      {
+        id: "openai-image-api",
+        type: "openai",
+        baseUrl: "https://api.openai.test/v1",
+        apiKeyEnv: "TEST_REGISTRY_IMAGE_API_KEY",
+        models: [
+          {
+            id: "gpt-image-test",
+            providerModel: "gpt-image-test",
+            capabilities: ["image_generation"],
+          },
+        ],
+      },
+    ]);
+
+    const result = await registry.runModel("gpt-image-test", {
+      requestId: "req_img_inline",
+      messages: [{ role: "user", content: "A small product hero image." }],
+      tools: [],
+      requestKind: "images_generations",
+      metadata: {
+        prompt: "A small product hero image.",
+      },
+    });
+
+    assert.equal(result.outputText, "");
+    assert.deepEqual(result.raw, {
+      candidates: [
+        {
+          content: {
+            parts: [
+              {
+                inlineData: {
+                  mimeType: "image/png",
+                  data: imageData,
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalApiKey === undefined) {
+      delete process.env.TEST_REGISTRY_IMAGE_API_KEY;
+    } else {
+      process.env.TEST_REGISTRY_IMAGE_API_KEY = originalApiKey;
+    }
+  }
+});
+
 test("registry falls back when image generation raw payload has no image data", async () => {
   const originalFetch = globalThis.fetch;
   const originalApiKey = process.env.TEST_REGISTRY_IMAGE_API_KEY;

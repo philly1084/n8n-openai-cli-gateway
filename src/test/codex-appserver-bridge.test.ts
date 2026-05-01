@@ -38,3 +38,25 @@ test("collectImageGenerationItems extracts app-server image call results", () =>
 
   assert.deepEqual(images, [{ b64_json: imageData }]);
 });
+
+test("collectImageGenerationItems extracts nested inlineData image parts", () => {
+  const imageData = "b".repeat(120);
+  const images = collectImageGenerationItems({
+    candidates: [
+      {
+        content: {
+          parts: [
+            {
+              inlineData: {
+                mimeType: "image/png",
+                data: imageData,
+              },
+            },
+          ],
+        },
+      },
+    ],
+  });
+
+  assert.deepEqual(images, [{ b64_json: imageData }]);
+});

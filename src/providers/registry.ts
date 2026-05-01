@@ -353,7 +353,7 @@ function isBlankImageGenerationResult(result: ProviderResult): boolean {
 }
 
 function hasPotentialImageGenerationPayload(value: unknown, depth = 0): boolean {
-  if (depth > 5 || value === undefined || value === null) {
+  if (depth > 8 || value === undefined || value === null) {
     return false;
   }
 
@@ -373,9 +373,21 @@ function hasPotentialImageGenerationPayload(value: unknown, depth = 0): boolean 
   for (const key of [
     "data",
     "images",
+    "image",
+    "inline_data",
+    "inlineData",
     "output",
+    "outputs",
     "content",
     "contentItems",
+    "candidates",
+    "parts",
+    "items",
+    "attachments",
+    "artifact",
+    "artifacts",
+    "file",
+    "files",
     "result",
     "url",
     "image_url",
@@ -385,7 +397,11 @@ function hasPotentialImageGenerationPayload(value: unknown, depth = 0): boolean 
     "download_url",
     "downloadUrl",
     "b64_json",
+    "b64_data",
     "base64",
+    "base64_data",
+    "image_base64",
+    "imageBase64",
     "b64",
   ]) {
     if (
