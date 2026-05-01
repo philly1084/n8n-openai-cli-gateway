@@ -191,7 +191,7 @@ export class ProviderRegistry {
           providerModel: binding.providerModel,
         });
         const result = normalizeAssistantResult(rawResult);
-        if (isInvalidProviderResult(result)) {
+        if (isInvalidProviderResult(result, request)) {
           throw new Error(buildInvalidProviderResultError(binding.provider.id, binding.modelId, result));
         }
         this.modelStats.recordSuccess({
@@ -329,12 +329,74 @@ function isImageGenerationRequest(
   return request.requestKind === "images_generations";
 }
 
-function isInvalidProviderResult(result: ProviderResult): boolean {
+function isInvalidProviderResult(
+  result: ProviderResult,
+  request: Omit<UnifiedRequest, "model" | "providerModel">,
+): boolean {
+  if (isImageGenerationRequest(request)) {
+    return isBlankImageGenerationResult(result) || isSyntheticFailureProviderResult(result);
+  }
+
   return isBlankProviderResult(result) || isSyntheticFailureProviderResult(result);
 }
 
 function isBlankProviderResult(result: ProviderResult): boolean {
   return result.toolCalls.length === 0 && result.outputText.trim().length === 0;
+}
+
+function isBlankImageGenerationResult(result: ProviderResult): boolean {
+  return (
+    result.toolCalls.length === 0 &&
+    result.outputText.trim().length === 0 &&
+    !hasPotentialImageGenerationPayload(result.raw)
+  );
+}
+
+function hasPotentialImageGenerationPayload(value: unknown, depth = 0): boolean {
+  if (depth > 5 || value === undefined || value === null) {
+    return false;
+  }
+
+  if (typeof value === "string") {
+    return value.trim().length > 0;
+  }
+
+  if (Array.isArray(value)) {
+    return value.some((item) => hasPotentialImageGenerationPayload(item, depth + 1));
+  }
+
+  if (typeof value !== "object") {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+  for (const key of [
+    "data",
+    "images",
+    "output",
+    "content",
+    "contentItems",
+    "result",
+    "url",
+    "image_url",
+    "imageUrl",
+    "output_url",
+    "outputUrl",
+    "download_url",
+    "downloadUrl",
+    "b64_json",
+    "base64",
+    "b64",
+  ]) {
+    if (
+      Object.prototype.hasOwnProperty.call(record, key) &&
+      hasPotentialImageGenerationPayload(record[key], depth + 1)
+    ) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function isSyntheticFailureProviderResult(result: ProviderResult): boolean {

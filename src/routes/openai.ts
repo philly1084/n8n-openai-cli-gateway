@@ -1214,6 +1214,14 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
 
       const images = parseImageGenerationsFromResult(result);
       if (images.length === 0) {
+        request.log.warn(
+          {
+            requestedModel: body.model,
+            effectiveModel,
+            providerResult: summarizeProviderImageResult(result),
+          },
+          "Provider returned no parseable image data.",
+        );
         return sendOpenAiError(
           reply,
           500,
@@ -1221,6 +1229,18 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
           "provider_error",
         );
       }
+
+      request.log.info(
+        {
+          requestedModel: body.model,
+          effectiveModel,
+          requestedCount: n,
+          parsedCount: images.length,
+          returnedCount: Math.min(images.length, n),
+          images: summarizeImageItemsForLog(images.slice(0, n)),
+        },
+        "Image generation response parsed.",
+      );
 
       return {
         created: Math.floor(Date.now() / 1000),
@@ -2563,6 +2583,129 @@ function normalizeImageItem(raw: unknown): OpenAiImageItem | null {
 
 function isImageItem(value: OpenAiImageItem | null): value is OpenAiImageItem {
   return Boolean(value && (value.url || value.b64_json));
+}
+
+function summarizeImageItemsForLog(items: OpenAiImageItem[]): Array<Record<string, unknown>> {
+  return items.map((item) => ({
+    transport: item.b64_json ? "b64_json" : "url",
+    b64Length: item.b64_json ? item.b64_json.length : undefined,
+    url: item.url ? summarizeUrlForLog(item.url) : undefined,
+    hasRevisedPrompt: Boolean(item.revised_prompt),
+  }));
+}
+
+function summarizeProviderImageResult(result: ProviderResult): Record<string, unknown> {
+  return {
+    finishReason: result.finishReason,
+    outputText: summarizeTextForLog(result.outputText),
+    toolCallCount: result.toolCalls.length,
+    hasRaw: result.raw !== undefined,
+    raw: summarizeRawImagePayloadForLog(result.raw),
+  };
+}
+
+function summarizeRawImagePayloadForLog(value: unknown, depth = 0): unknown {
+  if (value === undefined) {
+    return { type: "undefined" };
+  }
+  if (value === null) {
+    return { type: "null" };
+  }
+
+  if (typeof value === "string") {
+    return {
+      type: "string",
+      ...summarizeTextForLog(value),
+    };
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return { type: typeof value, value };
+  }
+
+  if (Array.isArray(value)) {
+    return {
+      type: "array",
+      length: value.length,
+      sample: depth >= 3
+        ? undefined
+        : value.slice(0, 3).map((item) => summarizeRawImagePayloadForLog(item, depth + 1)),
+    };
+  }
+
+  if (typeof value !== "object") {
+    return { type: typeof value };
+  }
+
+  const record = value as Record<string, unknown>;
+  const summary: Record<string, unknown> = {
+    type: "object",
+    keys: Object.keys(record).slice(0, 16),
+  };
+
+  if (depth >= 3) {
+    return summary;
+  }
+
+  for (const key of [
+    "data",
+    "images",
+    "output",
+    "content",
+    "contentItems",
+    "result",
+    "url",
+    "image_url",
+    "imageUrl",
+    "b64_json",
+    "base64",
+    "b64",
+  ]) {
+    if (Object.prototype.hasOwnProperty.call(record, key)) {
+      summary[key] = summarizeRawImagePayloadForLog(record[key], depth + 1);
+    }
+  }
+
+  return summary;
+}
+
+function summarizeTextForLog(value: string): Record<string, unknown> {
+  const trimmed = value.trim();
+  const compact = trimmed.replace(/\s+/g, " ");
+  const looksLikeImageData =
+    /^data:image\/[a-zA-Z0-9.+-]+;base64,/i.test(trimmed) ||
+    normalizeBase64ImageData(trimmed) !== null;
+  const preview = looksLikeImageData
+    ? "<image-data>"
+    : redactImageDataFromLogPreview(compact.slice(0, 240));
+
+  return {
+    length: value.length,
+    preview,
+    redacted: looksLikeImageData || undefined,
+  };
+}
+
+function redactImageDataFromLogPreview(value: string): string {
+  return value
+    .replace(
+      /(data:image\/[a-zA-Z0-9.+-]+;base64,)[A-Za-z0-9+/=]{32,}/gi,
+      "$1<image-data>",
+    )
+    .replace(
+      /("(?:b64_json|base64|b64)"\s*:\s*")[A-Za-z0-9+/=]{32,}/gi,
+      "$1<image-data>",
+    );
+}
+
+function summarizeUrlForLog(value: string): string {
+  try {
+    const url = new URL(value);
+    const queryMarker = url.search ? "?..." : "";
+    return `${url.protocol}//${url.host}${url.pathname}${queryMarker}`;
+  } catch {
+    return value.slice(0, 160);
+  }
 }
 
 function normalizeImageReferenceValue(value: unknown): OpenAiImageItem {
