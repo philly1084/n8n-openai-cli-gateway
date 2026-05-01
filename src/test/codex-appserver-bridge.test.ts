@@ -1,5 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   buildImageGenerationPrompt,
   collectImageGenerationItems,
@@ -26,6 +30,8 @@ test("buildImageGenerationPrompt explicitly invokes Codex image workflow", () =>
   assert.match(prompt, /Style: vivid/);
   assert.match(prompt, /Background: transparent/);
   assert.match(prompt, /Respond with raw JSON only/i);
+  assert.match(prompt, /actual generated image URL/i);
+  assert.doesNotMatch(prompt, /example\.com/i);
 });
 
 test("collectImageGenerationItems extracts app-server image call results", () => {
@@ -37,6 +43,42 @@ test("collectImageGenerationItems extracts app-server image call results", () =>
   });
 
   assert.deepEqual(images, [{ b64_json: imageData }]);
+});
+
+test("collectImageGenerationItems ignores placeholder example URLs", () => {
+  const images = collectImageGenerationItems({
+    data: [
+      {
+        url: "https://example.com/image.png",
+      },
+    ],
+  });
+
+  assert.deepEqual(images, []);
+});
+
+test("collectImageGenerationItems converts Codex local image file URLs to base64", () => {
+  const pngBase64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+  const tempRoot = mkdtempSync(join(tmpdir(), "codex-bridge-image-"));
+  const imageDir = join(tempRoot, ".codex", "generated_images", "run");
+  const imagePath = join(imageDir, "image.png");
+  mkdirSync(imageDir, { recursive: true });
+  writeFileSync(imagePath, Buffer.from(pngBase64, "base64"));
+
+  try {
+    const images = collectImageGenerationItems({
+      data: [
+        {
+          url: pathToFileURL(imagePath).href,
+        },
+      ],
+    });
+
+    assert.deepEqual(images, [{ b64_json: pngBase64 }]);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("collectImageGenerationItems extracts nested inlineData image parts", () => {

@@ -1,5 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { ChatMessage } from "../types";
 import type { AppConfig, ProviderResult, ProviderStreamEvent, UnifiedRequest } from "../types";
 import type { ProviderRegistry } from "../providers/registry";
@@ -503,7 +507,7 @@ test("images route parses image data from provider raw payload", async () => {
     raw: {
       data: [
         {
-          url: "https://example.com/image.png",
+          url: "https://storage.googleapis.com/demo-bucket/image.png",
         },
       ],
     },
@@ -525,9 +529,88 @@ test("images route parses image data from provider raw payload", async () => {
     assert.equal(response.statusCode, 200);
     const body = response.json() as Record<string, unknown>;
     const data = body.data as Array<Record<string, unknown>>;
-    assert.equal(data[0]?.url, "https://example.com/image.png");
+    assert.equal(data[0]?.url, "https://storage.googleapis.com/demo-bucket/image.png");
   } finally {
     await server.close();
+  }
+});
+
+test("images route rejects placeholder example URL payloads", async () => {
+  const server = createTestServer(async () => ({
+    outputText: "",
+    toolCalls: [],
+    finishReason: "stop",
+    raw: {
+      data: [
+        {
+          url: "https://example.com/image.png",
+        },
+      ],
+    },
+  }));
+
+  try {
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/v1/images/generations",
+      headers: {
+        authorization: "Bearer test-key",
+      },
+      payload: {
+        model: "demo-model",
+        prompt: "A lighthouse",
+      },
+    });
+
+    assert.equal(response.statusCode, 500);
+  } finally {
+    await server.close();
+  }
+});
+
+test("images route converts Codex local image file URLs to base64", async () => {
+  const pngBase64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+  const tempRoot = mkdtempSync(join(tmpdir(), "gateway-image-route-"));
+  const imageDir = join(tempRoot, ".codex", "generated_images", "run");
+  const imagePath = join(imageDir, "image.png");
+  mkdirSync(imageDir, { recursive: true });
+  writeFileSync(imagePath, Buffer.from(pngBase64, "base64"));
+
+  const server = createTestServer(async () => ({
+    outputText: JSON.stringify({
+      data: [
+        {
+          url: pathToFileURL(imagePath).href,
+          revised_prompt: "A blue square.",
+        },
+      ],
+    }),
+    toolCalls: [],
+    finishReason: "stop",
+  }));
+
+  try {
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/v1/images/generations",
+      headers: {
+        authorization: "Bearer test-key",
+      },
+      payload: {
+        model: "demo-model",
+        prompt: "A blue square",
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    const body = response.json() as Record<string, unknown>;
+    const data = body.data as Array<Record<string, unknown>>;
+    assert.equal(data[0]?.b64_json, pngBase64);
+    assert.equal(data[0]?.revised_prompt, "A blue square.");
+  } finally {
+    await server.close();
+    rmSync(tempRoot, { recursive: true, force: true });
   }
 });
 
@@ -626,7 +709,7 @@ test("images route prefers explicit Codex-backed image model when available", as
         toolCalls: [],
         finishReason: "stop",
         raw: {
-          data: [{ url: "https://example.com/codex-image.png" }],
+          data: [{ url: "https://storage.googleapis.com/demo-bucket/codex-image.png" }],
         },
       };
     },

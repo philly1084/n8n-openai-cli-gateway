@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { LruMap } from "../utils/lru-map";
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -2504,13 +2506,20 @@ function normalizeImagePayload(raw: unknown, depth = 0): OpenAiImageItem[] {
       return [{ b64_json: dataUrlMatch[1] }];
     }
 
-    const markdownImageMatch = /!\[[^\]]*]\((https?:\/\/[^)\s]+)\)/i.exec(trimmed);
-    if (markdownImageMatch && markdownImageMatch[1]) {
-      return [{ url: markdownImageMatch[1] }];
+    const localImage = normalizeLocalImageFileUrl(trimmed);
+    if (localImage) {
+      return [localImage];
     }
 
-    if (/^https?:\/\//i.test(trimmed)) {
-      return [{ url: trimmed }];
+    const markdownImageMatch = /!\[[^\]]*]\((https?:\/\/[^)\s]+)\)/i.exec(trimmed);
+    if (markdownImageMatch && markdownImageMatch[1]) {
+      const url = normalizeImageUrlString(markdownImageMatch[1]);
+      return url ? [{ url }] : [];
+    }
+
+    const url = normalizeImageUrlString(trimmed);
+    if (url) {
+      return [{ url }];
     }
 
     const normalizedBase64 = normalizeBase64ImageData(trimmed);
@@ -2773,6 +2782,81 @@ function summarizeUrlForLog(value: string): string {
   } catch {
     return value.slice(0, 160);
   }
+}
+
+function normalizeImageUrlString(value: string): string {
+  const trimmed = value.trim();
+  if (!/^https?:\/\//i.test(trimmed) || /[<>]/.test(trimmed)) {
+    return "";
+  }
+  return isPlaceholderImageUrl(trimmed) ? "" : trimmed;
+}
+
+function isPlaceholderImageUrl(value: string): boolean {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return (
+      hostname === "example.com" ||
+      hostname === "www.example.com" ||
+      hostname === "example.net" ||
+      hostname === "www.example.net" ||
+      hostname === "example.org" ||
+      hostname === "www.example.org" ||
+      hostname.endsWith(".example")
+    );
+  } catch {
+    return true;
+  }
+}
+
+function normalizeLocalImageFileUrl(value: string): OpenAiImageItem | null {
+  if (!/^file:\/\//i.test(value)) {
+    return null;
+  }
+
+  let filePath = "";
+  try {
+    filePath = fileURLToPath(value);
+  } catch {
+    return null;
+  }
+
+  if (!isAllowedLocalImageArtifactPath(filePath)) {
+    return null;
+  }
+
+  try {
+    const bytes = readFileSync(filePath);
+    if (bytes.length === 0 || bytes.length > 25 * 1024 * 1024 || !isSupportedImageBytes(bytes)) {
+      return null;
+    }
+    return { b64_json: bytes.toString("base64") };
+  } catch {
+    return null;
+  }
+}
+
+function isAllowedLocalImageArtifactPath(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, "/").toLowerCase();
+  return (
+    normalized.includes("/.codex/generated_images/") ||
+    normalized.includes("/.codex/artifacts/")
+  );
+}
+
+function isSupportedImageBytes(bytes: Buffer): boolean {
+  return (
+    bufferStartsWith(bytes, [0x89, 0x50, 0x4e, 0x47]) ||
+    bufferStartsWith(bytes, [0xff, 0xd8, 0xff]) ||
+    bufferStartsWith(bytes, [0x47, 0x49, 0x46, 0x38]) ||
+    (bufferStartsWith(bytes, [0x52, 0x49, 0x46, 0x46]) &&
+      bytes.subarray(8, 12).toString("ascii") === "WEBP") ||
+    bytes.subarray(0, 512).toString("utf8").trimStart().toLowerCase().startsWith("<svg")
+  );
+}
+
+function bufferStartsWith(bytes: Buffer, prefix: number[]): boolean {
+  return prefix.every((byte, index) => bytes[index] === byte);
 }
 
 function normalizeImageReferenceValue(value: unknown): OpenAiImageItem {

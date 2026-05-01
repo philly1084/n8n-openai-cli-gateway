@@ -1,6 +1,9 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 import { normalizeToolName } from "../utils/tools";
 import { resolveReasoningEffort } from "../utils/reasoning";
 import { getCodexExecutableCandidates } from "../utils/runtime-template-vars";
@@ -437,6 +440,20 @@ function collectImageOptionLines(request: GatewayRequest): string[] {
   return lines;
 }
 
+function parseRequestedImageCount(request: GatewayRequest): number {
+  const value = findRequestMetadataValue(request, ["n", "count", "image_count", "imageCount"]);
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.min(Math.max(Math.floor(value), 1), 10);
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed)) {
+      return Math.min(Math.max(parsed, 1), 10);
+    }
+  }
+  return 1;
+}
+
 export function buildImageGenerationPrompt(request: GatewayRequest): string {
   const messageText = buildMessageText(request).trim();
   const optionLines = collectImageOptionLines(request);
@@ -457,7 +474,9 @@ export function buildImageGenerationPrompt(request: GatewayRequest): string {
     "You are connected through an OpenAI-compatible gateway images endpoint.",
     "Respond with raw JSON only in one of these shapes:",
     '{"data":[{"b64_json":"<base64>","revised_prompt":"optional"}]}',
-    '{"data":[{"url":"https://example.com/image.png","revised_prompt":"optional"}]}',
+    '{"data":[{"url":"<actual generated image URL returned by the image tool>","revised_prompt":"optional"}]}',
+    "Never return placeholder URLs, sample domains, documentation examples, or a URL you invented.",
+    "Only include a url after an image tool or provider actually returned that URL.",
     "Do not wrap the JSON in markdown.",
     "Do not return explanatory prose before or after the JSON.",
   ]
@@ -818,7 +837,7 @@ export function collectImageGenerationItems(value: unknown): ImageGenerationItem
 }
 
 function normalizeImageGenerationRecord(record: Record<string, unknown>): ImageGenerationItem | null {
-  const url = normalizeImageGenerationUrl(
+  const imageReference =
     record.url ??
       record.image_url ??
       record.imageUrl ??
@@ -826,8 +845,9 @@ function normalizeImageGenerationRecord(record: Record<string, unknown>): ImageG
       record.outputUrl ??
       record.download_url ??
       record.downloadUrl ??
-      record.uri,
-  );
+      record.uri;
+  const url = normalizeImageGenerationUrl(imageReference);
+  const localImage = normalizeLocalImageGenerationReference(imageReference);
   const directB64 = firstNonEmptyString(
     record.b64_json,
     record.b64_data,
@@ -848,6 +868,7 @@ function normalizeImageGenerationRecord(record: Record<string, unknown>): ImageG
       : null;
   const inlineImage = normalizeInlineImageGenerationValue(record.inline_data ?? record.inlineData);
   const b64 =
+    localImage?.b64_json ??
     directB64Image?.b64_json ??
     normalizeBase64ImageData(directB64 ?? "") ??
     nestedResult?.b64_json ??
@@ -892,13 +913,22 @@ function normalizeImageGenerationString(value: string): ImageGenerationItem | nu
     return { b64_json: dataUrlMatch[1].replace(/\s/g, "") };
   }
 
-  const markdownImageMatch = /!\[[^\]]*]\((https?:\/\/[^)\s]+)\)/i.exec(trimmed);
-  if (markdownImageMatch && markdownImageMatch[1]) {
-    return { url: markdownImageMatch[1] };
+  const localImage = normalizeLocalImageGenerationFileUrl(trimmed);
+  if (localImage) {
+    return localImage;
   }
 
-  if (/^https?:\/\//i.test(trimmed)) {
-    return { url: trimmed };
+  const markdownImageMatch = /!\[[^\]]*]\((https?:\/\/[^)\s]+)\)/i.exec(trimmed);
+  if (markdownImageMatch && markdownImageMatch[1]) {
+    const url = normalizeImageGenerationUrl(markdownImageMatch[1]);
+    if (url) {
+      return { url };
+    }
+  }
+
+  const url = normalizeImageGenerationUrl(trimmed);
+  if (url) {
+    return { url };
   }
 
   const b64 = normalizeBase64ImageData(trimmed);
@@ -912,7 +942,10 @@ function normalizeImageGenerationString(value: string): ImageGenerationItem | nu
 function normalizeImageGenerationUrl(value: unknown): string {
   if (typeof value === "string") {
     const trimmed = value.trim();
-    return /^https?:\/\//i.test(trimmed) ? trimmed : "";
+    if (!/^https?:\/\//i.test(trimmed) || /[<>]/.test(trimmed)) {
+      return "";
+    }
+    return isPlaceholderImageGenerationUrl(trimmed) ? "" : trimmed;
   }
 
   if (isObjectRecord(value)) {
@@ -920,6 +953,148 @@ function normalizeImageGenerationUrl(value: unknown): string {
   }
 
   return "";
+}
+
+function isPlaceholderImageGenerationUrl(value: string): boolean {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return (
+      hostname === "example.com" ||
+      hostname === "www.example.com" ||
+      hostname === "example.net" ||
+      hostname === "www.example.net" ||
+      hostname === "example.org" ||
+      hostname === "www.example.org" ||
+      hostname.endsWith(".example")
+    );
+  } catch {
+    return true;
+  }
+}
+
+function normalizeLocalImageGenerationReference(value: unknown): ImageGenerationItem | null {
+  if (typeof value === "string") {
+    return normalizeLocalImageGenerationFileUrl(value);
+  }
+
+  if (isObjectRecord(value)) {
+    return normalizeLocalImageGenerationReference(value.url ?? value.image_url ?? value.imageUrl ?? value.uri);
+  }
+
+  return null;
+}
+
+function normalizeLocalImageGenerationFileUrl(value: string): ImageGenerationItem | null {
+  if (!/^file:\/\//i.test(value.trim())) {
+    return null;
+  }
+
+  try {
+    return normalizeLocalImageGenerationFilePath(fileURLToPath(value));
+  } catch {
+    return null;
+  }
+}
+
+function normalizeLocalImageGenerationFilePath(filePath: string): ImageGenerationItem | null {
+  if (!isAllowedLocalImageGenerationPath(filePath)) {
+    return null;
+  }
+
+  try {
+    const bytes = readFileSync(filePath);
+    if (bytes.length === 0 || bytes.length > 25 * 1024 * 1024 || !isSupportedImageBytes(bytes)) {
+      return null;
+    }
+    return { b64_json: bytes.toString("base64") };
+  } catch {
+    return null;
+  }
+}
+
+function isAllowedLocalImageGenerationPath(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, "/").toLowerCase();
+  return (
+    normalized.includes("/.codex/generated_images/") ||
+    normalized.includes("/.codex/artifacts/")
+  );
+}
+
+function collectRecentCodexGeneratedImageItems(startedAt: number): ImageGenerationItem[] {
+  const root = getCodexGeneratedImagesRoot();
+  if (!root || !existsSync(root)) {
+    return [];
+  }
+
+  const candidates: Array<{ filePath: string; mtimeMs: number }> = [];
+  collectRecentImageFileCandidates(root, startedAt, candidates, 0);
+  candidates.sort((a, b) => a.mtimeMs - b.mtimeMs);
+
+  const items: ImageGenerationItem[] = [];
+  for (const candidate of candidates) {
+    const item = normalizeLocalImageGenerationFilePath(candidate.filePath);
+    if (item) {
+      items.push(item);
+    }
+  }
+  return items;
+}
+
+function getCodexGeneratedImagesRoot(): string {
+  const home = process.env.USERPROFILE || process.env.HOME || "";
+  return home ? join(home, ".codex", "generated_images") : "";
+}
+
+function collectRecentImageFileCandidates(
+  directory: string,
+  earliestMtimeMs: number,
+  out: Array<{ filePath: string; mtimeMs: number }>,
+  depth: number,
+): void {
+  if (depth > 4) {
+    return;
+  }
+
+  let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
+  try {
+    entries = readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const entry of entries) {
+    const filePath = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      collectRecentImageFileCandidates(filePath, earliestMtimeMs, out, depth + 1);
+      continue;
+    }
+    if (!entry.isFile() || !/\.(?:png|jpe?g|webp|gif|svg)$/i.test(entry.name)) {
+      continue;
+    }
+    try {
+      const stat = statSync(filePath);
+      if (stat.mtimeMs >= earliestMtimeMs) {
+        out.push({ filePath, mtimeMs: stat.mtimeMs });
+      }
+    } catch {
+      // Ignore files that disappear while scanning.
+    }
+  }
+}
+
+function isSupportedImageBytes(bytes: Buffer): boolean {
+  return (
+    bufferStartsWith(bytes, [0x89, 0x50, 0x4e, 0x47]) ||
+    bufferStartsWith(bytes, [0xff, 0xd8, 0xff]) ||
+    bufferStartsWith(bytes, [0x47, 0x49, 0x46, 0x38]) ||
+    (bufferStartsWith(bytes, [0x52, 0x49, 0x46, 0x46]) &&
+      bytes.subarray(8, 12).toString("ascii") === "WEBP") ||
+    bytes.subarray(0, 512).toString("utf8").trimStart().toLowerCase().startsWith("<svg")
+  );
+}
+
+function bufferStartsWith(bytes: Buffer, prefix: number[]): boolean {
+  return prefix.every((byte, index) => bytes[index] === byte);
 }
 
 function normalizeInlineImageGenerationValue(value: unknown): ImageGenerationItem | null {
@@ -1394,10 +1569,7 @@ async function run(): Promise<void> {
 
     for (const executable of codexExecutableCandidates) {
       childStderr = "";
-      appServer = spawn(executable, ["app-server", "--listen", "stdio://"], {
-        stdio: ["pipe", "pipe", "pipe"],
-        env: process.env,
-      });
+      appServer = spawnCodexAppServer(executable);
 
       if (appServer.stderr) {
         appServer.stderr.setEncoding("utf8");
@@ -1549,6 +1721,8 @@ async function run(): Promise<void> {
     const reasoningParts: string[] = [];
     const imageItems: ImageGenerationItem[] = [];
     const imageItemKeys = new Set<string>();
+    const requestedImageCount = isImageGenerationRequest ? parseRequestedImageCount(request) : 1;
+    let localImageItemsSeenAt = 0;
     let streamedOutputText = "";
     let streamedReasoningText = "";
     let turnCompleted = false;
@@ -1799,6 +1973,21 @@ async function run(): Promise<void> {
         });
       }
 
+      if (isImageGenerationRequest) {
+        const beforeCount = imageItems.length;
+        appendImageItems(collectRecentCodexGeneratedImageItems(startedAt));
+        if (imageItems.length > beforeCount) {
+          localImageItemsSeenAt = Date.now();
+        }
+        if (
+          localImageItemsSeenAt &&
+          imageItems.length >= requestedImageCount &&
+          Date.now() - localImageItemsSeenAt > 1200
+        ) {
+          break;
+        }
+      }
+
       if (toolCallSeenAt && Date.now() - toolCallSeenAt > 1200) {
         break;
       }
@@ -1915,6 +2104,18 @@ async function run(): Promise<void> {
       process.stderr.write(`${trimmedErr}\n`);
     }
   }
+}
+
+function spawnCodexAppServer(executable: string): ReturnType<typeof spawn> {
+  return spawn(executable, ["app-server", "--listen", "stdio://"], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: process.env,
+    shell: shouldSpawnViaShell(executable),
+  });
+}
+
+function shouldSpawnViaShell(executable: string): boolean {
+  return process.platform === "win32" && /\.(?:cmd|bat)$/i.test(executable.trim());
 }
 
 if (require.main === module) {
