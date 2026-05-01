@@ -155,6 +155,22 @@ function parseFrontendAllowedCwds(): string[] {
     .map((entry) => path.resolve(process.cwd(), entry));
 }
 
+function parseCodexAgentAllowedWorkspaceRoots(frontendAllowedCwds: string[]): string[] {
+  const raw =
+    process.env.CODEX_AGENT_ALLOWED_WORKSPACE_ROOTS?.trim() ||
+    process.env.SYMPHONY_WORKSPACE_ROOTS?.trim() ||
+    process.env.SYMPHONY_WORKSPACE_ROOT?.trim();
+  if (!raw) {
+    return frontendAllowedCwds;
+  }
+
+  return raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => path.resolve(process.cwd(), entry));
+}
+
 function parseRemoteCliToolAuthScopes(): Set<RemoteCliToolAuthScope> {
   const raw = process.env.REMOTE_CLI_TOOL_AUTH_SCOPES?.trim();
   const values = raw ? raw.split(",").map((entry) => entry.trim()).filter(Boolean) : ["frontend", "admin"];
@@ -236,6 +252,8 @@ export function loadAppConfig(): AppConfig {
     );
   }
 
+  const frontendAllowedCwds = parseFrontendAllowedCwds();
+
   return {
     host,
     port,
@@ -243,7 +261,8 @@ export function loadAppConfig(): AppConfig {
     n8nApiKeys: parseApiKeys(),
     adminApiKey,
     frontendApiKeys: parseFrontendApiKeys(),
-    frontendAllowedCwds: parseFrontendAllowedCwds(),
+    frontendAllowedCwds,
+    codexAgentAllowedWorkspaceRoots: parseCodexAgentAllowedWorkspaceRoots(frontendAllowedCwds),
     remoteCliToolAuthScopes: parseRemoteCliToolAuthScopes(),
     logLevel,
     maxJobLogLines,

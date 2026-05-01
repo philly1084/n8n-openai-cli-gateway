@@ -173,6 +173,31 @@ export const remoteAgentTaskCreateRequestSchema = z.object({
   rows: z.number().int().min(5).max(200).default(40),
 }).passthrough();
 
+export const codexAgentRunRequestSchema = z.object({
+  workspacePath: z.string().min(1, "workspacePath is required"),
+  issue: z.object({
+    id: z.string().optional(),
+    identifier: z.string().optional(),
+    title: z.string().optional(),
+    description: z.string().optional(),
+    state: z.string().optional(),
+    labels: z.array(z.string()).optional(),
+  }).passthrough().optional(),
+  prompt: z.string().min(1, "prompt is required"),
+  attempt: z.unknown().optional().nullable(),
+  continuation: z.boolean().optional(),
+  threadId: z.string().min(1).optional(),
+  config: z.object({
+    approvalPolicy: z.string().optional(),
+    threadSandbox: z.string().optional(),
+    turnSandboxPolicy: z.unknown().optional(),
+    turnTimeoutMs: z.number().int().positive().optional(),
+    stallTimeoutMs: z.number().int().positive().optional(),
+    model: z.string().min(1).optional(),
+    reasoningEffort: z.string().min(1).optional(),
+  }).passthrough().optional(),
+}).passthrough();
+
 export type ChatCompletionsRequest = z.infer<typeof chatCompletionsRequestSchema>;
 export type ResponsesRequest = z.infer<typeof responsesRequestSchema>;
 export type ImageGenerationsRequest = z.infer<typeof imageGenerationsRequestSchema>;
@@ -185,3 +210,4 @@ export type ProviderSessionInputRequest = z.infer<typeof providerSessionInputReq
 export type ProviderSessionResizeRequest = z.infer<typeof providerSessionResizeRequestSchema>;
 export type ProviderSessionSignalRequest = z.infer<typeof providerSessionSignalRequestSchema>;
 export type RemoteAgentTaskCreateRequest = z.infer<typeof remoteAgentTaskCreateRequestSchema>;
+export type CodexAgentRunRequest = z.infer<typeof codexAgentRunRequestSchema>;

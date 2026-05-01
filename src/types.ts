@@ -188,6 +188,7 @@ export interface AppConfig {
   adminApiKey: string;
   frontendApiKeys: Set<string>;
   frontendAllowedCwds: string[];
+  codexAgentAllowedWorkspaceRoots: string[];
   remoteCliToolAuthScopes: Set<RemoteCliToolAuthScope>;
   providersPath: string;
   logLevel: "trace" | "debug" | "info" | "warn" | "error" | "fatal";

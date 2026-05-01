@@ -4,10 +4,12 @@ import { adminRoutes } from "./routes/admin";
 import { openAiRoutes } from "./routes/openai";
 import { providerSessionRoutes } from "./routes/provider-sessions";
 import { remoteAgentRoutes } from "./routes/remote-agents";
+import { codexAgentRoutes } from "./routes/codex-agent";
 import { mcpRoutes } from "./routes/mcp";
 import { JobManager } from "./jobs/job-manager";
 import { ProviderSessionManager } from "./jobs/provider-session-manager";
 import { RemoteAgentManager } from "./jobs/remote-agent-manager";
+import { CodexAgentManager } from "./jobs/codex-agent-manager";
 import { RemoteCliToolManager } from "./jobs/remote-cli-tool-manager";
 import { ProviderRegistry } from "./providers/registry";
 import { LruMap } from "./utils/lru-map";
@@ -96,6 +98,9 @@ export function buildServer(
   });
   const remoteCliToolManager = new RemoteCliToolManager(options.remoteCliTargets ?? []);
   const remoteAgentManager = new RemoteAgentManager(providerSessionManager, options.remoteCliTargets ?? []);
+  const codexAgentManager = new CodexAgentManager({
+    allowedWorkspaceRoots: config.codexAgentAllowedWorkspaceRoots,
+  });
 
   // Rate limit store scoped to this server instance
   const rateLimitStore = new LruMap<string, RateLimitEntry>(RATE_LIMIT_STORE_MAX_SIZE);
@@ -217,6 +222,13 @@ export function buildServer(
     frontendApiKeys: config.frontendApiKeys,
   });
 
+  app.register(codexAgentRoutes, {
+    prefix: "/api/codex-agent",
+    manager: codexAgentManager,
+    adminApiKey: config.adminApiKey,
+    frontendApiKeys: config.frontendApiKeys,
+  });
+
   app.register(mcpRoutes, {
     manager: remoteCliToolManager,
     adminApiKey: config.adminApiKey,
@@ -271,6 +283,7 @@ export function buildServer(
       clearInterval(rateLimitCleanupInterval);
       await providerSessionManager.close();
       await remoteCliToolManager.close();
+      await codexAgentManager.close();
 
       app.log.info("Graceful shutdown complete.");
     },

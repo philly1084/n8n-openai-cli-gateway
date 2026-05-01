@@ -716,6 +716,7 @@ function createTestServer(
     adminApiKey: "admin-key",
     frontendApiKeys: new Set(),
     frontendAllowedCwds: [],
+    codexAgentAllowedWorkspaceRoots: [],
     remoteCliToolAuthScopes: new Set(["frontend", "admin"]),
     providersPath: "config/providers.yaml",
     logLevel: "error",

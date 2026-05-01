@@ -339,6 +339,7 @@ function createProviderSessionTestServer() {
     adminApiKey: "admin-key",
     frontendApiKeys: new Set(["frontend-key"]),
     frontendAllowedCwds: [process.cwd()],
+    codexAgentAllowedWorkspaceRoots: [process.cwd()],
     remoteCliToolAuthScopes: new Set(["frontend", "admin"]),
     providersPath: "config/providers.yaml",
     logLevel: "error",

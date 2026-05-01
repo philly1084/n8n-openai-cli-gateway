@@ -112,6 +112,7 @@ Optional environment variables:
 - `OPENAI_REASONING_EFFORT` default reasoning effort when requests omit it
 - `FRONTEND_API_KEY` / `FRONTEND_API_KEYS` dedicated keys for trusted frontend session clients
 - `FRONTEND_ALLOWED_CWDS` comma-separated working-directory roots that frontend session clients may request
+- `CODEX_AGENT_ALLOWED_WORKSPACE_ROOTS` comma-separated workspace roots for `/api/codex-agent/*`; falls back to `SYMPHONY_WORKSPACE_ROOTS`, `SYMPHONY_WORKSPACE_ROOT`, then `FRONTEND_ALLOWED_CWDS`
 - `REMOTE_CLI_TOOL_AUTH_SCOPES` comma-separated scopes allowed to use `POST /mcp`; defaults to `frontend,admin`, set `n8n,frontend,admin` only for trusted server-side Agents SDK runtimes
 
 ### Groq API with model discovery
@@ -301,6 +302,59 @@ Response:
 
 The task stream is Server-Sent Events. It includes normal provider-session `output` events plus a structured `reasoning` event with non-secret routing context so the chat UI can show what agent, target, cwd, and progress markers are active. It does not expose hidden model chain-of-thought.
 
+## 4d) Codex frontend agent runs
+
+Use `/api/codex-agent/*` when a trusted frontend service, such as Symphony, needs to run a local Codex app-server turn directly in a checked-out workspace. Requests must use a `FRONTEND_API_KEY`/`FRONTEND_API_KEYS` key or the admin key. The gateway validates `workspacePath` against `CODEX_AGENT_ALLOWED_WORKSPACE_ROOTS` and starts `codex app-server` with `cwd` set to that workspace.
+
+```http
+POST /api/codex-agent/run
+```
+
+```json
+{
+  "workspacePath": "C:\\tmp\\symphony_workspaces\\KIMI-123",
+  "issue": {
+    "id": "linear-id",
+    "identifier": "KIMI-123",
+    "title": "Fix login redirect",
+    "description": "...",
+    "state": "Todo",
+    "labels": ["frontend"]
+  },
+  "prompt": "Rendered WORKFLOW.md prompt",
+  "attempt": null,
+  "continuation": false,
+  "config": {
+    "approvalPolicy": "never",
+    "threadSandbox": "workspace-write",
+    "turnSandboxPolicy": { "type": "workspace-write" },
+    "turnTimeoutMs": 3600000,
+    "stallTimeoutMs": 300000
+  }
+}
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "runId": "run_...",
+  "threadId": "thread_...",
+  "turnId": "turn_...",
+  "sessionId": "thread_...-turn_...",
+  "status": "running"
+}
+```
+
+Lifecycle endpoints:
+
+- `GET /api/codex-agent/runs/:runId`
+- `GET /api/codex-agent/runs/:runId/events`
+- `POST /api/codex-agent/runs/:runId/cancel`
+
+The event stream is SSE and emits `session_started`, `output`, and one terminal event: `turn_completed`, `turn_failed`, `turn_cancelled`, or `turn_input_required`. Approval and user-input requests are denied and converted into `turn_input_required` so frontend jobs do not wait forever.
+
 Agents SDK server-side usage:
 
 ```ts
@@ -412,6 +466,7 @@ Environment variables for CLI:
 | `RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window (milliseconds) |
 | `MAX_REQUEST_BODY_SIZE` | `10485760` | Max request body size in bytes (10MB) |
 | `OPENAI_REASONING_EFFORT` | provider default | Default reasoning effort for chat/responses requests |
+| `CODEX_AGENT_ALLOWED_WORKSPACE_ROOTS` | `SYMPHONY_WORKSPACE_ROOTS`, `SYMPHONY_WORKSPACE_ROOT`, then `FRONTEND_ALLOWED_CWDS` | Comma-separated roots allowed for `/api/codex-agent/*` `workspacePath` values |
 | `REMOTE_CLI_TOOL_AUTH_SCOPES` | `frontend,admin` | Comma-separated auth scopes allowed to use `POST /mcp` remote CLI tools (`admin`, `frontend`, `n8n`) |
 | `OPENAI_API_KEY` | unset | API key for optional OpenAI `type: openai` providers |
 | `GROQ_API_KEY` | unset | API key for Groq `type: openai` providers |
