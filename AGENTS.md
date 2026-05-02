@@ -98,6 +98,7 @@ npm start
 | `LOG_LEVEL` | `info` | Fastify log level (trace/debug/info/warn/error/fatal) |
 | `MAX_JOB_LOG_LINES` | `300` | Max log lines to retain per login job |
 | `SHUTDOWN_TIMEOUT_MS` | `30000` | Graceful shutdown timeout (milliseconds) |
+| `REQUEST_TIMEOUT_MS` | `300000` | HTTP request/socket timeout for long-running provider requests (milliseconds) |
 | `RATE_LIMIT_MAX` | `100` | Max requests per rate limit window |
 | `RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window (milliseconds) |
 | `MAX_REQUEST_BODY_SIZE` | `10485760` | Max request body size in bytes (10MB) |

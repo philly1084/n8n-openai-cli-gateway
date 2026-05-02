@@ -98,6 +98,8 @@ spec:
               value: "0.0.0.0"
             - name: LOG_LEVEL
               value: "info"
+            - name: REQUEST_TIMEOUT_MS
+              value: "1200000"
             - name: PROVIDERS_CONFIG_PATH
               value: /app/config/providers.yaml
             - name: CODEX_EXECUTABLE

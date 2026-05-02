@@ -221,6 +221,12 @@ export function loadAppConfig(): AppConfig {
     throw new Error(`Invalid SHUTDOWN_TIMEOUT_MS: ${shutdownTimeoutMsRaw}`);
   }
 
+  const requestTimeoutMsRaw = process.env.REQUEST_TIMEOUT_MS?.trim() || "300000";
+  const requestTimeoutMs = Number(requestTimeoutMsRaw);
+  if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1000) {
+    throw new Error(`Invalid REQUEST_TIMEOUT_MS: ${requestTimeoutMsRaw}`);
+  }
+
   // Rate limiting configuration
   const rateLimitMaxRaw = process.env.RATE_LIMIT_MAX?.trim() || "100";
   const rateLimitMax = Number(rateLimitMaxRaw);
@@ -267,6 +273,7 @@ export function loadAppConfig(): AppConfig {
     logLevel,
     maxJobLogLines,
     shutdownTimeoutMs,
+    requestTimeoutMs,
     rateLimitMax,
     rateLimitWindowMs,
     maxRequestBodySize,

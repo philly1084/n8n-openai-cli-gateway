@@ -19,7 +19,6 @@ import { metrics, trackRequest } from "./metrics";
 // Rate limit configuration constants
 const RATE_LIMIT_STORE_MAX_SIZE = 10000;
 const RATE_LIMIT_CLEANUP_INTERVAL_MS = 60000;
-const REQUEST_TIMEOUT_MS = 300000; // 5 minutes
 
 // LRU-based rate limit store to prevent memory leaks
 interface RateLimitEntry {
@@ -86,10 +85,10 @@ export function buildServer(
     },
     // Request body size limit
     bodyLimit: config.maxRequestBodySize,
-    // Connection timeout
-    connectionTimeout: REQUEST_TIMEOUT_MS,
-    // Keep alive timeout
-    keepAliveTimeout: REQUEST_TIMEOUT_MS,
+    // Keep long-running CLI-backed requests open, especially image batches.
+    connectionTimeout: config.requestTimeoutMs,
+    keepAliveTimeout: config.requestTimeoutMs,
+    requestTimeout: config.requestTimeoutMs,
   });
 
   const jobManager = new JobManager(config.maxJobLogLines);

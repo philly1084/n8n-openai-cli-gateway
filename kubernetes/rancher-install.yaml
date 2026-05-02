@@ -170,7 +170,7 @@ data:
             - "{{provider_model}}"
           input: request_json_stdin
           output: json_contract
-          timeoutMs: 240000
+          timeoutMs: 600000
         auth:
           loginCommand:
             executable: "{{codex_executable}}"
@@ -613,6 +613,8 @@ spec:
               value: "info"
             - name: MAX_JOB_LOG_LINES
               value: "500"
+            - name: REQUEST_TIMEOUT_MS
+              value: "1200000"
             - name: PROVIDERS_CONFIG_PATH
               value: /app/config/providers.yaml
             - name: CODEX_EXECUTABLE

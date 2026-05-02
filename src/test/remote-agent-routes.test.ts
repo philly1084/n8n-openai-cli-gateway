@@ -212,6 +212,7 @@ function createRemoteAgentTestServer() {
     logLevel: "error",
     maxJobLogLines: 10,
     shutdownTimeoutMs: 1000,
+    requestTimeoutMs: 1000,
     rateLimitMax: 100,
     rateLimitWindowMs: 60_000,
     maxRequestBodySize: 1024 * 1024,

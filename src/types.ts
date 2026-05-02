@@ -195,6 +195,8 @@ export interface AppConfig {
   maxJobLogLines: number;
   // Graceful shutdown timeout in milliseconds
   shutdownTimeoutMs: number;
+  // HTTP request/socket timeout in milliseconds
+  requestTimeoutMs: number;
   // Rate limiting configuration
   rateLimitMax: number;
   rateLimitWindowMs: number;

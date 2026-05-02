@@ -86,6 +86,20 @@ test("loadAppConfig parses explicit remote CLI tool auth scopes", () => {
   }
 });
 
+test("loadAppConfig parses request timeout", () => {
+  const previous = snapshotEnv();
+  try {
+    process.env.N8N_API_KEY = "n8n";
+    process.env.ADMIN_API_KEY = "admin";
+    process.env.REQUEST_TIMEOUT_MS = "1200000";
+
+    const config = loadAppConfig();
+    assert.equal(config.requestTimeoutMs, 1_200_000);
+  } finally {
+    restoreEnv(previous);
+  }
+});
+
 function writeTempProvidersFile(contents: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), "gateway-config-test-"));
   const file = path.join(dir, "providers.yaml");

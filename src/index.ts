@@ -62,6 +62,7 @@ async function main(): Promise<void> {
       remoteCliTargetsConfigured: providersFile.remoteCliTargets?.length ?? 0,
       remoteCliToolAuthScopes: [...config.remoteCliToolAuthScopes],
       shutdownTimeoutMs: config.shutdownTimeoutMs,
+      requestTimeoutMs: config.requestTimeoutMs,
       defaultReasoningEffort: config.defaultReasoningEffort,
     },
     "gateway listening",
