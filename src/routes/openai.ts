@@ -1202,34 +1202,47 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
         );
       }
 
-      const result = await options.registry.runModel(effectiveModel, {
-        requestId: makeId("req"),
-        messages: [{ role: "user", content: prompt }],
-        tools: [],
-        requestKind: "images_generations",
-        metadata: {
-          ...(body as Record<string, unknown>),
-          requested_model: body.model,
-          effective_model: effectiveModel,
-        },
-      });
+      const images: OpenAiImageItem[] = [];
+      const providerResults: ProviderResult[] = [];
 
-      const images = parseImageGenerationsFromResult(result);
-      if (images.length === 0) {
-        request.log.warn(
-          {
-            requestedModel: body.model,
-            effectiveModel,
-            providerResult: summarizeProviderImageResult(result),
+      for (let imageIndex = 0; imageIndex < n && images.length < n; imageIndex += 1) {
+        const result = await options.registry.runModel(effectiveModel, {
+          requestId: makeId("req"),
+          messages: [{ role: "user", content: prompt }],
+          tools: [],
+          requestKind: "images_generations",
+          metadata: {
+            ...(body as Record<string, unknown>),
+            n: 1,
+            requested_count: n,
+            image_index: imageIndex,
+            requested_model: body.model,
+            effective_model: effectiveModel,
           },
-          "Provider returned no parseable image data.",
-        );
-        return sendOpenAiError(
-          reply,
-          500,
-          "Provider returned no parseable image data.",
-          "provider_error",
-        );
+        });
+
+        providerResults.push(result);
+        const parsedImages = parseImageGenerationsFromResult(result);
+        if (parsedImages.length === 0) {
+          request.log.warn(
+            {
+              requestedModel: body.model,
+              effectiveModel,
+              requestedCount: n,
+              imageIndex,
+              providerResult: summarizeProviderImageResult(result),
+            },
+            "Provider returned no parseable image data.",
+          );
+          return sendOpenAiError(
+            reply,
+            500,
+            "Provider returned no parseable image data.",
+            "provider_error",
+          );
+        }
+
+        images.push(...parsedImages.slice(0, n - images.length));
       }
 
       request.log.info(
@@ -1238,15 +1251,16 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
           effectiveModel,
           requestedCount: n,
           parsedCount: images.length,
-          returnedCount: Math.min(images.length, n),
-          images: summarizeImageItemsForLog(images.slice(0, n)),
+          providerCallCount: providerResults.length,
+          returnedCount: images.length,
+          images: summarizeImageItemsForLog(images),
         },
         "Image generation response parsed.",
       );
 
       return {
         created: Math.floor(Date.now() / 1000),
-        data: images.slice(0, n),
+        data: images,
       };
     } catch (error) {
       return handleModelError(reply, error);

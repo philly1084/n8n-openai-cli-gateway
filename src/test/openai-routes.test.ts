@@ -753,6 +753,63 @@ test("images route prefers explicit Codex-backed image model when available", as
   }
 });
 
+test("images route fans out multi-image requests into single-image provider calls", async () => {
+  const requestedCounts: unknown[] = [];
+  const imageIndexes: unknown[] = [];
+  let callCount = 0;
+
+  const server = createTestServer(async (_modelId, request) => {
+    const metadata = request.metadata ?? {};
+    requestedCounts.push(metadata.n);
+    imageIndexes.push(metadata.image_index);
+    callCount += 1;
+    return {
+      outputText: "",
+      toolCalls: [],
+      finishReason: "stop",
+      raw: {
+        data: [
+          {
+            url: `https://storage.googleapis.com/demo-bucket/image-${callCount}.png`,
+          },
+        ],
+      },
+    };
+  });
+
+  try {
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/v1/images/generations",
+      headers: {
+        authorization: "Bearer test-key",
+      },
+      payload: {
+        model: "demo-model",
+        prompt: "Three lighthouse variations",
+        n: 3,
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    const body = response.json() as Record<string, unknown>;
+    const data = body.data as Array<Record<string, unknown>>;
+    assert.equal(callCount, 3);
+    assert.deepEqual(requestedCounts, [1, 1, 1]);
+    assert.deepEqual(imageIndexes, [0, 1, 2]);
+    assert.deepEqual(
+      data.map((item) => item.url),
+      [
+        "https://storage.googleapis.com/demo-bucket/image-1.png",
+        "https://storage.googleapis.com/demo-bucket/image-2.png",
+        "https://storage.googleapis.com/demo-bucket/image-3.png",
+      ],
+    );
+  } finally {
+    await server.close();
+  }
+});
+
 function createTestServer(
   runModel: (
     modelId: string,
