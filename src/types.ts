@@ -50,6 +50,7 @@ export interface ProviderResult {
   toolCalls: ProviderToolCall[];
   finishReason: "stop" | "tool_calls" | "length" | "error";
   reasoningText?: string;
+  resolvedModel?: string;
   raw?: unknown;
 }
 
@@ -126,7 +127,14 @@ export interface ProviderModelConfig {
   capabilities?: ModelCapability[];
 }
 
-export type ModelCapability = "image_generation";
+export type ModelCapability =
+  | "chat"
+  | "responses"
+  | "tools"
+  | "streaming"
+  | "reasoning"
+  | "structured_outputs"
+  | "image_generation";
 
 export interface ModelDiscoveryConfig {
   enabled?: boolean;

@@ -15,6 +15,10 @@ import { OpenAiCompatibleProvider } from "./openai-compatible-provider";
 import type { Provider } from "./provider";
 import { trackProvider, trackFallback } from "../metrics";
 import { isSyntheticAssistantOutputText, normalizeAssistantResult } from "../utils/assistant-output";
+import { extractTextContent } from "../utils/prompt";
+
+const AUTO_MODEL_ID = "auto";
+const AUTO_PROVIDER_ID = "gateway";
 
 interface ModelBinding {
   modelId: string;
@@ -45,6 +49,9 @@ export class ProviderRegistry {
       registry.providers.set(provider.id, provider);
 
       for (const model of provider.models) {
+        if (model.id === AUTO_MODEL_ID) {
+          throw new Error(`Model id ${AUTO_MODEL_ID} is reserved for gateway auto routing.`);
+        }
         if (registry.models.has(model.id)) {
           throw new Error(`Duplicate model id: ${model.id}`);
         }
@@ -54,7 +61,7 @@ export class ProviderRegistry {
           provider,
           description: model.description,
           fallbackModelIds: model.fallbackModels || [],
-          capabilities: model.capabilities || [],
+          capabilities: normalizeModelCapabilities(model.capabilities),
         });
         registry.modelStats.registerModel({
           modelId: model.id,
@@ -81,14 +88,32 @@ export class ProviderRegistry {
     fallbackModels: string[];
     capabilities: ModelCapability[];
   }> {
-    return [...this.models.values()].map((binding) => ({
-      id: binding.modelId,
-      description: binding.description,
-      providerId: binding.provider.id,
-      providerModel: binding.providerModel,
-      fallbackModels: binding.fallbackModelIds,
-      capabilities: binding.capabilities,
-    }));
+    return [
+      {
+        id: AUTO_MODEL_ID,
+        description: "Gateway-native auto router across all configured compatible models.",
+        providerId: AUTO_PROVIDER_ID,
+        providerModel: "gateway/auto",
+        fallbackModels: [],
+        capabilities: [
+          "chat",
+          "responses",
+          "tools",
+          "streaming",
+          "reasoning",
+          "structured_outputs",
+          "image_generation",
+        ],
+      },
+      ...[...this.models.values()].map((binding) => ({
+        id: binding.modelId,
+        description: binding.description,
+        providerId: binding.provider.id,
+        providerModel: binding.providerModel,
+        fallbackModels: binding.fallbackModelIds,
+        capabilities: binding.capabilities,
+      })),
+    ];
   }
 
   listProviders(): Provider[] {
@@ -136,13 +161,18 @@ export class ProviderRegistry {
     modelId: string,
     request: Omit<UnifiedRequest, "model" | "providerModel">,
   ): Promise<ProviderResult> {
-    if (!this.models.has(modelId)) {
+    const autoSelection = modelId === AUTO_MODEL_ID
+      ? this.selectAutoModel(request)
+      : undefined;
+
+    if (!autoSelection && !this.models.has(modelId)) {
       throw new Error(`Unknown model: ${modelId}`);
     }
 
     const attempted: string[] = [];
     const visited = new Set<string>();
-    let currentModelId: string | undefined = modelId;
+    let currentModelId: string | undefined = autoSelection?.modelId ?? modelId;
+    const autoFallbackModelIds = autoSelection?.fallbackModelIds ?? [];
     let lastError: unknown;
 
     while (currentModelId) {
@@ -185,6 +215,13 @@ export class ProviderRegistry {
       });
 
       try {
+        const requiredCapability = requiredCapabilityForRequest(request);
+        if (requiredCapability && !bindingSupportsCapability(binding, requiredCapability)) {
+          throw new Error(
+            `Model ${binding.modelId} does not support ${requiredCapability} requests.`,
+          );
+        }
+
         const rawResult = await binding.provider.run({
           ...request,
           model: binding.modelId,
@@ -203,7 +240,10 @@ export class ProviderRegistry {
           durationMs: Date.now() - startedAt,
         });
         trackProvider(binding.provider.id, binding.modelId, true, Date.now() - startedAt);
-        return result;
+        return {
+          ...result,
+          resolvedModel: result.resolvedModel ?? binding.modelId,
+        };
       } catch (error) {
         lastError = error;
         const failureKind = this.modelStats.recordFailure({
@@ -216,11 +256,17 @@ export class ProviderRegistry {
           error,
         });
         trackProvider(binding.provider.id, binding.modelId, false, Date.now() - startedAt);
-        const nextModelId = binding.fallbackModelIds.find(
-          (fallback) =>
-            !visited.has(fallback) &&
-            (!isImageGenerationRequest(request) || this.modelSupportsImageGeneration(fallback)),
-        );
+        const nextModelId =
+          binding.fallbackModelIds.find(
+            (fallback) =>
+              !visited.has(fallback) &&
+              this.modelSupportsRequest(fallback, request),
+          ) ??
+          autoFallbackModelIds.find(
+            (fallback) =>
+              !visited.has(fallback) &&
+              this.modelSupportsRequest(fallback, request),
+          );
         if (!nextModelId) {
           break;
         }
@@ -261,10 +307,82 @@ export class ProviderRegistry {
     );
   }
 
+  private modelSupportsRequest(
+    modelId: string,
+    request: Omit<UnifiedRequest, "model" | "providerModel">,
+  ): boolean {
+    if (isImageGenerationRequest(request)) {
+      return this.modelSupportsImageGeneration(modelId);
+    }
+
+    const requiredCapability = requiredCapabilityForRequest(request);
+    if (!requiredCapability) {
+      return true;
+    }
+
+    const binding = this.models.get(modelId);
+    return Boolean(binding && bindingSupportsCapability(binding, requiredCapability));
+  }
+
+  private selectAutoModel(
+    request: Omit<UnifiedRequest, "model" | "providerModel">,
+  ): { modelId: string; fallbackModelIds: string[] } {
+    const candidates = this.rankAutoCandidates(request);
+    const selected = candidates[0];
+    if (!selected) {
+      throw new Error("Auto routing could not find a compatible model.");
+    }
+
+    return {
+      modelId: selected.binding.modelId,
+      fallbackModelIds: candidates.slice(1).map((candidate) => candidate.binding.modelId),
+    };
+  }
+
+  private rankAutoCandidates(
+    request: Omit<UnifiedRequest, "model" | "providerModel">,
+  ): Array<{ binding: ModelBinding; score: number; index: number }> {
+    const promptText = requestTextForScoring(request);
+    const complexity = scorePromptComplexity(promptText);
+    const codingSignal = hasCodingSignal(promptText, request.metadata);
+    const hasTools = request.tools.length > 0;
+    const wantsStrongReasoning =
+      request.reasoningEffort === "high" || request.reasoningEffort === "xhigh";
+    const requiredCapability = requiredCapabilityForRequest(request);
+
+    return [...this.models.values()]
+      .map((binding, index) => {
+        if (!this.modelSupportsRequest(binding.modelId, request)) {
+          return undefined;
+        }
+
+        const stats = this.modelStats.snapshotModel(binding.modelId);
+        let score = 100 - index * 0.01;
+        score += scoreModelHealth(stats);
+        score += scoreModelName(binding, {
+          complexity,
+          codingSignal,
+          hasTools,
+          wantsStrongReasoning,
+          requiredCapability,
+          requestKind: request.requestKind,
+        });
+
+        return { binding, score, index };
+      })
+      .filter((candidate): candidate is { binding: ModelBinding; score: number; index: number } =>
+        Boolean(candidate),
+      )
+      .sort((a, b) => b.score - a.score || a.index - b.index);
+  }
+
   async *runModelStream(
     modelId: string,
     request: Omit<UnifiedRequest, "model" | "providerModel">,
   ): AsyncIterable<ProviderStreamEvent> {
+    if (modelId === AUTO_MODEL_ID) {
+      throw new Error("Auto model routing does not support provider-native streaming.");
+    }
     const binding = this.models.get(modelId);
     if (!binding) {
       throw new Error(`Unknown model: ${modelId}`);
@@ -321,6 +439,41 @@ export class ProviderRegistry {
 
 function bindingSupportsImageGeneration(binding: ModelBinding): boolean {
   return binding.capabilities.includes("image_generation");
+}
+
+function bindingSupportsCapability(
+  binding: ModelBinding,
+  capability: ModelCapability,
+): boolean {
+  return binding.capabilities.includes(capability);
+}
+
+function normalizeModelCapabilities(
+  capabilities: ModelCapability[] | undefined,
+): ModelCapability[] {
+  if (capabilities && capabilities.length > 0) {
+    return [...new Set(capabilities)];
+  }
+
+  return ["chat", "responses", "tools", "reasoning", "structured_outputs"];
+}
+
+function requiredCapabilityForRequest(
+  request: Omit<UnifiedRequest, "model" | "providerModel">,
+): ModelCapability | undefined {
+  if (request.requestKind === "images_generations") {
+    return "image_generation";
+  }
+
+  if (request.requestKind === "chat_completions") {
+    return "chat";
+  }
+
+  if (request.requestKind === "responses") {
+    return "responses";
+  }
+
+  return undefined;
 }
 
 function isImageGenerationRequest(
@@ -455,4 +608,127 @@ function buildInvalidProviderResultError(
 
   const excerpt = result.outputText.trim().replace(/\s+/g, " ").slice(0, 160);
   return `Provider returned a synthetic failure assistant completion. ${details} output_excerpt=${JSON.stringify(excerpt)}`.trim();
+}
+
+function requestTextForScoring(
+  request: Omit<UnifiedRequest, "model" | "providerModel">,
+): string {
+  const metadataPrompt =
+    request.metadata && "prompt" in request.metadata
+      ? extractTextContent(request.metadata.prompt).trim()
+      : "";
+  const messagesText = request.messages
+    .map((message) => message.content)
+    .filter(Boolean)
+    .join("\n\n");
+  return `${metadataPrompt}\n\n${messagesText}`.trim();
+}
+
+function scorePromptComplexity(text: string): number {
+  const length = text.length;
+  let score = 0;
+  if (length > 12000) {
+    score += 3;
+  } else if (length > 4000) {
+    score += 2;
+  } else if (length > 1200) {
+    score += 1;
+  }
+
+  if (/debug|refactor|architect|security|reason|analy[sz]e|compare|plan|multi[- ]step/i.test(text)) {
+    score += 1;
+  }
+
+  return score;
+}
+
+function hasCodingSignal(
+  text: string,
+  metadata: Record<string, unknown> | undefined,
+): boolean {
+  const metadataText = metadata ? extractTextContent(metadata) : "";
+  return /code|typescript|javascript|python|react|node|repo|git|diff|patch|bug|stack trace|kubectl|docker|build|test|deploy|function|class|api|endpoint/i.test(
+    `${text}\n${metadataText}`,
+  );
+}
+
+function scoreModelHealth(stats: ModelStatsModelSnapshot | undefined): number {
+  if (!stats) {
+    return 0;
+  }
+
+  let score = 0;
+  if (stats.suggestedState === "healthy") {
+    score += 8;
+  } else if (stats.suggestedState === "degraded") {
+    score -= 15;
+  } else if (
+    stats.suggestedState === "cooldown" ||
+    stats.suggestedState === "rate_limited" ||
+    stats.suggestedState === "capacity_exhausted" ||
+    stats.suggestedState === "quota_exhausted" ||
+    stats.suggestedState === "auth_blocked"
+  ) {
+    score -= 120;
+  }
+
+  if (stats.successes > 0) {
+    score += Math.min(12, stats.successRate * 12);
+  }
+  score -= Math.min(18, stats.consecutiveFailures * 6);
+  score -= Math.min(8, stats.averageSuccessLatencyMs / 15000);
+
+  return score;
+}
+
+function scoreModelName(
+  binding: ModelBinding,
+  context: {
+    complexity: number;
+    codingSignal: boolean;
+    hasTools: boolean;
+    wantsStrongReasoning: boolean;
+    requiredCapability?: ModelCapability;
+    requestKind?: string;
+  },
+): number {
+  const name = `${binding.modelId} ${binding.providerModel} ${binding.description ?? ""}`.toLowerCase();
+  let score = 0;
+
+  const isStrong = /gpt-5\.5|gpt-5\.4|opus|sonnet|gemini.*pro|deepseek.*(r1|reason|v4-pro)|reasoner|120b|k2|pro-preview|pro\b/.test(name);
+  const isFast = /flash|mini|lite|instant|haiku|8b|20b|free|compound-mini/.test(name);
+  const isCoding = /kimi|codex|coder|codestral|deepseek|qwen|gpt-5|claude|sonnet/.test(name);
+
+  if (context.requestKind === "images_generations") {
+    score += bindingSupportsImageGeneration(binding) ? 100 : -100;
+  }
+
+  if (context.hasTools) {
+    score += bindingSupportsCapability(binding, "tools") ? 24 : -80;
+    if (/compound(?:-mini)?|openrouter\/free/.test(name)) {
+      score -= 12;
+    }
+  }
+
+  if (context.requiredCapability && bindingSupportsCapability(binding, context.requiredCapability)) {
+    score += 10;
+  }
+
+  if (context.codingSignal) {
+    score += isCoding ? 28 : 0;
+    score -= /whisper|speech|tts|image/.test(name) ? 60 : 0;
+  }
+
+  if (context.wantsStrongReasoning || context.complexity >= 2) {
+    score += isStrong ? 24 : 0;
+    score -= isFast && !isStrong ? 8 : 0;
+  } else if (context.complexity === 0) {
+    score += isFast ? 16 : 0;
+  }
+
+  if (/openrouter/.test(name)) {
+    score += 4;
+  }
+
+  return score;
 }

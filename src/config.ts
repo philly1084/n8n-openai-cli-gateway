@@ -18,7 +18,15 @@ const commandSchema = z.object({
   timeoutMs: z.number().int().positive().default(180000),
 });
 
-const modelCapabilitySchema = z.enum(["image_generation"]);
+const modelCapabilitySchema = z.enum([
+  "chat",
+  "responses",
+  "tools",
+  "streaming",
+  "reasoning",
+  "structured_outputs",
+  "image_generation",
+]);
 
 const providerModelSchema = z.object({
   id: z.string().min(1),

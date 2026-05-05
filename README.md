@@ -67,6 +67,8 @@ Each provider defines:
 
 The gateway also supports `type: openai` providers for OpenAI-compatible remote APIs such as Groq and DeepSeek. Those providers can auto-discover models from `/models` at startup and register them automatically.
 
+The gateway also exposes a virtual `auto` model. It is not configured in `providers.yaml`; it appears automatically in `GET /v1/models` and picks a compatible configured model for each request. The router scores request kind, image generation, tool use, reasoning effort, prompt complexity, coding/build signals, configured capabilities, and recent model health. The response `model` field is the concrete model that actually handled the request when that is known.
+
 Supported template variables in commands:
 
 - `{{model}}` requested model id from API
@@ -82,6 +84,7 @@ Supported template variables in commands:
 Fallback behavior:
 
 - The gateway first runs the requested model id.
+- If the requested model id is `auto`, the gateway first selects the highest-scoring compatible configured model, then uses the rest of the compatible ranked models as an implicit fallback pool.
 - If that model's command exits with an error and `fallbackModels` are configured, it tries each fallback id in order.
 - Fallbacks can cross providers (for example Gemini -> Codex or Codex -> Gemini).
 

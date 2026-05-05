@@ -484,6 +484,10 @@ function buildChatCompletionMessage(result: ProviderResult): Record<string, unkn
   return message;
 }
 
+function resolveReturnedModel(requestedModel: string, result?: ProviderResult): string {
+  return result?.resolvedModel || requestedModel;
+}
+
 function startSseStream(reply: FastifyReply): void {
   reply.hijack();
   reply.raw.setHeader("Content-Type", "text/event-stream");
@@ -1073,7 +1077,8 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
           return reply;
         }
 
-        logBlankAssistantResult(app.log.warn.bind(app.log), body.model, streamedResult, "/responses");
+        const returnedModel = resolveReturnedModel(body.model, streamedResult);
+        logBlankAssistantResult(app.log.warn.bind(app.log), returnedModel, streamedResult, "/responses");
         if (streamedResult.outputText) {
           writeResponseStreamEvent({
             type: "response.output_text.done",
@@ -1097,7 +1102,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
           id: responseId,
           createdAt,
           completedAt: createdAt,
-          model: body.model,
+          model: returnedModel,
           instructions: instructions || undefined,
           previousResponseId,
           conversationId,
@@ -1117,7 +1122,8 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
       }
 
       const result = normalizeAssistantResult(await options.registry.runModel(body.model, runRequest));
-      logBlankAssistantResult(app.log.warn.bind(app.log), body.model, result, "/responses");
+      const returnedModel = resolveReturnedModel(body.model, result);
+      logBlankAssistantResult(app.log.warn.bind(app.log), returnedModel, result, "/responses");
       const outputItems = buildResponseOutputItems(result);
 
       for (const call of result.toolCalls) {
@@ -1135,7 +1141,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
         id: responseId,
         createdAt,
         completedAt: createdAt,
-        model: body.model,
+        model: returnedModel,
         instructions: instructions || undefined,
         previousResponseId,
         conversationId,
@@ -1153,7 +1159,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
           object: "response.chunk",
           created_at: createdAt,
           status: "completed",
-          model: body.model,
+          model: returnedModel,
           previous_response_id: previousResponseId,
           conversation: {
             id: conversationId,
@@ -1719,7 +1725,8 @@ async function handleChatCompletionsRequest(
     }
 
     const result = normalizeAssistantResult(await registry.runModel(body.model, runRequest));
-    logBlankAssistantResult(reply.log.warn.bind(reply.log), body.model, result, "/chat/completions");
+    const returnedModel = resolveReturnedModel(body.model, result);
+    logBlankAssistantResult(reply.log.warn.bind(reply.log), returnedModel, result, "/chat/completions");
 
     // Log tool calls for debugging
     if (result.toolCalls.length > 0) {
@@ -1745,7 +1752,7 @@ async function handleChatCompletionsRequest(
         id: respId,
         object: "chat.completion.chunk",
         created,
-        model: body.model,
+        model: returnedModel,
         choices: [
           {
             index: 0,
@@ -1770,7 +1777,7 @@ async function handleChatCompletionsRequest(
         id: makeId("chatcmpl"),
         object: "chat.completion",
         created: Math.floor(Date.now() / 1000),
-        model: body.model,
+        model: returnedModel,
         choices: [
           {
             index: 0,

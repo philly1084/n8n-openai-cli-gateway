@@ -279,3 +279,279 @@ test("registry falls back when image generation raw payload has no image data", 
     }
   }
 });
+
+test("registry rejects image-only models for chat requests", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.TEST_REGISTRY_IMAGE_API_KEY;
+  process.env.TEST_REGISTRY_IMAGE_API_KEY = "test-key";
+  let providerCalled = false;
+
+  globalThis.fetch = (async () => {
+    providerCalled = true;
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: "This should not be called.",
+            },
+            finish_reason: "stop",
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      },
+    );
+  }) as typeof fetch;
+
+  try {
+    const registry = await ProviderRegistry.create([
+      {
+        id: "openai-image-api",
+        type: "openai",
+        baseUrl: "https://api.openai.test/v1",
+        apiKeyEnv: "TEST_REGISTRY_IMAGE_API_KEY",
+        models: [
+          {
+            id: "gpt-image-test",
+            providerModel: "gpt-image-test",
+            capabilities: ["image_generation"],
+          },
+        ],
+      },
+    ]);
+
+    await assert.rejects(
+      registry.runModel("gpt-image-test", {
+        requestId: "req_chat_image_only",
+        messages: [{ role: "user", content: "Hello." }],
+        tools: [],
+        requestKind: "chat_completions",
+      }),
+      /does not support chat requests/i,
+    );
+    assert.equal(providerCalled, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalApiKey === undefined) {
+      delete process.env.TEST_REGISTRY_IMAGE_API_KEY;
+    } else {
+      process.env.TEST_REGISTRY_IMAGE_API_KEY = originalApiKey;
+    }
+  }
+});
+
+test("registry skips text-only fallbacks for image generation requests", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.TEST_REGISTRY_IMAGE_API_KEY;
+  const requestedProviderModels: string[] = [];
+  process.env.TEST_REGISTRY_IMAGE_API_KEY = "test-key";
+
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string };
+    requestedProviderModels.push(body.model ?? "");
+    return new Response(JSON.stringify({ created: 1, data: [] }), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+  }) as typeof fetch;
+
+  try {
+    const registry = await ProviderRegistry.create([
+      {
+        id: "openai-image-api",
+        type: "openai",
+        baseUrl: "https://api.openai.test/v1",
+        apiKeyEnv: "TEST_REGISTRY_IMAGE_API_KEY",
+        models: [
+          {
+            id: "empty-image",
+            providerModel: "empty-image-model",
+            fallbackModels: ["text-only", "working-image"],
+            capabilities: ["image_generation"],
+          },
+          {
+            id: "text-only",
+            providerModel: "text-only-model",
+          },
+          {
+            id: "working-image",
+            providerModel: "working-image-model",
+            capabilities: ["image_generation"],
+          },
+        ],
+      },
+    ]);
+
+    await assert.rejects(
+      registry.runModel("empty-image", {
+        requestId: "req_img_skip_text_fallback",
+        messages: [{ role: "user", content: "A lighthouse." }],
+        tools: [],
+        requestKind: "images_generations",
+        metadata: {
+          prompt: "A lighthouse.",
+        },
+      }),
+      /Model execution failed after fallback chain/i,
+    );
+    assert.deepEqual(requestedProviderModels, ["empty-image-model", "working-image-model"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalApiKey === undefined) {
+      delete process.env.TEST_REGISTRY_IMAGE_API_KEY;
+    } else {
+      process.env.TEST_REGISTRY_IMAGE_API_KEY = originalApiKey;
+    }
+  }
+});
+
+test("registry exposes auto as a virtual gateway model", async () => {
+  const registry = await ProviderRegistry.create([
+    cliProvider("local-cli", [
+      {
+        id: "fast-model",
+        providerModel: "fast-model",
+      },
+    ]),
+  ]);
+
+  const models = registry.listModels();
+  assert.equal(models[0]?.id, "auto");
+  assert.equal(models[0]?.providerId, "gateway");
+});
+
+test("registry auto routing prefers coding models for coding prompts", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.TEST_REGISTRY_AUTO_API_KEY;
+  const requestedProviderModels: string[] = [];
+  process.env.TEST_REGISTRY_AUTO_API_KEY = "test-key";
+
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string };
+    requestedProviderModels.push(body.model ?? "");
+    return new Response(
+      JSON.stringify({
+        model: body.model,
+        choices: [
+          {
+            message: {
+              content: "ok",
+            },
+            finish_reason: "stop",
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      },
+    );
+  }) as typeof fetch;
+
+  try {
+    const registry = await ProviderRegistry.create([
+      {
+        id: "openai-compatible",
+        type: "openai",
+        baseUrl: "https://api.example.test/v1",
+        apiKeyEnv: "TEST_REGISTRY_AUTO_API_KEY",
+        models: [
+          {
+            id: "general-flash",
+            providerModel: "general-flash",
+          },
+          {
+            id: "kimi-for-coding",
+            providerModel: "kimi-for-coding",
+          },
+        ],
+      },
+    ]);
+
+    const result = await registry.runModel("auto", {
+      requestId: "req_auto_code",
+      messages: [{ role: "user", content: "Fix this TypeScript API endpoint and write tests." }],
+      tools: [],
+      requestKind: "chat_completions",
+    });
+
+    assert.deepEqual(requestedProviderModels, ["kimi-for-coding"]);
+    assert.equal(result.resolvedModel, "kimi-for-coding");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalApiKey === undefined) {
+      delete process.env.TEST_REGISTRY_AUTO_API_KEY;
+    } else {
+      process.env.TEST_REGISTRY_AUTO_API_KEY = originalApiKey;
+    }
+  }
+});
+
+test("registry auto routing prefers image-capable models for image requests", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.TEST_REGISTRY_AUTO_API_KEY;
+  const requestedProviderModels: string[] = [];
+  process.env.TEST_REGISTRY_AUTO_API_KEY = "test-key";
+
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string };
+    requestedProviderModels.push(body.model ?? "");
+    return new Response(JSON.stringify({ created: 1, data: [{ b64_json: "abc123" }] }), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+  }) as typeof fetch;
+
+  try {
+    const registry = await ProviderRegistry.create([
+      {
+        id: "openai-compatible",
+        type: "openai",
+        baseUrl: "https://api.example.test/v1",
+        apiKeyEnv: "TEST_REGISTRY_AUTO_API_KEY",
+        models: [
+          {
+            id: "general-chat",
+            providerModel: "general-chat",
+          },
+          {
+            id: "gpt-image-test",
+            providerModel: "gpt-image-test",
+            capabilities: ["image_generation"],
+          },
+        ],
+      },
+    ]);
+
+    const result = await registry.runModel("auto", {
+      requestId: "req_auto_image",
+      messages: [{ role: "user", content: "A small product hero image." }],
+      tools: [],
+      requestKind: "images_generations",
+      metadata: {
+        prompt: "A small product hero image.",
+      },
+    });
+
+    assert.deepEqual(requestedProviderModels, ["gpt-image-test"]);
+    assert.equal(result.resolvedModel, "gpt-image-test");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalApiKey === undefined) {
+      delete process.env.TEST_REGISTRY_AUTO_API_KEY;
+    } else {
+      process.env.TEST_REGISTRY_AUTO_API_KEY = originalApiKey;
+    }
+  }
+});

@@ -336,19 +336,29 @@ data:
         apiKeyEnv: DEEPSEEK_API_KEY
         timeoutMs: 120000
         models:
+          - id: deepseek-v4-flash
+            providerModel: deepseek-v4-flash
+            fallbackModels:
+              - deepseek-v4-pro
+          - id: deepseek-v4-pro
+            providerModel: deepseek-v4-pro
+            fallbackModels:
+              - deepseek-v4-flash
           - id: deepseek-chat
-            providerModel: deepseek-chat
+            providerModel: deepseek-v4-flash
+            description: Legacy compatibility alias; remove before DeepSeek retires this name.
             fallbackModels:
-              - deepseek-reasoner
+              - deepseek-v4-pro
           - id: deepseek-coder
-            providerModel: deepseek-chat
-            description: Backward-compatible DeepSeek coding alias mapped to deepseek-chat
+            providerModel: deepseek-v4-flash
+            description: Backward-compatible DeepSeek coding alias mapped to deepseek-v4-flash
             fallbackModels:
-              - deepseek-reasoner
+              - deepseek-v4-pro
           - id: deepseek-reasoner
-            providerModel: deepseek-reasoner
+            providerModel: deepseek-v4-pro
+            description: Legacy reasoning alias mapped to deepseek-v4-pro.
             fallbackModels:
-              - deepseek-chat
+              - deepseek-v4-flash
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

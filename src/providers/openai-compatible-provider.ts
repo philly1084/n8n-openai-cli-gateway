@@ -492,6 +492,7 @@ function parseChatCompletionResponse(payload: unknown): ProviderResult {
     reasoningText: extractResponseReasoningText(payload, choice, message),
     toolCalls,
     finishReason,
+    resolvedModel: extractResponseModel(payload),
     raw: payload,
   });
 }
@@ -713,6 +714,15 @@ function normalizeFinishReason(
   }
 
   return hasToolCalls ? "tool_calls" : "stop";
+}
+
+function extractResponseModel(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+
+  const model = (payload as Record<string, unknown>).model;
+  return typeof model === "string" && model.trim() ? model.trim() : undefined;
 }
 
 function normalizeToolArguments(value: unknown): string {
