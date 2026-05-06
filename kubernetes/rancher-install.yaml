@@ -55,20 +55,12 @@ data:
         type: cli
         description: Gemini CLI adapter
         models:
-          - id: gemini-3.1-pro-preview
-            providerModel: gemini-3.1-pro-preview
-            fallbackModels:
-              - gpt-5.5
-              - gpt-5.4
-              - kimi-for-coding
-              - gemini-3-flash-preview
           - id: gemini-3-flash-preview
             providerModel: gemini-3-flash-preview
             fallbackModels:
               - gpt-5.5
               - gpt-5.4
               - kimi-for-coding
-              - gemini-3.1-pro-preview
           - id: gemini-3.1-flash-lite-preview
             providerModel: gemini-3.1-flash-lite-preview
             fallbackModels:
@@ -82,7 +74,6 @@ data:
               - gpt-5.5
               - gpt-5.4
               - kimi-for-coding
-              - gemini-3.1-pro-preview
           - id: gemini-2.5-flash
             providerModel: gemini-2.5-flash
             fallbackModels:
@@ -124,30 +115,14 @@ data:
         type: cli
         description: OpenAI Codex app-server bridge adapter
         models:
-          - id: codex-latest
-            providerModel: codex-latest
-            fallbackModels:
-              - gpt-5.5
-              - gpt-5.4
-              - gemini-3.1-pro-preview
           - id: gpt-5.5
             providerModel: gpt-5.5
             fallbackModels:
               - gpt-5.4
-              - gpt-5.4-pro
-              - gemini-3.1-pro-preview
           - id: gpt-5.4
             providerModel: gpt-5.4
             fallbackModels:
               - gpt-5.5
-              - gpt-5.4-pro
-              - gemini-3.1-pro-preview
-          - id: gpt-5.4-pro
-            providerModel: gpt-5.4-pro
-            fallbackModels:
-              - gpt-5.5
-              - gpt-5.4
-              - gemini-3.1-pro-preview
           - id: gpt-5.3-instant
             providerModel: gpt-5.3-instant
             fallbackModels:
@@ -194,13 +169,11 @@ data:
             fallbackModels:
               - gpt-5.5
               - gpt-5.4
-              - gemini-3.1-pro-preview
           - id: kimi-k2-turbo-preview
             providerModel: kimi-for-coding
             fallbackModels:
               - gpt-5.5
               - gpt-5.4
-              - gemini-3.1-pro-preview
         responseCommand:
           executable: node
           args:
@@ -273,6 +246,14 @@ data:
         timeoutMs: 60000
         discovery:
           enabled: true
+          include:
+            - qwen/qwen3-32b
+            - groq/compound
+            - groq/compound-mini
+            - openai/gpt-oss-120b
+            - openai/gpt-oss-20b
+            - llama-3.3-70b-versatile
+            - llama-3.1-8b-instant
         models:
           - id: groq/compound
             providerModel: groq/compound
@@ -336,29 +317,19 @@ data:
         apiKeyEnv: DEEPSEEK_API_KEY
         timeoutMs: 120000
         models:
-          - id: deepseek-v4-flash
-            providerModel: deepseek-v4-flash
-            fallbackModels:
-              - deepseek-v4-pro
-          - id: deepseek-v4-pro
-            providerModel: deepseek-v4-pro
-            fallbackModels:
-              - deepseek-v4-flash
           - id: deepseek-chat
-            providerModel: deepseek-v4-flash
-            description: Legacy compatibility alias; remove before DeepSeek retires this name.
+            providerModel: deepseek-chat
             fallbackModels:
-              - deepseek-v4-pro
+              - deepseek-reasoner
           - id: deepseek-coder
-            providerModel: deepseek-v4-flash
-            description: Backward-compatible DeepSeek coding alias mapped to deepseek-v4-flash
+            providerModel: deepseek-chat
+            description: Backward-compatible DeepSeek coding alias mapped to deepseek-chat
             fallbackModels:
-              - deepseek-v4-pro
+              - deepseek-reasoner
           - id: deepseek-reasoner
-            providerModel: deepseek-v4-pro
-            description: Legacy reasoning alias mapped to deepseek-v4-pro.
+            providerModel: deepseek-reasoner
             fallbackModels:
-              - deepseek-v4-flash
+              - deepseek-chat
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
