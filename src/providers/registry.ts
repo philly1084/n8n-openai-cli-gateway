@@ -132,16 +132,6 @@ export class ProviderRegistry {
       }
     }
 
-    if (requestedBinding?.provider.prefersImageGeneration?.()) {
-      return requestedBinding.modelId;
-    }
-
-    for (const binding of this.models.values()) {
-      if (binding.provider.prefersImageGeneration?.()) {
-        return binding.modelId;
-      }
-    }
-
     return requestedBinding?.modelId;
   }
 
@@ -301,10 +291,7 @@ export class ProviderRegistry {
 
   private modelSupportsImageGeneration(modelId: string): boolean {
     const binding = this.models.get(modelId);
-    return Boolean(
-      binding &&
-      (bindingSupportsImageGeneration(binding) || binding.provider.prefersImageGeneration?.()),
-    );
+    return Boolean(binding && bindingSupportsImageGeneration(binding));
   }
 
   private modelSupportsRequest(

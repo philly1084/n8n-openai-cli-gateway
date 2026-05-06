@@ -412,6 +412,47 @@ test("registry skips text-only fallbacks for image generation requests", async (
   }
 });
 
+test("registry does not treat Codex chat models as image fallbacks without capability", async () => {
+  const registry = await ProviderRegistry.create([
+    {
+      id: "codex-cli",
+      type: "cli",
+      models: [
+        {
+          id: "gpt-5.5",
+          providerModel: "gpt-5.5",
+          fallbackModels: ["gpt-5.4"],
+        },
+        {
+          id: "gpt-5.4",
+          providerModel: "gpt-5.4",
+        },
+      ],
+      responseCommand: {
+        executable: process.execPath,
+        args: ["-e", "process.exit(1)"],
+        input: "request_json_stdin",
+        output: "json_contract",
+        timeoutMs: 1000,
+      },
+    },
+  ]);
+
+  assert.equal(registry.resolvePreferredImageGenerationModel("gpt-5.5"), "gpt-5.5");
+  await assert.rejects(
+    registry.runModel("gpt-5.5", {
+      requestId: "req_img_no_codex_chat_fallback",
+      messages: [{ role: "user", content: "A lighthouse." }],
+      tools: [],
+      requestKind: "images_generations",
+      metadata: {
+        prompt: "A lighthouse.",
+      },
+    }),
+    /Model gpt-5\.5 does not support image_generation requests\./,
+  );
+});
+
 test("registry exposes auto as a virtual gateway model", async () => {
   const registry = await ProviderRegistry.create([
     cliProvider("local-cli", [
