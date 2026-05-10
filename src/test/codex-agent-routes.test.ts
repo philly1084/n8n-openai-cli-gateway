@@ -92,6 +92,10 @@ function createCodexAgentTestServer() {
     rateLimitMax: 100,
     rateLimitWindowMs: 60_000,
     maxRequestBodySize: 1024 * 1024,
+    autoRouterBenchmarkOnStart: false,
+    autoRouterBenchmarkTimeoutMs: 1000,
+    autoRouterBenchmarkMaxModels: 0,
+    autoRouterBenchmarkConcurrency: 1,
   };
 
   return buildServer(config, registry);

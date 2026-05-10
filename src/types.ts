@@ -45,11 +45,26 @@ export interface ProviderToolCall {
   arguments: string;
 }
 
+export interface ProviderTokenUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  promptTokens?: number;
+  completionTokens?: number;
+  promptTokensDetails?: Record<string, unknown>;
+  completionTokensDetails?: Record<string, unknown>;
+  inputTokensDetails?: Record<string, unknown>;
+  outputTokensDetails?: Record<string, unknown>;
+  estimated?: boolean;
+  source?: string;
+}
+
 export interface ProviderResult {
   outputText: string;
   toolCalls: ProviderToolCall[];
   finishReason: "stop" | "tool_calls" | "length" | "error";
   reasoningText?: string;
+  usage?: ProviderTokenUsage;
   resolvedModel?: string;
   raw?: unknown;
 }
@@ -72,6 +87,7 @@ export type ProviderStreamEvent =
     finishReason: ProviderResult["finishReason"];
     outputText?: string;
     reasoningText?: string;
+    usage?: ProviderTokenUsage;
   };
 
 export type CommandOutputMode =
@@ -212,6 +228,74 @@ export interface AppConfig {
   maxRequestBodySize: number;
   // Default reasoning effort when callers omit it
   defaultReasoningEffort?: ReasoningEffort;
+  // Run bounded startup probes so the auto router can learn live latency/token signals
+  autoRouterBenchmarkOnStart: boolean;
+  autoRouterBenchmarkTimeoutMs: number;
+  autoRouterBenchmarkMaxModels: number;
+  autoRouterBenchmarkConcurrency: number;
+}
+
+export type AutoRouterBenchmarkPromptKind = "small" | "medium";
+export type AutoRouterBenchmarkStatus = "pending" | "running" | "succeeded" | "failed" | "skipped";
+
+export interface AutoRouterBenchmarkMeasurement {
+  promptKind: AutoRouterBenchmarkPromptKind;
+  streamed: boolean;
+  durationMs: number;
+  timeToFirstTokenMs?: number;
+  outputTokenEstimate: number;
+  outputTokensPerSecond?: number;
+  measuredUsage?: ProviderTokenUsage;
+}
+
+export interface AutoRouterBenchmarkSnapshot {
+  modelId: string;
+  providerId: string;
+  providerModel: string;
+  status: AutoRouterBenchmarkStatus;
+  updatedAt?: string;
+  score: number;
+  small?: AutoRouterBenchmarkMeasurement;
+  medium?: AutoRouterBenchmarkMeasurement;
+  error?: string;
+}
+
+export interface AutoRouterPromptProfile {
+  promptPreview: string;
+  tokenEstimate: number;
+  complexity: number;
+  codingSignal: boolean;
+  hasTools: boolean;
+  wantsStrongReasoning: boolean;
+  requiredCapability?: ModelCapability;
+  requestKind?: string;
+  signals: string[];
+}
+
+export interface AutoRouterCandidateSnapshot {
+  modelId: string;
+  providerId: string;
+  providerModel: string;
+  capabilities: ModelCapability[];
+  score: number;
+  benchmarkStatus?: AutoRouterBenchmarkStatus;
+  benchmarkScore?: number;
+  healthState?:
+    | "healthy"
+    | "degraded"
+    | "rate_limited"
+    | "capacity_exhausted"
+    | "quota_exhausted"
+    | "auth_blocked"
+    | "cooldown";
+}
+
+export interface AutoRouterDecisionSnapshot {
+  selectedModelId: string;
+  selectedProviderId: string;
+  selectedProviderModel: string;
+  promptProfile: AutoRouterPromptProfile;
+  candidates: AutoRouterCandidateSnapshot[];
 }
 
 export interface AuthStatusResult {

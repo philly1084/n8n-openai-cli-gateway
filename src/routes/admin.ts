@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import type { JobManager } from "../jobs/job-manager";
 import type { ProviderRegistry } from "../providers/registry";
+import type { ChatMessage, ReasoningEffort, UnifiedToolDefinition } from "../types";
 import { getCliExecManager } from "../jobs/cli-exec-manager";
 
 interface AdminRoutesOptions {
@@ -137,6 +138,42 @@ export const adminRoutes: FastifyPluginAsync<AdminRoutesOptions> = async (app, o
       });
     }
     return snapshot;
+  });
+
+  app.get("/stats/auto-router", async () => {
+    return {
+      generatedAt: new Date().toISOString(),
+      benchmarks: options.registry.getAutoRouterBenchmarks(),
+    };
+  });
+
+  app.post("/stats/auto-router/explain", async (request, reply) => {
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    const messages = normalizeExplainMessages(body.messages);
+    if (messages.length === 0) {
+      return reply.status(400).send({
+        error: "messages must include at least one item.",
+      });
+    }
+
+    try {
+      return {
+        generatedAt: new Date().toISOString(),
+        decision: options.registry.explainAutoRouting({
+          messages,
+          tools: normalizeExplainTools(body.tools),
+          stream: typeof body.stream === "boolean" ? body.stream : undefined,
+          requestKind: typeof body.requestKind === "string" ? body.requestKind : "chat_completions",
+          reasoningEffort: normalizeReasoningEffort(body.reasoningEffort),
+          metadata: body.metadata && typeof body.metadata === "object"
+            ? body.metadata as Record<string, unknown>
+            : body,
+        }),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.status(400).send({ error: message });
+    }
   });
 
   // Rate limits endpoints
@@ -456,4 +493,68 @@ function isAdminAuthorized(request: FastifyRequest, adminApiKey: string): boolea
   }
 
   return false;
+}
+
+function normalizeExplainMessages(value: unknown): ChatMessage[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item): ChatMessage[] => {
+    if (!item || typeof item !== "object") {
+      return [];
+    }
+    const record = item as Record<string, unknown>;
+    const role = record.role;
+    const content = record.content;
+    if (
+      (role !== "system" && role !== "user" && role !== "assistant" && role !== "tool") ||
+      typeof content !== "string"
+    ) {
+      return [];
+    }
+    return [{ role, content }];
+  });
+}
+
+function normalizeExplainTools(value: unknown): UnifiedToolDefinition[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item): UnifiedToolDefinition[] => {
+    if (!item || typeof item !== "object") {
+      return [];
+    }
+    const record = item as Record<string, unknown>;
+    const functionRecord =
+      record.function && typeof record.function === "object"
+        ? record.function as Record<string, unknown>
+        : undefined;
+    const name = typeof functionRecord?.name === "string" ? functionRecord.name.trim() : "";
+    if (!name) {
+      return [];
+    }
+    return [{
+      type: "function",
+      function: {
+        name,
+        description: typeof functionRecord?.description === "string"
+          ? functionRecord.description
+          : undefined,
+        parameters: functionRecord?.parameters,
+      },
+    }];
+  });
+}
+
+function normalizeReasoningEffort(value: unknown): ReasoningEffort | undefined {
+  return value === "none" ||
+    value === "minimal" ||
+    value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "xhigh"
+    ? value
+    : undefined;
 }

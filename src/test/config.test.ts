@@ -100,6 +100,26 @@ test("loadAppConfig parses request timeout", () => {
   }
 });
 
+test("loadAppConfig parses auto router benchmark settings", () => {
+  const previous = snapshotEnv();
+  try {
+    process.env.N8N_API_KEY = "n8n";
+    process.env.ADMIN_API_KEY = "admin";
+    process.env.AUTO_ROUTER_BENCHMARK_ON_START = "false";
+    process.env.AUTO_ROUTER_BENCHMARK_TIMEOUT_MS = "5000";
+    process.env.AUTO_ROUTER_BENCHMARK_MAX_MODELS = "3";
+    process.env.AUTO_ROUTER_BENCHMARK_CONCURRENCY = "2";
+
+    const config = loadAppConfig();
+    assert.equal(config.autoRouterBenchmarkOnStart, false);
+    assert.equal(config.autoRouterBenchmarkTimeoutMs, 5000);
+    assert.equal(config.autoRouterBenchmarkMaxModels, 3);
+    assert.equal(config.autoRouterBenchmarkConcurrency, 2);
+  } finally {
+    restoreEnv(previous);
+  }
+});
+
 function writeTempProvidersFile(contents: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), "gateway-config-test-"));
   const file = path.join(dir, "providers.yaml");

@@ -330,6 +330,44 @@ test("chat completions response includes reasoning when provider returns it", as
   }
 });
 
+test("chat completions response includes provider token usage", async () => {
+  const server = createTestServer(async () => ({
+    outputText: "Final answer",
+    toolCalls: [],
+    finishReason: "stop",
+    usage: {
+      promptTokens: 11,
+      completionTokens: 5,
+      totalTokens: 16,
+      source: "provider",
+    },
+  }));
+
+  try {
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: {
+        authorization: "Bearer test-key",
+      },
+      payload: {
+        model: "demo-model",
+        messages: [{ role: "user", content: "Hi" }],
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    const body = response.json() as Record<string, unknown>;
+    const usage = body.usage as Record<string, unknown>;
+    assert.equal(usage.prompt_tokens, 11);
+    assert.equal(usage.completion_tokens, 5);
+    assert.equal(usage.total_tokens, 16);
+    assert.equal(usage.source, "provider");
+  } finally {
+    await server.close();
+  }
+});
+
 test("chat completions stream emits incremental Codex chunks", async () => {
   const server = createTestServer(
     async () => ({
@@ -866,6 +904,10 @@ function createTestServer(
     rateLimitMax: 100,
     rateLimitWindowMs: 60_000,
     maxRequestBodySize: 1024 * 1024,
+    autoRouterBenchmarkOnStart: false,
+    autoRouterBenchmarkTimeoutMs: 1000,
+    autoRouterBenchmarkMaxModels: 0,
+    autoRouterBenchmarkConcurrency: 1,
   };
 
   return buildServer(config, registry);

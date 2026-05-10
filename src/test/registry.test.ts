@@ -596,3 +596,175 @@ test("registry auto routing prefers image-capable models for image requests", as
     }
   }
 });
+
+test("registry startup benchmarks record small and medium token timing snapshots", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.TEST_REGISTRY_BENCHMARK_API_KEY;
+  const requestedProviderModels: string[] = [];
+  process.env.TEST_REGISTRY_BENCHMARK_API_KEY = "test-key";
+
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string };
+    requestedProviderModels.push(body.model ?? "");
+    return new Response(
+      JSON.stringify({
+        model: body.model,
+        choices: [
+          {
+            message: {
+              content: "benchmark output with a few tokens",
+            },
+            finish_reason: "stop",
+          },
+        ],
+        usage: {
+          prompt_tokens: 7,
+          completion_tokens: 6,
+          total_tokens: 13,
+        },
+      }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      },
+    );
+  }) as typeof fetch;
+
+  try {
+    const registry = await ProviderRegistry.create([
+      {
+        id: "openai-compatible",
+        type: "openai",
+        baseUrl: "https://api.example.test/v1",
+        apiKeyEnv: "TEST_REGISTRY_BENCHMARK_API_KEY",
+        models: [
+          {
+            id: "groq-balanced",
+            providerModel: "groq-balanced",
+          },
+        ],
+      },
+    ]);
+
+    const benchmarks = await registry.runStartupBenchmarks({
+      timeoutMs: 1000,
+      maxModels: 1,
+      concurrency: 1,
+    });
+    const benchmark = benchmarks.find((item) => item.modelId === "groq-balanced");
+
+    assert.deepEqual(requestedProviderModels, ["groq-balanced", "groq-balanced"]);
+    assert.equal(benchmark?.status, "succeeded");
+    assert.equal(benchmark?.small?.measuredUsage?.completionTokens, 6);
+    assert.equal(benchmark?.medium?.promptKind, "medium");
+    assert.ok((benchmark?.score ?? 0) > 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalApiKey === undefined) {
+      delete process.env.TEST_REGISTRY_BENCHMARK_API_KEY;
+    } else {
+      process.env.TEST_REGISTRY_BENCHMARK_API_KEY = originalApiKey;
+    }
+  }
+});
+
+test("registry auto routing prefers Groq DeepSeek Kimi lane for medium tasks", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.TEST_REGISTRY_MEDIUM_API_KEY;
+  const requestedProviderModels: string[] = [];
+  process.env.TEST_REGISTRY_MEDIUM_API_KEY = "test-key";
+
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string };
+    requestedProviderModels.push(body.model ?? "");
+    return new Response(
+      JSON.stringify({
+        model: body.model,
+        choices: [
+          {
+            message: {
+              content: "ok",
+            },
+            finish_reason: "stop",
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      },
+    );
+  }) as typeof fetch;
+
+  try {
+    const registry = await ProviderRegistry.create([
+      {
+        id: "openai-compatible",
+        type: "openai",
+        baseUrl: "https://api.example.test/v1",
+        apiKeyEnv: "TEST_REGISTRY_MEDIUM_API_KEY",
+        models: [
+          {
+            id: "general-balanced",
+            providerModel: "general-balanced",
+          },
+          {
+            id: "groq-balanced",
+            providerModel: "groq-balanced",
+          },
+        ],
+      },
+    ]);
+
+    const result = await registry.runModel("auto", {
+      requestId: "req_auto_medium",
+      messages: [{ role: "user", content: "Analyze this API gateway routing behavior and propose a practical fix." }],
+      tools: [],
+      requestKind: "chat_completions",
+    });
+
+    assert.deepEqual(requestedProviderModels, ["groq-balanced"]);
+    assert.equal(result.resolvedModel, "groq-balanced");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalApiKey === undefined) {
+      delete process.env.TEST_REGISTRY_MEDIUM_API_KEY;
+    } else {
+      process.env.TEST_REGISTRY_MEDIUM_API_KEY = originalApiKey;
+    }
+  }
+});
+
+test("registry explains auto routing prompt profile and ranked candidates", async () => {
+  const registry = await ProviderRegistry.create([
+    cliProvider("local-cli", [
+      {
+        id: "general-flash",
+        providerModel: "general-flash",
+      },
+      {
+        id: "kimi-coder",
+        providerModel: "kimi-coder",
+      },
+    ]),
+  ]);
+
+  const decision = registry.explainAutoRouting({
+    messages: [{ role: "user", content: "Refactor this TypeScript endpoint and add tests." }],
+    tools: [],
+    requestKind: "chat_completions",
+  });
+
+  assert.equal(decision.selectedModelId, "kimi-coder");
+  assert.equal(decision.promptProfile.codingSignal, true);
+  assert.ok(decision.promptProfile.signals.includes("coding"));
+  assert.deepEqual(
+    decision.candidates.map((candidate) => candidate.modelId),
+    ["kimi-coder", "general-flash"],
+  );
+  assert.equal(decision.candidates[0]?.benchmarkStatus, "pending");
+});

@@ -197,6 +197,29 @@ function parseRemoteCliToolAuthScopes(): Set<RemoteCliToolAuthScope> {
   return scopes;
 }
 
+function parseBooleanEnv(name: string, defaultValue: boolean): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) {
+    return defaultValue;
+  }
+  if (["1", "true", "yes", "on"].includes(raw)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(raw)) {
+    return false;
+  }
+  throw new Error(`Invalid ${name}: ${process.env[name]}. Expected true or false.`);
+}
+
+function parseIntegerEnv(name: string, defaultValue: number, minValue: number): number {
+  const raw = process.env[name]?.trim() || String(defaultValue);
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < minValue) {
+    throw new Error(`Invalid ${name}: ${raw}`);
+  }
+  return value;
+}
+
 export function loadAppConfig(): AppConfig {
   const adminApiKey = process.env.ADMIN_API_KEY?.trim();
   if (!adminApiKey) {
@@ -267,6 +290,22 @@ export function loadAppConfig(): AppConfig {
   }
 
   const frontendAllowedCwds = parseFrontendAllowedCwds();
+  const autoRouterBenchmarkOnStart = parseBooleanEnv("AUTO_ROUTER_BENCHMARK_ON_START", true);
+  const autoRouterBenchmarkTimeoutMs = parseIntegerEnv(
+    "AUTO_ROUTER_BENCHMARK_TIMEOUT_MS",
+    20000,
+    1000,
+  );
+  const autoRouterBenchmarkMaxModels = parseIntegerEnv(
+    "AUTO_ROUTER_BENCHMARK_MAX_MODELS",
+    16,
+    0,
+  );
+  const autoRouterBenchmarkConcurrency = parseIntegerEnv(
+    "AUTO_ROUTER_BENCHMARK_CONCURRENCY",
+    2,
+    1,
+  );
 
   return {
     host,
@@ -286,6 +325,10 @@ export function loadAppConfig(): AppConfig {
     rateLimitWindowMs,
     maxRequestBodySize,
     defaultReasoningEffort,
+    autoRouterBenchmarkOnStart,
+    autoRouterBenchmarkTimeoutMs,
+    autoRouterBenchmarkMaxModels,
+    autoRouterBenchmarkConcurrency,
   };
 }
 

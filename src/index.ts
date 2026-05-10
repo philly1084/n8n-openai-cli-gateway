@@ -64,9 +64,38 @@ async function main(): Promise<void> {
       shutdownTimeoutMs: config.shutdownTimeoutMs,
       requestTimeoutMs: config.requestTimeoutMs,
       defaultReasoningEffort: config.defaultReasoningEffort,
+      autoRouterBenchmarkOnStart: config.autoRouterBenchmarkOnStart,
+      autoRouterBenchmarkTimeoutMs: config.autoRouterBenchmarkTimeoutMs,
+      autoRouterBenchmarkMaxModels: config.autoRouterBenchmarkMaxModels,
+      autoRouterBenchmarkConcurrency: config.autoRouterBenchmarkConcurrency,
     },
     "gateway listening",
   );
+
+  if (config.autoRouterBenchmarkOnStart) {
+    void registry.runStartupBenchmarks({
+      timeoutMs: config.autoRouterBenchmarkTimeoutMs,
+      maxModels: config.autoRouterBenchmarkMaxModels,
+      concurrency: config.autoRouterBenchmarkConcurrency,
+      logger: app.log,
+    }).then((benchmarks) => {
+      app.log.info(
+        {
+          completed: benchmarks.filter((item) => item.status === "succeeded").length,
+          failed: benchmarks.filter((item) => item.status === "failed").length,
+          total: benchmarks.length,
+        },
+        "Auto router startup benchmarks finished.",
+      );
+    }).catch((error) => {
+      app.log.warn(
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "Auto router startup benchmarks did not complete.",
+      );
+    });
+  }
 }
 
 main().catch((error) => {

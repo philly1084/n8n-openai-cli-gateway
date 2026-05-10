@@ -28,6 +28,11 @@ import {
   audioSpeechRequestSchema,
   audioTranscriptionsRequestSchema,
 } from "../validation";
+import {
+  buildChatUsage,
+  buildResponsesUsage,
+  mergeProviderUsage,
+} from "../utils/usage";
 
 // Cache tool definitions for sessions. n8n occasionally drops them on subsequent turns.
 const multiTurnToolsCache = new LruMap<string, UnifiedToolDefinition[]>(100);
@@ -94,6 +99,7 @@ interface StoredResponseRecord {
   inputItems: StoredResponseInputItem[];
   outputItems: StoredResponseOutputItem[];
   outputText: string;
+  usage?: ProviderResult["usage"];
 }
 
 export function getSessionSignature(
@@ -453,11 +459,7 @@ function buildStoredResponse(
     input: record.inputItems,
     output_text: record.outputText,
     output: record.outputItems,
-    usage: {
-      input_tokens: 0,
-      output_tokens: 0,
-      total_tokens: 0,
-    },
+    usage: buildResponsesUsage(record.usage),
   };
 }
 
@@ -696,7 +698,11 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
       object: "model",
       created: 0,
       owned_by: model.providerId,
+      description: model.description,
+      provider_model: model.providerModel,
+      fallback_models: model.fallbackModels,
       capabilities: model.capabilities,
+      benchmark: model.benchmark,
     })),
   }));
 
@@ -1063,6 +1069,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
                 }
               }
               streamedResult.finishReason = event.finishReason;
+              streamedResult.usage = event.usage;
               continue;
             }
           }
@@ -1109,6 +1116,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
           inputItems,
           outputItems,
           outputText: streamedResult.outputText,
+          usage: streamedResult.usage,
         });
         const responsePayload = buildStoredResponse(storedResponse);
         writeResponseStreamEvent({
@@ -1148,6 +1156,7 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
         inputItems,
         outputItems,
         outputText: result.outputText,
+        usage: result.usage,
       });
       const responsePayload = buildStoredResponse(storedResponse);
 
@@ -1266,6 +1275,10 @@ export const openAiRoutes: FastifyPluginAsync<OpenAiRoutesOptions> = async (
 
       return {
         created: Math.floor(Date.now() / 1000),
+        model: effectiveModel,
+        requested_model: body.model,
+        provider_call_count: providerResults.length,
+        usage: buildResponsesUsage(mergeProviderUsage(providerResults.map((item) => item.usage))),
         data: images,
       };
     } catch (error) {
@@ -1692,6 +1705,7 @@ async function handleChatCompletionsRequest(
               }
             }
             streamedResult.finishReason = event.finishReason;
+            streamedResult.usage = event.usage;
             continue;
           }
         }
@@ -1718,6 +1732,7 @@ async function handleChatCompletionsRequest(
               streamedResult.toolCalls.length > 0 ? "tool_calls" : streamedResult.finishReason,
           },
         ],
+        usage: buildChatUsage(streamedResult.usage),
       });
       reply.raw.write("data: [DONE]\n\n");
       reply.raw.end();
@@ -1765,6 +1780,7 @@ async function handleChatCompletionsRequest(
             finish_reason: result.toolCalls.length > 0 ? "tool_calls" : result.finishReason,
           },
         ],
+        usage: buildChatUsage(result.usage),
       };
 
       reply.raw.write(`data: ${JSON.stringify(chunkData)}\n\n`);
@@ -1786,11 +1802,7 @@ async function handleChatCompletionsRequest(
               result.toolCalls.length > 0 ? "tool_calls" : result.finishReason,
           },
         ],
-      usage: {
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-      },
+      usage: buildChatUsage(result.usage),
     };
   } catch (error) {
     return handleModelError(reply, error);

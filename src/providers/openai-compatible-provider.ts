@@ -12,6 +12,7 @@ import type {
 import { normalizeAssistantResult } from "../utils/assistant-output";
 import { extractTextContent } from "../utils/prompt";
 import type { Provider } from "./provider";
+import { normalizeProviderUsage } from "../utils/usage";
 
 const DEFAULT_TIMEOUT_MS = 240000;
 const DEFAULT_DISCOVERY_EXCLUDES = [
@@ -151,10 +152,14 @@ export class OpenAiCompatibleProvider implements Provider {
       }
     }
 
-    const response = await this.requestJson("/chat/completions", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
+    const response = await this.requestJson(
+      "/chat/completions",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+      readPositiveIntegerMetadata(metadata, "gateway_benchmark_timeout_ms"),
+    );
 
     return parseChatCompletionResponse(response);
   }
@@ -182,10 +187,14 @@ export class OpenAiCompatibleProvider implements Provider {
     copyStringMetadata(body, request.metadata, "response_format");
     copyStringMetadata(body, request.metadata, "user");
 
-    const response = await this.requestJson("/images/generations", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
+    const response = await this.requestJson(
+      "/images/generations",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+      readPositiveIntegerMetadata(request.metadata, "gateway_benchmark_timeout_ms"),
+    );
 
     return {
       outputText: "",
@@ -244,8 +253,12 @@ export class OpenAiCompatibleProvider implements Provider {
     return process.env[this.config.apiKeyEnv]?.trim() || "";
   }
 
-  private async requestJson(pathname: string, init: ProviderRequestInit): Promise<unknown> {
-    return await requestProviderJson(this.config, pathname, init);
+  private async requestJson(
+    pathname: string,
+    init: ProviderRequestInit,
+    timeoutMsOverride?: number,
+  ): Promise<unknown> {
+    return await requestProviderJson(this.config, pathname, init, timeoutMsOverride);
   }
 }
 
@@ -492,6 +505,7 @@ function parseChatCompletionResponse(payload: unknown): ProviderResult {
     reasoningText: extractResponseReasoningText(payload, choice, message),
     toolCalls,
     finishReason,
+    usage: normalizeProviderUsage((payload as Record<string, unknown>).usage, "provider"),
     resolvedModel: extractResponseModel(payload),
     raw: payload,
   });
@@ -737,10 +751,22 @@ function normalizeToolArguments(value: unknown): string {
   }
 }
 
+function readPositiveIntegerMetadata(
+  metadata: UnifiedRequest["metadata"],
+  key: string,
+): number | undefined {
+  if (!metadata || typeof metadata !== "object") {
+    return undefined;
+  }
+  const value = metadata[key];
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
 async function requestProviderJson(
   config: OpenAiCompatibleProviderConfig,
   pathname: string,
   init: ProviderRequestInit,
+  timeoutMsOverride?: number,
 ): Promise<unknown> {
   const apiKey = process.env[config.apiKeyEnv]?.trim();
   if (!apiKey) {
@@ -748,7 +774,7 @@ async function requestProviderJson(
   }
 
   const controller = new AbortController();
-  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = timeoutMsOverride ?? config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {

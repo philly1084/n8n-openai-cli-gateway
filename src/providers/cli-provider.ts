@@ -19,6 +19,7 @@ import { buildPrompt } from "../utils/prompt";
 import { withRuntimeTemplateVars } from "../utils/runtime-template-vars";
 import { normalizeToolName, normalizeToolAlias, normalizeArgumentKey } from "../utils/tools";
 import { normalizeAssistantResult } from "../utils/assistant-output";
+import { normalizeProviderUsage } from "../utils/usage";
 import type { Provider } from "./provider";
 
 interface JsonContract {
@@ -28,6 +29,7 @@ interface JsonContract {
   reasoning?: unknown;
   tool_calls?: unknown[];
   finish_reason?: "stop" | "tool_calls" | "length" | "error";
+  usage?: unknown;
 }
 
 type JsonStreamContract =
@@ -48,6 +50,7 @@ type JsonStreamContract =
     finish_reason?: unknown;
     output_text?: unknown;
     reasoning?: unknown;
+    usage?: unknown;
   };
 
 function isTruthyEnv(value: string | undefined): boolean {
@@ -214,6 +217,17 @@ export class CliProvider implements Provider {
         return arg.replace(/\{\{\s*prompt\s*\}\}/g, "{{prompt_file}}");
       });
       commandSpec = { ...this.config.responseCommand, args: rewrittenArgs };
+    }
+
+    const timeoutMsOverride = readPositiveIntegerMetadata(
+      request.metadata,
+      "gateway_benchmark_timeout_ms",
+    );
+    if (timeoutMsOverride !== undefined) {
+      commandSpec = {
+        ...commandSpec,
+        timeoutMs: Math.min(commandSpec.timeoutMs, timeoutMsOverride),
+      };
     }
 
     return {
@@ -470,6 +484,7 @@ export class CliProvider implements Provider {
           reasoningText: normalizeReasoningText(contract.reasoning),
           toolCalls,
           finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
+          usage: normalizeProviderUsage(contract.usage, "cli-contract"),
           raw: contract,
         });
       }
@@ -492,6 +507,7 @@ export class CliProvider implements Provider {
           toolCalls,
           finishReason:
             contract.finish_reason ?? (toolCalls.length > 0 ? "tool_calls" : "stop"),
+          usage: normalizeProviderUsage(contract.usage, "cli-contract"),
           raw: contract,
         });
       }
@@ -536,6 +552,7 @@ export class CliProvider implements Provider {
         reasoningText: promotedReasoningText,
         toolCalls: promotedToolCalls,
         finishReason: promotedFinishReason,
+        usage: normalizeProviderUsage(nestedContract.usage, "cli-contract") ?? normalizeProviderUsage(json.usage, "cli-contract"),
         raw: json,
       });
     }
@@ -545,9 +562,21 @@ export class CliProvider implements Provider {
       reasoningText,
       toolCalls,
       finishReason,
+      usage: normalizeProviderUsage(json.usage, "cli-contract"),
       raw: json,
     });
   }
+}
+
+function readPositiveIntegerMetadata(
+  metadata: UnifiedRequest["metadata"],
+  key: string,
+): number | undefined {
+  if (!metadata || typeof metadata !== "object") {
+    return undefined;
+  }
+  const value = metadata[key];
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
 function parseJsonStreamEvent(line: string): ProviderStreamEvent | null {
@@ -595,6 +624,7 @@ function parseJsonStreamEvent(line: string): ProviderStreamEvent | null {
           ? parsed.output_text
           : undefined,
       reasoningText: normalizeReasoningText(extractReasoningValue(parsedRecord)),
+      usage: normalizeProviderUsage(parsedRecord.usage, "cli-stream"),
     };
   }
 
@@ -928,6 +958,7 @@ function normalizeContract(value: unknown): JsonContract {
         source.finish_reason === "error"
         ? source.finish_reason
         : undefined,
+    usage: source.usage,
   };
 }
 
