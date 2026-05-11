@@ -638,32 +638,38 @@ export class ProviderRegistry {
     request: Omit<UnifiedRequest, "model" | "providerModel">,
     profile: AutoRouterPromptProfile,
   ): AutoRankedCandidate[] {
-    return [...this.models.values()]
-      .map((binding, index) => {
-        if (!this.modelSupportsRequest(binding.modelId, request)) {
-          return undefined;
-        }
+    const candidates: AutoRankedCandidate[] = [];
 
-        const stats = this.modelStats.snapshotModel(binding.modelId);
-        const benchmark = this.modelBenchmarks.get(binding.modelId);
-        let score = 100 - index * 0.01;
-        score += scoreModelHealth(stats);
-        score += scoreModelBenchmark(benchmark, profile.complexity);
-        score += scoreModelName(binding, {
-          complexity: profile.complexity,
-          codingSignal: profile.codingSignal,
-          hasTools: profile.hasTools,
-          wantsStrongReasoning: profile.wantsStrongReasoning,
-          requiredCapability: profile.requiredCapability,
-          requestKind: request.requestKind,
-        });
+    for (const [index, binding] of [...this.models.values()].entries()) {
+      if (!this.modelSupportsRequest(binding.modelId, request)) {
+        continue;
+      }
 
-        return { binding, score, index, stats, benchmark };
-      })
-      .filter((candidate): candidate is AutoRankedCandidate =>
-        Boolean(candidate),
-      )
-      .sort((a, b) => b.score - a.score || a.index - b.index);
+      const stats = this.modelStats.snapshotModel(binding.modelId);
+      const benchmark = this.modelBenchmarks.get(binding.modelId);
+      let score = 100 - index * 0.01;
+      score += scoreModelHealth(stats);
+      score += scoreModelBenchmark(benchmark, profile.complexity);
+      score += scoreModelName(binding, {
+        complexity: profile.complexity,
+        codingSignal: profile.codingSignal,
+        hasTools: profile.hasTools,
+        wantsStrongReasoning: profile.wantsStrongReasoning,
+        requiredCapability: profile.requiredCapability,
+        requestKind: request.requestKind,
+      });
+
+      const candidate: AutoRankedCandidate = { binding, score, index };
+      if (stats) {
+        candidate.stats = stats;
+      }
+      if (benchmark) {
+        candidate.benchmark = benchmark;
+      }
+      candidates.push(candidate);
+    }
+
+    return candidates.sort((a, b) => b.score - a.score || a.index - b.index);
   }
 
   async *runModelStream(
