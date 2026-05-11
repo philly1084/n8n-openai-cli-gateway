@@ -1,0 +1,43 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: n8n-openai-cli-gateway-router
+  namespace: n8n-openai-gateway
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.priority: "100"
+    traefik.ingress.kubernetes.io/proxy-read-timeout: "300"
+    traefik.ingress.kubernetes.io/proxy-send-timeout: "300"
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - router.secdevsolutions.help
+      secretName: router-secdevsolutions-help-tls
+  rules:
+    - host: router.secdevsolutions.help
+      http:
+        paths:
+          - path: /v1
+            pathType: Prefix
+            backend:
+              service:
+                name: n8n-openai-cli-gateway
+                port:
+                  number: 80
+          - path: /openai/v1
+            pathType: Prefix
+            backend:
+              service:
+                name: n8n-openai-cli-gateway
+                port:
+                  number: 80
+          - path: /healthz
+            pathType: Exact
+            backend:
+              service:
+                name: n8n-openai-cli-gateway
+                port:
+                  number: 80
