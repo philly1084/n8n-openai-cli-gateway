@@ -124,24 +124,34 @@ data:
             providerModel: gpt-5.5
             fallbackModels:
               - gpt-5.4
+              - kimi-for-coding
+              - gemini-3-flash-preview
           - id: gpt-5.4
             providerModel: gpt-5.4
             fallbackModels:
               - gpt-5.5
+              - kimi-for-coding
+              - gemini-3-flash-preview
           - id: gpt-5.3-instant
             providerModel: gpt-5.3-instant
             fallbackModels:
               - gpt-5.5
               - gpt-5.4
+              - kimi-for-coding
+              - gemini-3-flash-preview
           - id: gpt-4.1
             providerModel: gpt-4.1
             fallbackModels:
               - gpt-5.3-instant
+              - kimi-for-coding
+              - gemini-3-flash-preview
           - id: gpt-5.1-codex-mini
             providerModel: gpt-5.1-codex-mini
             fallbackModels:
               - gpt-5.5
               - gpt-5.4
+              - kimi-for-coding
+              - gemini-3-flash-preview
         responseCommand:
           executable: node
           args:

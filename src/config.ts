@@ -306,6 +306,11 @@ export function loadAppConfig(): AppConfig {
     2,
     1,
   );
+  const autoRouterBenchmarkIntervalMs = parseIntegerEnv(
+    "AUTO_ROUTER_BENCHMARK_INTERVAL_MS",
+    86_400_000,
+    0,
+  );
 
   return {
     host,
@@ -329,6 +334,7 @@ export function loadAppConfig(): AppConfig {
     autoRouterBenchmarkTimeoutMs,
     autoRouterBenchmarkMaxModels,
     autoRouterBenchmarkConcurrency,
+    autoRouterBenchmarkIntervalMs,
   };
 }
 

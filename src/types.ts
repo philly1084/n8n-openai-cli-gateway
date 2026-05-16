@@ -233,19 +233,35 @@ export interface AppConfig {
   autoRouterBenchmarkTimeoutMs: number;
   autoRouterBenchmarkMaxModels: number;
   autoRouterBenchmarkConcurrency: number;
+  autoRouterBenchmarkIntervalMs: number;
 }
 
-export type AutoRouterBenchmarkPromptKind = "small" | "medium";
+export type AutoRouterBenchmarkPromptKind =
+  | "small"
+  | "medium"
+  | "reasoning_low"
+  | "reasoning_high";
 export type AutoRouterBenchmarkStatus = "pending" | "running" | "succeeded" | "failed" | "skipped";
 
 export interface AutoRouterBenchmarkMeasurement {
   promptKind: AutoRouterBenchmarkPromptKind;
+  reasoningEffort?: ReasoningEffort;
   streamed: boolean;
   durationMs: number;
   timeToFirstTokenMs?: number;
   outputTokenEstimate: number;
   outputTokensPerSecond?: number;
+  outputCharCount?: number;
+  expectedTextMatched?: boolean;
   measuredUsage?: ProviderTokenUsage;
+}
+
+export interface AutoRouterBenchmarkTaskScores {
+  quick?: number;
+  medium?: number;
+  reasoningLow?: number;
+  reasoningHigh?: number;
+  overall: number;
 }
 
 export interface AutoRouterBenchmarkSnapshot {
@@ -257,6 +273,9 @@ export interface AutoRouterBenchmarkSnapshot {
   score: number;
   small?: AutoRouterBenchmarkMeasurement;
   medium?: AutoRouterBenchmarkMeasurement;
+  reasoningLow?: AutoRouterBenchmarkMeasurement;
+  reasoningHigh?: AutoRouterBenchmarkMeasurement;
+  taskScores?: AutoRouterBenchmarkTaskScores;
   error?: string;
 }
 

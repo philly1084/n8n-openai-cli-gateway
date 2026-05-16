@@ -8,6 +8,7 @@ import type {
   ProviderConfig,
   ProviderResult,
   ProviderStreamEvent,
+  ReasoningEffort,
   UnifiedRequest,
 } from "../types";
 import type {
@@ -32,6 +33,16 @@ const BENCHMARK_MEDIUM_PROMPT = [
   "Use 120 to 160 words. Mention latency, token usage, fallback routing, and provider health.",
   "Do not use markdown headings.",
 ].join(" ");
+const BENCHMARK_REASONING_LOW_PROMPTS = [
+  "A gateway has two healthy low-latency providers and one slow but stronger provider. In two sentences, choose the default for a simple status question and explain why.",
+  "A user asks for a short JSON transform and no tools. In two sentences, choose speed or depth and explain the tradeoff.",
+  "A workflow needs a fast classification before a heavier model step. In two sentences, pick the model lane and explain the risk.",
+];
+const BENCHMARK_REASONING_HIGH_PROMPTS = [
+  "An auto-router sees model A with 900ms latency and 60% recent success, model B with 4s latency and 98% success, and model C with an auth warning. For a multi-step debugging request, choose the best first model and fallback order. Return a compact paragraph.",
+  "A provider is fast on short prompts but slow on synthesis, while another has slower first token time but better sustained token rate and fewer failures. Explain which should handle a long coding review and why.",
+  "A gateway must route between cheap, fast, and deep-reasoning models. Design a three-rule policy for simple, medium, and high-risk requests. Keep it concise.",
+];
 
 interface ModelBinding {
   modelId: string;
@@ -323,13 +334,41 @@ export class ProviderRegistry {
     try {
       const small = await this.runBenchmarkPrompt(binding, "small", BENCHMARK_SMALL_PROMPT, timeoutMs);
       const medium = await this.runBenchmarkPrompt(binding, "medium", BENCHMARK_MEDIUM_PROMPT, timeoutMs);
+      const supportsReasoning = bindingSupportsCapability(binding, "reasoning");
+      const reasoningLow = supportsReasoning
+        ? await this.runBenchmarkPrompt(
+          binding,
+          "reasoning_low",
+          selectBenchmarkPrompt(binding.modelId, "reasoning_low", BENCHMARK_REASONING_LOW_PROMPTS),
+          timeoutMs,
+          "low",
+        )
+        : undefined;
+      const reasoningHigh = supportsReasoning
+        ? await this.runBenchmarkPrompt(
+          binding,
+          "reasoning_high",
+          selectBenchmarkPrompt(binding.modelId, "reasoning_high", BENCHMARK_REASONING_HIGH_PROMPTS),
+          timeoutMs,
+          "high",
+        )
+        : undefined;
+      const taskScores = buildBenchmarkTaskScores({
+        small,
+        medium,
+        reasoningLow,
+        reasoningHigh,
+      });
       const snapshot: AutoRouterBenchmarkSnapshot = {
         ...benchmarkBaseSnapshot(binding),
         status: "succeeded",
         updatedAt: new Date().toISOString(),
         small,
         medium,
-        score: scoreBenchmarkMeasurements(small, medium),
+        reasoningLow,
+        reasoningHigh,
+        taskScores,
+        score: taskScores.overall,
       };
       this.modelBenchmarks.set(binding.modelId, snapshot);
       logger?.info(
@@ -339,6 +378,8 @@ export class ProviderRegistry {
           score: snapshot.score,
           small,
           medium,
+          reasoningLow,
+          reasoningHigh,
         },
         "Auto router startup benchmark completed.",
       );
@@ -367,10 +408,17 @@ export class ProviderRegistry {
     promptKind: AutoRouterBenchmarkPromptKind,
     prompt: string,
     timeoutMs: number,
+    reasoningEffort: ReasoningEffort = "none",
   ): Promise<AutoRouterBenchmarkMeasurement> {
     if (binding.provider.runStream && binding.provider.supportsStreaming?.()) {
       try {
-        return await this.runStreamingBenchmarkPrompt(binding, promptKind, prompt, timeoutMs);
+        return await this.runStreamingBenchmarkPrompt(
+          binding,
+          promptKind,
+          prompt,
+          timeoutMs,
+          reasoningEffort,
+        );
       } catch {
         // Fall back to a non-stream probe; some providers advertise sessions but
         // still reject stream mode for a specific model or output contract.
@@ -378,20 +426,26 @@ export class ProviderRegistry {
     }
 
     const startedAt = Date.now();
-    const result = await binding.provider.run(buildBenchmarkRequest(binding, prompt, promptKind, timeoutMs, false));
+    const result = await binding.provider.run(
+      buildBenchmarkRequest(binding, prompt, promptKind, timeoutMs, false, reasoningEffort),
+    );
     const durationMs = Date.now() - startedAt;
     const outputTokenEstimate =
       result.usage?.outputTokens ??
       result.usage?.completionTokens ??
       estimateTokensFromText(result.outputText);
+    const outputText = result.outputText.trim();
 
     return {
       promptKind,
+      reasoningEffort,
       streamed: false,
       durationMs,
       timeToFirstTokenMs: durationMs,
       outputTokenEstimate,
       outputTokensPerSecond: tokensPerSecond(outputTokenEstimate, durationMs),
+      outputCharCount: outputText.length,
+      expectedTextMatched: promptKind === "small" ? /^ok\.?$/i.test(outputText) : undefined,
       measuredUsage: result.usage,
     };
   }
@@ -401,6 +455,7 @@ export class ProviderRegistry {
     promptKind: AutoRouterBenchmarkPromptKind,
     prompt: string,
     timeoutMs: number,
+    reasoningEffort: ReasoningEffort,
   ): Promise<AutoRouterBenchmarkMeasurement> {
     if (!binding.provider.runStream) {
       throw new Error(`Model ${binding.modelId} does not expose streaming.`);
@@ -412,7 +467,7 @@ export class ProviderRegistry {
     let measuredUsage: ProviderResult["usage"];
 
     for await (const event of binding.provider.runStream(
-      buildBenchmarkRequest(binding, prompt, promptKind, timeoutMs, true),
+      buildBenchmarkRequest(binding, prompt, promptKind, timeoutMs, true, reasoningEffort),
     )) {
       if (event.type === "output_text_delta" || event.type === "reasoning_delta") {
         if (firstTokenMs === undefined) {
@@ -437,11 +492,14 @@ export class ProviderRegistry {
 
     return {
       promptKind,
+      reasoningEffort,
       streamed: true,
       durationMs,
       timeToFirstTokenMs: firstTokenMs ?? durationMs,
       outputTokenEstimate,
       outputTokensPerSecond: tokensPerSecond(outputTokenEstimate, durationMs),
+      outputCharCount: outputText.trim().length,
+      expectedTextMatched: promptKind === "small" ? /^ok\.?$/i.test(outputText.trim()) : undefined,
       measuredUsage,
     };
   }
@@ -739,7 +797,14 @@ function buildBenchmarkRequest(
   promptKind: AutoRouterBenchmarkPromptKind,
   timeoutMs: number,
   stream: boolean,
+  reasoningEffort: ReasoningEffort,
 ): UnifiedRequest {
+  const maxTokens =
+    promptKind === "small" ? 8 :
+      promptKind === "medium" ? 220 :
+        promptKind === "reasoning_low" ? 180 :
+          260;
+
   return {
     requestId: `bench_${binding.modelId}_${promptKind}_${Date.now()}`,
     model: binding.modelId,
@@ -748,12 +813,13 @@ function buildBenchmarkRequest(
     tools: [],
     stream,
     requestKind: "chat_completions",
-    reasoningEffort: "none",
+    reasoningEffort,
     metadata: {
-      max_tokens: promptKind === "small" ? 8 : 220,
+      max_tokens: maxTokens,
       temperature: 0,
       gateway_benchmark: true,
       gateway_benchmark_prompt_kind: promptKind,
+      gateway_benchmark_reasoning_effort: reasoningEffort,
       gateway_benchmark_timeout_ms: timeoutMs,
     },
   };
@@ -774,14 +840,40 @@ function tokensPerSecond(tokenEstimate: number, durationMs: number): number | un
   return roundNumber(tokenEstimate / (durationMs / 1000), 2);
 }
 
-function scoreBenchmarkMeasurements(
-  small: AutoRouterBenchmarkMeasurement,
-  medium: AutoRouterBenchmarkMeasurement,
-): number {
-  let score = 0;
-  score += scoreBenchmarkMeasurement(small, 0.6);
-  score += scoreBenchmarkMeasurement(medium, 1);
-  return roundNumber(score, 2);
+function buildBenchmarkTaskScores(input: {
+  small: AutoRouterBenchmarkMeasurement;
+  medium: AutoRouterBenchmarkMeasurement;
+  reasoningLow?: AutoRouterBenchmarkMeasurement;
+  reasoningHigh?: AutoRouterBenchmarkMeasurement;
+}): {
+  quick: number;
+  medium: number;
+  reasoningLow?: number;
+  reasoningHigh?: number;
+  overall: number;
+} {
+  const quick = scoreBenchmarkMeasurement(input.small, 0.9);
+  const medium = scoreBenchmarkMeasurement(input.medium, 1);
+  const reasoningLow = input.reasoningLow
+    ? scoreBenchmarkMeasurement(input.reasoningLow, 0.9)
+    : undefined;
+  const reasoningHigh = input.reasoningHigh
+    ? scoreBenchmarkMeasurement(input.reasoningHigh, 1.1)
+    : undefined;
+  const scores = [quick, medium, reasoningLow, reasoningHigh].filter(
+    (value): value is number => typeof value === "number",
+  );
+  const overall = scores.length > 0
+    ? scores.reduce((sum, value) => sum + value, 0) / scores.length
+    : 0;
+
+  return {
+    quick: roundNumber(quick, 2),
+    medium: roundNumber(medium, 2),
+    reasoningLow: reasoningLow === undefined ? undefined : roundNumber(reasoningLow, 2),
+    reasoningHigh: reasoningHigh === undefined ? undefined : roundNumber(reasoningHigh, 2),
+    overall: roundNumber(overall, 2),
+  };
 }
 
 function scoreBenchmarkMeasurement(
@@ -825,7 +917,38 @@ function scoreBenchmarkMeasurement(
     score += 4;
   }
 
+  if (measurement.promptKind === "small" && measurement.expectedTextMatched === false) {
+    score -= 6;
+  }
+
+  if ((measurement.outputCharCount ?? 0) === 0) {
+    score -= 12;
+  }
+
   return score * weight;
+}
+
+function selectBenchmarkPrompt(
+  modelId: string,
+  promptKind: AutoRouterBenchmarkPromptKind,
+  prompts: string[],
+): string {
+  if (prompts.length === 0) {
+    return BENCHMARK_MEDIUM_PROMPT;
+  }
+
+  const now = new Date();
+  const dayKey = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 86_400_000;
+  const seed = hashString(`${modelId}:${promptKind}:${dayKey}`);
+  return prompts[seed % prompts.length] ?? prompts[0] ?? BENCHMARK_MEDIUM_PROMPT;
+}
+
+function hashString(value: string): number {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
 }
 
 function benchmarkCandidatePriority(binding: ModelBinding): number {
