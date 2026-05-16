@@ -601,11 +601,13 @@ test("registry startup benchmarks record small and medium token timing snapshots
   const originalFetch = globalThis.fetch;
   const originalApiKey = process.env.TEST_REGISTRY_BENCHMARK_API_KEY;
   const requestedProviderModels: string[] = [];
+  const requestedReasoningEfforts: Array<unknown> = [];
   process.env.TEST_REGISTRY_BENCHMARK_API_KEY = "test-key";
 
   globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
-    const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string };
+    const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string; reasoning_effort?: unknown };
     requestedProviderModels.push(body.model ?? "");
+    requestedReasoningEfforts.push(body.reasoning_effort);
     return new Response(
       JSON.stringify({
         model: body.model,
@@ -637,12 +639,12 @@ test("registry startup benchmarks record small and medium token timing snapshots
       {
         id: "openai-compatible",
         type: "openai",
-        baseUrl: "https://api.example.test/v1",
+        baseUrl: "https://api.groq.com/openai/v1",
         apiKeyEnv: "TEST_REGISTRY_BENCHMARK_API_KEY",
         models: [
           {
             id: "groq-balanced",
-            providerModel: "groq-balanced",
+            providerModel: "openai/gpt-oss-20b",
           },
         ],
       },
@@ -655,10 +657,19 @@ test("registry startup benchmarks record small and medium token timing snapshots
     });
     const benchmark = benchmarks.find((item) => item.modelId === "groq-balanced");
 
-    assert.deepEqual(requestedProviderModels, ["groq-balanced", "groq-balanced"]);
+    assert.deepEqual(requestedProviderModels, [
+      "openai/gpt-oss-20b",
+      "openai/gpt-oss-20b",
+      "openai/gpt-oss-20b",
+      "openai/gpt-oss-20b",
+    ]);
+    assert.deepEqual(requestedReasoningEfforts, [undefined, undefined, "low", "high"]);
     assert.equal(benchmark?.status, "succeeded");
     assert.equal(benchmark?.small?.measuredUsage?.completionTokens, 6);
     assert.equal(benchmark?.medium?.promptKind, "medium");
+    assert.equal(benchmark?.reasoningLow?.reasoningEffort, "low");
+    assert.equal(benchmark?.reasoningHigh?.reasoningEffort, "high");
+    assert.equal(typeof benchmark?.taskScores?.overall, "number");
     assert.ok((benchmark?.score ?? 0) > 0);
   } finally {
     globalThis.fetch = originalFetch;

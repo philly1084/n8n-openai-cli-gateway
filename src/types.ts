@@ -299,6 +299,7 @@ export interface AutoRouterCandidateSnapshot {
   score: number;
   benchmarkStatus?: AutoRouterBenchmarkStatus;
   benchmarkScore?: number;
+  benchmarkTaskScores?: AutoRouterBenchmarkTaskScores;
   healthState?:
     | "healthy"
     | "degraded"

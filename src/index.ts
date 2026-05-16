@@ -12,6 +12,7 @@ async function main(): Promise<void> {
 
   // Track active connections for graceful shutdown
   let isShuttingDown = false;
+  let autoRouterBenchmarkTimer: NodeJS.Timeout | undefined;
 
   const gracefulShutdown = async (signal: string) => {
     if (isShuttingDown) {
@@ -29,6 +30,10 @@ async function main(): Promise<void> {
     }, config.shutdownTimeoutMs);
 
     try {
+      if (autoRouterBenchmarkTimer) {
+        clearInterval(autoRouterBenchmarkTimer);
+        autoRouterBenchmarkTimer = undefined;
+      }
       await close();
       clearTimeout(forceExitTimeout);
       app.log.info("Server closed successfully.");
@@ -68,11 +73,12 @@ async function main(): Promise<void> {
       autoRouterBenchmarkTimeoutMs: config.autoRouterBenchmarkTimeoutMs,
       autoRouterBenchmarkMaxModels: config.autoRouterBenchmarkMaxModels,
       autoRouterBenchmarkConcurrency: config.autoRouterBenchmarkConcurrency,
+      autoRouterBenchmarkIntervalMs: config.autoRouterBenchmarkIntervalMs,
     },
     "gateway listening",
   );
 
-  if (config.autoRouterBenchmarkOnStart) {
+  const runAutoRouterBaseline = (reason: "startup" | "scheduled") => {
     void registry.runStartupBenchmarks({
       timeoutMs: config.autoRouterBenchmarkTimeoutMs,
       maxModels: config.autoRouterBenchmarkMaxModels,
@@ -84,17 +90,31 @@ async function main(): Promise<void> {
           completed: benchmarks.filter((item) => item.status === "succeeded").length,
           failed: benchmarks.filter((item) => item.status === "failed").length,
           total: benchmarks.length,
+          reason,
         },
-        "Auto router startup benchmarks finished.",
+        "Auto router capacity baseline finished.",
       );
     }).catch((error) => {
       app.log.warn(
         {
           error: error instanceof Error ? error.message : String(error),
+          reason,
         },
-        "Auto router startup benchmarks did not complete.",
+        "Auto router capacity baseline did not complete.",
       );
     });
+  };
+
+  if (config.autoRouterBenchmarkOnStart) {
+    runAutoRouterBaseline("startup");
+  }
+
+  if (config.autoRouterBenchmarkIntervalMs > 0) {
+    autoRouterBenchmarkTimer = setInterval(
+      () => runAutoRouterBaseline("scheduled"),
+      config.autoRouterBenchmarkIntervalMs,
+    );
+    autoRouterBenchmarkTimer.unref();
   }
 }
 

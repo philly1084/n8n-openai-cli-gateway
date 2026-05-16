@@ -147,6 +147,39 @@ export const adminRoutes: FastifyPluginAsync<AdminRoutesOptions> = async (app, o
     };
   });
 
+  app.post("/stats/auto-router/baseline", async (request, reply) => {
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    const timeoutMs = readPositiveInteger(body.timeoutMs, 20_000);
+    const maxModels = readNonNegativeInteger(body.maxModels, 16);
+    const concurrency = readPositiveInteger(body.concurrency, 2);
+
+    try {
+      const benchmarks = await options.registry.runStartupBenchmarks({
+        timeoutMs,
+        maxModels,
+        concurrency,
+        logger: app.log,
+      });
+      return {
+        generatedAt: new Date().toISOString(),
+        options: {
+          timeoutMs,
+          maxModels,
+          concurrency,
+        },
+        summary: {
+          succeeded: benchmarks.filter((item) => item.status === "succeeded").length,
+          failed: benchmarks.filter((item) => item.status === "failed").length,
+          total: benchmarks.length,
+        },
+        benchmarks,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.status(500).send({ error: message });
+    }
+  });
+
   app.post("/stats/auto-router/explain", async (request, reply) => {
     const body = (request.body ?? {}) as Record<string, unknown>;
     const messages = normalizeExplainMessages(body.messages);
@@ -557,4 +590,12 @@ function normalizeReasoningEffort(value: unknown): ReasoningEffort | undefined {
     value === "xhigh"
     ? value
     : undefined;
+}
+
+function readPositiveInteger(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+function readNonNegativeInteger(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : fallback;
 }

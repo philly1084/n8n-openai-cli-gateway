@@ -848,6 +848,71 @@ test("images route fans out multi-image requests into single-image provider call
   }
 });
 
+test("admin auto-router baseline endpoint triggers bounded benchmark run", async () => {
+  let capturedOptions:
+    | {
+      timeoutMs: number;
+      maxModels: number;
+      concurrency: number;
+    }
+    | undefined;
+  const server = createTestServer(
+    async () => ({
+      outputText: "ok",
+      toolCalls: [],
+      finishReason: "stop",
+    }),
+    undefined,
+    {
+      runStartupBenchmarks: async (options) => {
+        capturedOptions = options;
+        return [
+          {
+            modelId: "demo-model",
+            providerId: "demo-provider",
+            providerModel: "demo-model",
+            status: "succeeded",
+            score: 12,
+            taskScores: {
+              quick: 10,
+              medium: 12,
+              overall: 11,
+            },
+          },
+        ];
+      },
+    },
+  );
+
+  try {
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/admin/stats/auto-router/baseline",
+      headers: {
+        "x-admin-key": "admin-key",
+      },
+      payload: {
+        timeoutMs: 5000,
+        maxModels: 2,
+        concurrency: 1,
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(capturedOptions, {
+      timeoutMs: 5000,
+      maxModels: 2,
+      concurrency: 1,
+      logger: server.app.log,
+    });
+    const body = response.json() as { summary?: { succeeded?: number; total?: number } };
+    assert.equal(body.summary?.succeeded, 1);
+    assert.equal(body.summary?.total, 1);
+  } finally {
+    await server.close();
+  }
+});
+
 function createTestServer(
   runModel: (
     modelId: string,
@@ -866,6 +931,12 @@ function createTestServer(
       capabilities?: Array<"image_generation">;
     }>;
     resolvePreferredImageGenerationModel?: (requestedModelId?: string) => string | undefined;
+    runStartupBenchmarks?: (options: {
+      timeoutMs: number;
+      maxModels: number;
+      concurrency: number;
+      logger?: unknown;
+    }) => Promise<unknown[]>;
   },
 ) {
   const registry = {
@@ -885,6 +956,8 @@ function createTestServer(
     runModel,
     canStreamModel: () => Boolean(runModelStream),
     runModelStream: runModelStream ?? (async function* () {}) ,
+    getAutoRouterBenchmarks: () => [],
+    runStartupBenchmarks: options?.runStartupBenchmarks ?? (async () => []),
   } as unknown as ProviderRegistry;
 
   const config: AppConfig = {
@@ -908,6 +981,7 @@ function createTestServer(
     autoRouterBenchmarkTimeoutMs: 1000,
     autoRouterBenchmarkMaxModels: 0,
     autoRouterBenchmarkConcurrency: 1,
+    autoRouterBenchmarkIntervalMs: 0,
   };
 
   return buildServer(config, registry);

@@ -69,7 +69,7 @@ The gateway also supports `type: openai` providers for OpenAI-compatible remote 
 
 The gateway also exposes a virtual `auto` model. It is not configured in `providers.yaml`; it appears automatically in `GET /v1/models` and picks a compatible configured model for each request. The router scores request kind, image generation, tool use, reasoning effort, prompt complexity, coding/build signals, configured capabilities, and recent model health. The response `model` field is the concrete model that actually handled the request when that is known.
 
-By default, the gateway starts a bounded auto-router benchmark in the background after boot. It sends a small and medium chat exchange to eligible configured models, records completion latency, time to first streamed token when available, rough or measured output token rate, and provider usage counts. The benchmark is non-fatal; failed providers are marked in the snapshot and scored down for `auto`. Tune it with `AUTO_ROUTER_BENCHMARK_ON_START`, `AUTO_ROUTER_BENCHMARK_TIMEOUT_MS`, `AUTO_ROUTER_BENCHMARK_MAX_MODELS`, and `AUTO_ROUTER_BENCHMARK_CONCURRENCY`. Inspect current benchmark signals with `GET /admin/stats/auto-router`.
+By default, the gateway starts a bounded auto-router capacity baseline in the background after boot and reruns it once a day. It sends quick, medium, low-reasoning, and high-reasoning probes to eligible configured models, records completion latency, time to first streamed token when available, rough or measured output token rate, provider usage counts, and per-task scores. The baseline is non-fatal; failed providers are marked in the snapshot and scored down for `auto`. Tune it with `AUTO_ROUTER_BENCHMARK_ON_START`, `AUTO_ROUTER_BENCHMARK_TIMEOUT_MS`, `AUTO_ROUTER_BENCHMARK_MAX_MODELS`, `AUTO_ROUTER_BENCHMARK_CONCURRENCY`, and `AUTO_ROUTER_BENCHMARK_INTERVAL_MS`. Inspect current signals with `GET /admin/stats/auto-router` or trigger a fresh run with `POST /admin/stats/auto-router/baseline`.
 
 Supported template variables in commands:
 
@@ -407,6 +407,15 @@ Auto-router benchmark stats:
 ```bash
 curl http://localhost:8080/admin/stats/auto-router \
   -H "x-admin-key: replace-me-admin"
+```
+
+Run a fresh bounded auto-router baseline:
+
+```bash
+curl -X POST http://localhost:8080/admin/stats/auto-router/baseline \
+  -H "x-admin-key: replace-me-admin" \
+  -H "Content-Type: application/json" \
+  -d '{"maxModels":8,"concurrency":2,"timeoutMs":20000}'
 ```
 
 Single model stats:

@@ -234,6 +234,7 @@ export class ProviderRegistry {
         score: roundNumber(candidate.score, 2),
         benchmarkStatus: candidate.benchmark?.status,
         benchmarkScore: candidate.benchmark?.score,
+        benchmarkTaskScores: candidate.benchmark?.taskScores,
         healthState: candidate.stats?.suggestedState,
       })),
     };
@@ -408,7 +409,7 @@ export class ProviderRegistry {
     promptKind: AutoRouterBenchmarkPromptKind,
     prompt: string,
     timeoutMs: number,
-    reasoningEffort: ReasoningEffort = "none",
+    reasoningEffort?: ReasoningEffort,
   ): Promise<AutoRouterBenchmarkMeasurement> {
     if (binding.provider.runStream && binding.provider.supportsStreaming?.()) {
       try {
@@ -455,7 +456,7 @@ export class ProviderRegistry {
     promptKind: AutoRouterBenchmarkPromptKind,
     prompt: string,
     timeoutMs: number,
-    reasoningEffort: ReasoningEffort,
+    reasoningEffort: ReasoningEffort | undefined,
   ): Promise<AutoRouterBenchmarkMeasurement> {
     if (!binding.provider.runStream) {
       throw new Error(`Model ${binding.modelId} does not expose streaming.`);
@@ -707,7 +708,7 @@ export class ProviderRegistry {
       const benchmark = this.modelBenchmarks.get(binding.modelId);
       let score = 100 - index * 0.01;
       score += scoreModelHealth(stats);
-      score += scoreModelBenchmark(benchmark, profile.complexity);
+      score += scoreModelBenchmark(benchmark, profile.complexity, profile.wantsStrongReasoning);
       score += scoreModelName(binding, {
         complexity: profile.complexity,
         codingSignal: profile.codingSignal,
@@ -797,7 +798,7 @@ function buildBenchmarkRequest(
   promptKind: AutoRouterBenchmarkPromptKind,
   timeoutMs: number,
   stream: boolean,
-  reasoningEffort: ReasoningEffort,
+  reasoningEffort: ReasoningEffort | undefined,
 ): UnifiedRequest {
   const maxTokens =
     promptKind === "small" ? 8 :
@@ -819,7 +820,7 @@ function buildBenchmarkRequest(
       temperature: 0,
       gateway_benchmark: true,
       gateway_benchmark_prompt_kind: promptKind,
-      gateway_benchmark_reasoning_effort: reasoningEffort,
+      gateway_benchmark_reasoning_effort: reasoningEffort ?? "none",
       gateway_benchmark_timeout_ms: timeoutMs,
     },
   };
@@ -1264,6 +1265,7 @@ function scoreModelHealth(stats: ModelStatsModelSnapshot | undefined): number {
 function scoreModelBenchmark(
   benchmark: AutoRouterBenchmarkSnapshot | undefined,
   complexity: number,
+  wantsStrongReasoning = false,
 ): number {
   if (!benchmark) {
     return 0;
@@ -1279,9 +1281,26 @@ function scoreModelBenchmark(
   }
 
   const mediumWeight = complexity >= 1 && complexity <= 2 ? 1.2 : 0.8;
-  const smallScore = benchmark.small ? scoreBenchmarkMeasurement(benchmark.small, 0.25) : 0;
-  const mediumScore = benchmark.medium ? scoreBenchmarkMeasurement(benchmark.medium, mediumWeight) : 0;
-  return Math.max(-35, Math.min(36, smallScore + mediumScore));
+  const smallScore = benchmark.taskScores?.quick ?? (
+    benchmark.small ? scoreBenchmarkMeasurement(benchmark.small, 0.25) : 0
+  );
+  const mediumScore = benchmark.taskScores?.medium ?? (
+    benchmark.medium ? scoreBenchmarkMeasurement(benchmark.medium, mediumWeight) : 0
+  );
+  const reasoningScore = wantsStrongReasoning
+    ? benchmark.taskScores?.reasoningHigh ?? (
+      benchmark.reasoningHigh ? scoreBenchmarkMeasurement(benchmark.reasoningHigh, 1.1) : 0
+    )
+    : benchmark.taskScores?.reasoningLow ?? (
+      benchmark.reasoningLow ? scoreBenchmarkMeasurement(benchmark.reasoningLow, 0.8) : 0
+    );
+  const score =
+    complexity === 0 && !wantsStrongReasoning
+      ? smallScore * 0.6 + mediumScore * 0.25 + reasoningScore * 0.15
+      : wantsStrongReasoning
+        ? mediumScore * 0.35 + reasoningScore * 0.65
+        : smallScore * 0.2 + mediumScore * 0.55 + reasoningScore * 0.25;
+  return Math.max(-35, Math.min(42, score));
 }
 
 function scoreModelName(

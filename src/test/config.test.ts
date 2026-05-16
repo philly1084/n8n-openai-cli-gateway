@@ -109,12 +109,14 @@ test("loadAppConfig parses auto router benchmark settings", () => {
     process.env.AUTO_ROUTER_BENCHMARK_TIMEOUT_MS = "5000";
     process.env.AUTO_ROUTER_BENCHMARK_MAX_MODELS = "3";
     process.env.AUTO_ROUTER_BENCHMARK_CONCURRENCY = "2";
+    process.env.AUTO_ROUTER_BENCHMARK_INTERVAL_MS = "3600000";
 
     const config = loadAppConfig();
     assert.equal(config.autoRouterBenchmarkOnStart, false);
     assert.equal(config.autoRouterBenchmarkTimeoutMs, 5000);
     assert.equal(config.autoRouterBenchmarkMaxModels, 3);
     assert.equal(config.autoRouterBenchmarkConcurrency, 2);
+    assert.equal(config.autoRouterBenchmarkIntervalMs, 3_600_000);
   } finally {
     restoreEnv(previous);
   }
