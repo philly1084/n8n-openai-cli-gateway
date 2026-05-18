@@ -30,8 +30,8 @@ providers:
           - gemini-3.1-pro-preview
           - gpt-5.5
           - gpt-5.4
-      - id: gemini-3.1-flash-lite-preview
-        providerModel: gemini-3.1-flash-lite-preview
+      - id: gemini-3.1-flash-lite
+        providerModel: gemini-3.1-flash-lite
         fallbackModels:
           - gemini-3-flash-preview
       - id: gemini-2.5-pro
@@ -141,19 +141,17 @@ providers:
         providerModel: gpt-5.5
         fallbackModels:
           - gpt-5.4
-          - gpt-5.4-pro
           - gemini-3.1-pro-preview
       - id: gpt-5.4
         providerModel: gpt-5.4
         fallbackModels:
           - gpt-5.5
-          - gpt-5.4-pro
           - gemini-3.1-pro-preview
-      - id: gpt-5.4-pro
-        providerModel: gpt-5.4-pro
+      - id: gpt-5.4-mini
+        providerModel: gpt-5.4-mini
         fallbackModels:
-          - gpt-5.5
           - gpt-5.4
+          - gpt-5.5
           - gemini-3.1-pro-preview
       - id: gpt-5.3-instant
         providerModel: gpt-5.3-instant
@@ -347,12 +345,6 @@ providers:
           - gpt-5.5
           - gpt-5.4
           - gemini-3.1-pro-preview
-      - id: kimi-k2-turbo-preview
-        providerModel: kimi-for-coding
-        fallbackModels:
-          - gpt-5.5
-          - gpt-5.4
-          - gemini-3.1-pro-preview
     responseCommand:
       executable: node
       args:
@@ -405,17 +397,30 @@ providers:
     models:
       - id: deepseek-chat
         providerModel: deepseek-chat
+        description: Backward-compatible DeepSeek non-thinking alias; use deepseek-v4-flash for new traffic
         fallbackModels:
-          - deepseek-reasoner
+          - deepseek-v4-flash
+          - deepseek-v4-pro
+      - id: deepseek-v4-flash
+        providerModel: deepseek-v4-flash
+        fallbackModels:
+          - deepseek-v4-pro
+      - id: deepseek-v4-pro
+        providerModel: deepseek-v4-pro
+        fallbackModels:
+          - deepseek-v4-flash
       - id: deepseek-coder
         providerModel: deepseek-chat
-        description: Backward-compatible DeepSeek coding alias mapped to deepseek-chat
+        description: Backward-compatible DeepSeek coding alias mapped to deepseek-chat; use deepseek-v4-flash for new traffic
         fallbackModels:
-          - deepseek-reasoner
+          - deepseek-v4-flash
+          - deepseek-v4-pro
       - id: deepseek-reasoner
         providerModel: deepseek-reasoner
+        description: Backward-compatible DeepSeek thinking alias; use deepseek-v4-pro for new traffic
         fallbackModels:
-          - deepseek-chat
+          - deepseek-v4-pro
+          - deepseek-v4-flash
 
   # ============================================================================
   # FREE AUDIO & MULTIMODAL SERVICES
@@ -457,8 +462,8 @@ providers:
     models:
       - id: gemini-3-flash-preview
         providerModel: gemini-3-flash-preview
-      - id: gemini-3.1-flash-lite-preview
-        providerModel: gemini-3.1-flash-lite-preview
+      - id: gemini-3.1-flash-lite
+        providerModel: gemini-3.1-flash-lite
       - id: gemini-2.5-flash
         providerModel: gemini-2.5-flash
       - id: gemini-2.5-flash-lite
